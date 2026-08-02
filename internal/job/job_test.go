@@ -4,16 +4,36 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
+// recorder — журнал демона в тесте.
+type recorder struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (r *recorder) logf(format string, args ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lines = append(r.lines, fmt.Sprintf(format, args...))
+}
+
+func (r *recorder) all() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return strings.Join(r.lines, "\n")
+}
+
 // Главное требование SPEC §6: второй джоб ОТБИВАЕТСЯ, а не встаёт
 // в очередь. Очередь означала бы, что пользователь нажал кнопку, ушёл,
 // а операция началась через минуту — когда обстановка уже другая.
 func TestSecondJobIsRefusedNotQueued(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	release := make(chan struct{})
 
 	first, err := m.Start("mode", "b4", "Переключение на b4", 8, func(context.Context) error {
@@ -49,7 +69,7 @@ func TestSecondJobIsRefusedNotQueued(t *testing.T) {
 
 func TestConcurrentStartsOnlyOneWins(t *testing.T) {
 	// Гонка на старте: ровно один должен пройти, остальные получить ErrBusy.
-	m := NewManager()
+	m := NewManager(nil)
 	release := make(chan struct{})
 
 	const n = 20
@@ -87,7 +107,7 @@ func TestConcurrentStartsOnlyOneWins(t *testing.T) {
 }
 
 func TestFailedJobKeepsError(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	boom := errors.New("netmode-apply вернул 1")
 
 	if _, err := m.Start("mode", "b4", "Переключение", 8, func(context.Context) error {
@@ -118,7 +138,7 @@ func TestFailedJobKeepsError(t *testing.T) {
 // статус раз в секунду, и мгновенное исчезновение означало бы, что
 // результат мелькнул и пропал.
 func TestFinishedJobLingersThenDisappears(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	base := time.Unix(1700000000, 0)
 	cur := base
 	m.now = func() time.Time { return cur }
@@ -145,7 +165,7 @@ func TestFinishedJobLingersThenDisappears(t *testing.T) {
 // Клиент может уйти, а смена режима обязана довестись до конца: брошенная
 // на середине, она оставила бы висячие цепочки в nftables.
 func TestJobSurvivesCallerGoingAway(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	finished := make(chan struct{})
 
 	if _, err := m.Start("mode", "nikki", "долгая", 8, func(ctx context.Context) error {
@@ -169,7 +189,7 @@ func TestJobSurvivesCallerGoingAway(t *testing.T) {
 }
 
 func TestBusyReflectsRunningOnly(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	if m.Busy() {
 		t.Error("на старте занятости нет")
 	}
@@ -195,7 +215,7 @@ func TestBusyReflectsRunningOnly(t *testing.T) {
 // поля обязаны дожить до JSON. Пропади arg — подпись «Переключаю на b4»
 // выродилась бы в безликое «Идёт операция».
 func TestKindAndArgSurviveToJSON(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 
 	snapshot, err := m.Start("mode", "b4", "Переключение режима на b4", 8,
 		func(context.Context) error { return nil })
@@ -237,7 +257,7 @@ func TestKindAndArgSurviveToJSON(t *testing.T) {
 // Уточнять в обновлении подписки нечего, но ключ arg обязан присутствовать:
 // панель разбирает ответ без проверок на отсутствие поля.
 func TestSubscriptionJobHasEmptyArg(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	if _, err := m.Start("subscription", "", "Обновление подписки", 4,
 		func(context.Context) error { return nil }); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -264,13 +284,158 @@ func TestSubscriptionJobHasEmptyArg(t *testing.T) {
 }
 
 func TestNilWhenNothingHappened(t *testing.T) {
-	if j := NewManager().Current(); j != nil {
+	if j := NewManager(nil).Current(); j != nil {
 		t.Errorf("на старте джоба быть не должно: %+v", j)
 	}
 }
 
+// Паника внутри операции обязана стоить операции, а не всего демона.
+//
+// Без перехвата этот тест не падает «красным» — он убивает процесс тестов
+// вместе с остальными: ровно то же, что на роутере сделало бы с HTTP API,
+// индикацией и управлением режимом.
+func TestPanicInJobFailsJobNotProcess(t *testing.T) {
+	var r recorder
+	m := NewManager(r.logf)
+
+	if _, err := m.Start("mode", "b4", "Переключение на b4", 8, func(context.Context) error {
+		var empty []string
+		return errors.New(empty[3]) // выход за границы: паника среды выполнения
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if !m.Wait(2 * time.Second) {
+		t.Fatal("после паники операция осталась running: кнопки в панели заблокированы навсегда")
+	}
+
+	cur := m.Current()
+	if cur == nil {
+		t.Fatal("рухнувшая операция пропала: результат некому прочитать")
+	}
+	if cur.State != Failed {
+		t.Errorf("состояние %q, ожидалось failed", cur.State)
+	}
+	if cur.FinishedAt == nil {
+		t.Error("у рухнувшей операции не проставлено время завершения")
+	}
+	if cur.Error == nil {
+		t.Fatal("паника не оставила текста ошибки")
+	}
+	// Владелец должен отличить «сломался демон» от «команда вернула 1».
+	if !strings.Contains(*cur.Error, "внутренний сбой демона") {
+		t.Errorf("текст не объясняет, что случилось: %q", *cur.Error)
+	}
+	if !strings.Contains(*cur.Error, "Переключение на b4") {
+		t.Errorf("текст не говорит, какая операция рухнула: %q", *cur.Error)
+	}
+	if !strings.Contains(*cur.Error, "range") {
+		t.Errorf("причина паники потерялась: %q", *cur.Error)
+	}
+
+	// Стек уходит в журнал целиком — наружу отдаётся только короткий текст,
+	// и починить дефект больше не по чему.
+	log := r.all()
+	if !strings.Contains(log, "goroutine") || !strings.Contains(log, "job_test.go") {
+		t.Errorf("в журнале нет стека паники:\n%s", log)
+	}
+
+	// Замок не удержан: паника случается ДО взятия m.mu, и менеджер обязан
+	// принимать следующую операцию.
+	if _, err := m.Start("subscription", "", "Обновление подписки", 4,
+		func(context.Context) error { return nil }); err != nil {
+		t.Fatalf("после паники менеджер не принимает операции (замок?): %v", err)
+	}
+	if !m.Wait(2 * time.Second) {
+		t.Fatal("следующая операция не завершилась")
+	}
+}
+
+// Истёкший срок объясняется словами. Сырое "context deadline exceeded" не
+// говорит ни сколько ждали, ни кто оборвал операцию.
+func TestTimeoutExplainsItself(t *testing.T) {
+	m := NewManager(nil)
+	m.timeout = 20 * time.Millisecond
+
+	if _, err := m.Start("mode", "nikki", "Переключение на Nikki", 8, func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !m.Wait(2 * time.Second) {
+		t.Fatal("операция не прервалась по сроку")
+	}
+
+	cur := m.Current()
+	if cur == nil || cur.State != Failed || cur.Error == nil {
+		t.Fatalf("после срока: %+v", cur)
+	}
+	if strings.Contains(*cur.Error, "context deadline exceeded") {
+		t.Errorf("наружу ушла техническая строка: %q", *cur.Error)
+	}
+	if !strings.Contains(*cur.Error, "прервана демоном") {
+		t.Errorf("текст не говорит, кто оборвал операцию: %q", *cur.Error)
+	}
+	if !strings.Contains(*cur.Error, "20ms") {
+		t.Errorf("текст не говорит, сколько ждали: %q", *cur.Error)
+	}
+}
+
+// Если операция успела сказать что-то своё, это ценнее самого факта срока —
+// объяснение добавляется, а не подменяет причину.
+func TestTimeoutKeepsOwnError(t *testing.T) {
+	m := NewManager(nil)
+	m.timeout = 20 * time.Millisecond
+	own := errors.New("netmode-apply не отвечает")
+
+	if _, err := m.Start("mode", "off", "Выключение обхода", 8, func(ctx context.Context) error {
+		<-ctx.Done()
+		return own
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !m.Wait(2 * time.Second) {
+		t.Fatal("операция не прервалась по сроку")
+	}
+
+	cur := m.Current()
+	if cur == nil || cur.Error == nil {
+		t.Fatalf("после срока: %+v", cur)
+	}
+	if !strings.Contains(*cur.Error, own.Error()) {
+		t.Errorf("причина от самой операции потерялась: %q", *cur.Error)
+	}
+	if !strings.Contains(*cur.Error, "прервана демоном") {
+		t.Errorf("объяснение срока потерялось: %q", *cur.Error)
+	}
+}
+
+// Обычный отказ, уложившийся в срок, не обрастает объяснениями про время:
+// проверка ctx.Err() не должна срабатывать на успевших операциях.
+func TestErrorInTimeIsNotDressedUp(t *testing.T) {
+	m := NewManager(nil)
+	boom := errors.New("netmode-apply вернул 1")
+
+	if _, err := m.Start("mode", "b4", "Переключение", 8,
+		func(context.Context) error { return boom }); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !m.Wait(time.Second) {
+		t.Fatal("джоб не завершился")
+	}
+
+	cur := m.Current()
+	if cur == nil || cur.Error == nil {
+		t.Fatalf("завершённый джоб: %+v", cur)
+	}
+	if *cur.Error != boom.Error() {
+		t.Errorf("текст отказа переписан: %q", *cur.Error)
+	}
+}
+
 func TestIDsAreUnique(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	seen := map[string]bool{}
 	for i := 0; i < 50; i++ {
 		j, err := m.Start("x", "", "y", 1, func(context.Context) error { return nil })

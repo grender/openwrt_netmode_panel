@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"netmoded/internal/executor"
 )
@@ -411,5 +413,49 @@ func TestNoCookieWhenTokenCameFromHeader(t *testing.T) {
 	rec := do(t, s, "GET", "/api/status", true)
 	if len(rec.Result().Cookies()) != 0 {
 		t.Errorf("на заголовок Authorization поставлена кука: %v", rec.Result().Cookies())
+	}
+}
+
+// Сторож завершения — единственная горутина сервера: он ждёт отмену
+// контекста и гасит http.Server. Паника в нём унесла бы процесс мимо всякого
+// запроса, уже на выходе, — и в логе не осталось бы ничего, кроме внезапной
+// смерти демона.
+func TestShutdownWatchdogSurvivesPanic(t *testing.T) {
+	sink := &logSink{}
+	s, err := NewServer(Config{
+		Listen:  "192.168.9.1",
+		Port:    8088,
+		Token:   testToken,
+		LogPath: filepath.Join(t.TempDir(), "updates.log"),
+		Logf:    sink.logf,
+	}, executor.NewFake())
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Запускаем именно горутиной, как в ListenAndServe: recover действует
+	// только в той горутине, где случилась паника, и тест обязан проверять
+	// ту же расстановку, что работает на роутере.
+	done := make(chan struct{})
+	go func() {
+		s.awaitShutdown(ctx, func(context.Context) error {
+			panic("подложенный сбой остановки")
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("сторож завершения не вернулся")
+	}
+	if len(sink.matching("паника")) == 0 {
+		t.Error("паника сторожа не попала в журнал демона")
+	}
+	if len(sink.matching("server.go")) == 0 {
+		t.Error("в журнале нет стека — по такой записи не найти место паники")
 	}
 }

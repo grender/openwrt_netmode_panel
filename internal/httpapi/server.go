@@ -19,6 +19,7 @@ import (
 	"netmoded/internal/led"
 	"netmoded/internal/logs"
 	"netmoded/internal/nikki"
+	"netmoded/internal/safe"
 	"netmoded/internal/sched"
 	"netmoded/internal/uci"
 	"netmoded/internal/wireless"
@@ -102,7 +103,7 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 		b4:     b4.New(b4.DefaultBaseURL),
 		nikki:  nikki.New(cfg.NikkiURL, cfg.NikkiSecret),
 		status: NewStatusReader(ex, logf),
-		jobs:   job.NewManager(),
+		jobs:   job.NewManager(logf),
 		logs:   logs.New(cfg.LogPath),
 		mux:    http.NewServeMux(),
 	}
@@ -428,11 +429,30 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	go func() {
-		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdown)
-	}()
+	go s.awaitShutdown(ctx, srv.Shutdown)
 	return srv.ListenAndServe()
+}
+
+// awaitShutdown гасит сервер по отмене контекста.
+//
+// Своя горутина нужна потому, что ListenAndServe занимает вызывающую до
+// самого конца. Практическая вероятность паники в Shutdown мизерна, но
+// перехват тут стоит одной строки, а непокрытая горутина через полгода
+// выглядит как сознательное исключение, которого никто уже не помнит.
+//
+// Функция остановки передаётся параметром, а не берётся у srv: иначе
+// перехват нельзя было бы проверить тестом, а защита, которую ни разу не
+// видели работающей, — это только текст в файле.
+//
+// Ошибка Shutdown глотается, как и раньше: демон уже уходит, и сообщать о
+// неудачном закрытии некому и незачем.
+func (s *Server) awaitShutdown(ctx context.Context, shutdown func(context.Context) error) {
+	<-ctx.Done()
+	_ = safe.Do(s.logf, "остановка HTTP-сервера", func() error {
+		// Пять секунд на дочитывание текущих ответов: панель опрашивает
+		// статус часто, и обрывать её ради мгновенного выхода незачем.
+		grace, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return shutdown(grace)
+	})
 }
