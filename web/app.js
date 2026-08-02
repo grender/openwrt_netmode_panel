@@ -450,6 +450,22 @@ function B4Card({ data, t, busy, locked, onPick }) {
 
 // ─────────── WiFi ───────────
 
+// Подпись про диапазон станции строится из машинного band, а не из
+// статического текста.
+//
+// Индекс радио диапазон не означает (ADR-0019): на другой ревизии железа
+// станция может оказаться на 5 ГГц. Раньше здесь висела зашитая фраза про
+// 2.4 ГГц, и панель уверенно писала бы неправду ровно там, где владелец
+// ищет пропавшую сеть. Поле note из ответа не берём: оно приходит с
+// демона по-русски и в английском интерфейсе выглядело бы так же плохо,
+// как job.label до F3.
+function bandNote(scan, t) {
+	const band = scan && scan.band;
+	if (band !== '2g' && band !== '5g') return null;
+	const other = band === '2g' ? '5' : '2.4';
+	return html`<p class="hint tight">${t('wifi.band', { band: band === '2g' ? '2.4' : '5', other })}</p>`;
+}
+
 function WifiCard({ nets, scan, t, busy, status, onScan, onOpenSheet, onDelete }) {
 	const saved = (nets && nets.networks) || [];
 	const found = (scan && scan.networks) || [];
@@ -511,7 +527,7 @@ function WifiCard({ nets, scan, t, busy, status, onScan, onOpenSheet, onDelete }
 			${hidden.length > 0 && html`
 				<p class="hint tight">${t('wifi.hidden')} · ${hidden.length} — ${t('wifi.hidden.cant')}</p>`}
 
-			<p class="hint tight">${t('wifi.band')}</p>
+			${bandNote(scan, t)}
 			<p class="hint tight">${t('wifi.switch.soon')}</p>
 		</div>`;
 }

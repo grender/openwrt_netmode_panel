@@ -123,6 +123,27 @@ func TestB4SetUnknownIDIs404(t *testing.T) {
 	}
 }
 
+// Частичное переключение — не «сервис недоступен».
+//
+// SelectOnly гасит прочие сеты, затем включает целевой. Если второй шаг
+// упал, обход DPI выключен целиком, но b4 при этом жив и отвечает.
+// Отдать 503 значило бы соврать про причину и предложить владельцу ждать
+// вместо того единственного действия, которое помогает, — повторить.
+func TestB4PartialIsConflictNotUnavailable(t *testing.T) {
+	s, _ := newServer(t)
+	fake := newFakeB4Client()
+	fake.err = b4.ErrPartial
+	s.SetB4Client(fake)
+
+	rec := post(t, s, "/api/b4/set", `{"id":"909a6fb1-b9b1-4af1-8ee0-bdce82e3d8ff"}`, "")
+	if rec.Code != http.StatusConflict {
+		t.Errorf("код %d, ожидался 409", rec.Code)
+	}
+	if got := errCode(t, rec); got != "b4_partial" {
+		t.Errorf("код ошибки %q, ожидался b4_partial", got)
+	}
+}
+
 // b4 перезапускается сам (raw/25-netstat.txt: в снимке разведки он лежал).
 // Это штатная ситуация: сеты гаснут, остальная панель работает.
 func TestB4UnavailableDegradesNotFails(t *testing.T) {

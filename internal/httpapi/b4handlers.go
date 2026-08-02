@@ -85,6 +85,15 @@ func (s *Server) handleB4Set(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, b4.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not_found", "Сет не найден")
 		return
+	case errors.Is(err, b4.ErrPartial):
+		// 409, а не 503: b4 отвечает, состояние изменено — но не то, о
+		// котором просили. Прочие сеты погашены, целевой не включён, то
+		// есть обход DPI сейчас выключен целиком. Повтор нажатия — штатный
+		// способ разрешения, поэтому владельцу нужен код, по которому
+		// панель предложит именно повторить, а не «сервис недоступен».
+		writeErr(w, http.StatusConflict, "b4_partial",
+			"Прочие сеты выключены, целевой включить не удалось: обход сейчас отключён. Повторите.")
+		return
 	case errors.Is(err, b4.ErrUnavailable):
 		writeErr(w, http.StatusServiceUnavailable, "b4_unavailable",
 			"Панель b4 не отвечает")
