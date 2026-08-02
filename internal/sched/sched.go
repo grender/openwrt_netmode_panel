@@ -12,7 +12,6 @@ package sched
 import (
 	"context"
 	"errors"
-	"fmt"
 	"regexp"
 	"strconv"
 	"sync"
@@ -27,6 +26,15 @@ import (
 // это запись во флеш. Чаще смысла нет, реже — список успевает протухнуть.
 const DefaultInterval = 12 * time.Hour
 
+// catchUpDelay — отсрочка догоняющего обновления после старта демона.
+//
+// Не ноль намеренно: демон поднимается раньше, чем wwan получает адрес, и
+// обновление в первую же секунду упало бы в сеть, записав в журнал fail.
+// Хуже того, эта запись обнулила бы отсчёт — просроченное обновление так и
+// не состоялось бы, только журнал засорился. Минуты хватает, чтобы связь
+// встала.
+const catchUpDelay = time.Minute
+
 // Updater запускает конвертер подписки.
 type Updater interface {
 	UpdateSubscription(ctx context.Context) ([]byte, error)
@@ -39,6 +47,7 @@ type Scheduler struct {
 
 	interval time.Duration
 	now      func() time.Time
+	logf     func(string, ...any)
 
 	mu       sync.Mutex
 	lastRun  time.Time
@@ -47,25 +56,47 @@ type Scheduler struct {
 	stop     chan struct{}
 }
 
-func New(up Updater, log *logs.Log, interval time.Duration) *Scheduler {
+// New собирает планировщик. Пустой logf — тишина.
+func New(up Updater, log *logs.Log, interval time.Duration, logf func(string, ...any)) *Scheduler {
 	if interval <= 0 {
 		interval = DefaultInterval
+	}
+	if logf == nil {
+		logf = func(string, ...any) {}
 	}
 	return &Scheduler{
 		up:       up,
 		log:      log,
 		interval: interval,
 		now:      time.Now,
+		logf:     logf,
 		stop:     make(chan struct{}),
 	}
 }
 
 // Run крутит расписание до отмены контекста.
 //
-// Первое обновление НЕ делается на старте: демон перезапускается при
-// каждом обновлении прошивки и при отладке, и обновлять подписку на каждый
-// перезапуск значило бы дёргать провайдера почём зря.
+// Интервал отсчитывается от последней записи журнала, а не от старта
+// процесса. Обновления на самом старте по-прежнему нет: демон
+// перезапускается при каждой прошивке и при отладке, и дёргать провайдера
+// на каждый перезапуск незачем. Но и тикер «с нуля» не годится — на этом
+// роутере перезапуски частые, и обновление откладывалось бы месяцами,
+// то есть автоматическим не было бы вовсе.
 func (s *Scheduler) Run(ctx context.Context) {
+	// Первое срабатывание — одноразовый таймер: его задержка зависит от
+	// журнала и почти никогда не равна интервалу. Дальше обычный тикер.
+	first := time.NewTimer(s.firstDelay())
+	defer first.Stop()
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-s.stop:
+		return
+	case <-first.C:
+		_, _ = s.RunOnce(ctx)
+	}
+
 	t := time.NewTicker(s.interval)
 	defer t.Stop()
 
@@ -78,6 +109,31 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-t.C:
 			_, _ = s.RunOnce(ctx)
 		}
+	}
+}
+
+// firstDelay — сколько ждать до первого обновления после старта.
+//
+// Пустой или нечитаемый журнал означает полный интервал, а НЕ «догнать
+// немедленно»: на свежей установке подписки ещё нет, и дёргать провайдера
+// раньше, чем владелец что-либо настроил, бессмысленно.
+func (s *Scheduler) firstDelay() time.Duration {
+	last, ok, err := s.log.Last()
+	if err != nil || !ok {
+		return s.interval
+	}
+
+	elapsed := s.now().Sub(last.TS)
+	switch {
+	case elapsed < 0:
+		// Запись «из будущего»: у роутера нет RTC, и до синхронизации по
+		// NTP часы уходят в прошлое. Ждать разницу значило бы отложить
+		// обновление на годы — берём обычный интервал.
+		return s.interval
+	case elapsed >= s.interval:
+		return catchUpDelay
+	default:
+		return s.interval - elapsed
 	}
 }
 
@@ -133,9 +189,13 @@ func (s *Scheduler) RunOnce(ctx context.Context) (int, error) {
 		entry.Status = logs.StatusOK
 	}
 
-	// Сбой записи журнала не отменяет сделанного: подписка уже обновилась.
-	if lerr := s.log.Append(entry); lerr != nil && err == nil {
-		err = fmt.Errorf("подписка обновлена, но журнал не записан: %w", lerr)
+	// Сбой записи журнала не отменяет сделанного: подписка уже обновилась
+	// (контракт logs.Append). Поэтому ошибка уходит в лог демона, а не
+	// наружу: вернуть её значило бы покрасить успешное обновление в
+	// «неудачу» — ровно та ложь, против которой стоит предохранитель нуля
+	// узлов выше, только наизнанку.
+	if lerr := s.log.Append(entry); lerr != nil {
+		s.logf("журнал обновлений не записан: %v", lerr)
 	}
 
 	if entry.Status == logs.StatusFail {

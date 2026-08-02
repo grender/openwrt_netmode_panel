@@ -86,23 +86,27 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 		return nil, fmt.Errorf("порт %d вне диапазона", cfg.Port)
 	}
 
+	// Журнал заводится ПЕРВЫМ и до конструкторов: всё, что умеет
+	// деградировать молча (статус, светодиоды), обязано получить рабочий
+	// logf, а не nil, оставшийся от порядка инициализации.
+	logf := cfg.Logf
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+
 	s := &Server{
 		cfg:    cfg,
 		ex:     ex,
+		logf:   logf,
 		b4:     b4.New(b4.DefaultBaseURL),
 		nikki:  nikki.New(cfg.NikkiURL, cfg.NikkiSecret),
-		status: NewStatusReader(ex),
+		status: NewStatusReader(ex, logf),
 		jobs:   job.NewManager(),
 		logs:   logs.New(cfg.LogPath),
 		mux:    http.NewServeMux(),
 	}
-	if cfg.Logf != nil {
-		s.logf = cfg.Logf
-	} else {
-		s.logf = func(string, ...any) {}
-	}
 	s.led = led.New(cfg.LEDRoot, s.logf)
-	s.sched = sched.New(ex, s.logs, cfg.SubInterval)
+	s.sched = sched.New(ex, s.logs, cfg.SubInterval, s.logf)
 	s.status.jobs = s.jobs
 	s.status.logs = s.logs
 	s.routes()
@@ -267,12 +271,13 @@ func (s *Server) Close() {
 // Scheduler возвращает планировщик — вызывающий обязан крутить его Run.
 func (s *Server) Scheduler() *sched.Scheduler { return s.sched }
 
+// handleStatus не имеет ветки ошибки: Read её не возвращает.
+//
+// Это не упущение, а решение. Статус обязан отвечать при любом сбое
+// источников — недоступность каждого видна в самом ответе (online.checked,
+// mode, available) и попадает в журнал демона.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	st, err := s.status.Read(r.Context())
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
+	st, _ := s.status.Read(r.Context())
 	writeJSON(w, http.StatusOK, st)
 }
 
