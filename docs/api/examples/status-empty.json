@@ -25,13 +25,14 @@
   "last_fail": null,
   "nikki": {
     "available": false,
-    "group": null,
-    "proxy": null
+    "version": null,
+    "set": "",
+    "enabled_count": 0
   },
   "b4": {
     "available": true,
     "version": "1.74.1",
-    "set": null,
+    "set": "",
     "enabled_count": 0
   },
   "subscription": {

@@ -117,17 +117,29 @@ type Fail struct {
 	At     string `json:"at"`
 }
 
+// Service — состояние подключаемого движка (nikki, b4).
+//
+// omitempty здесь не стоит нигде, кроме Pinned, и это принципиально:
+// пропавшее поле означает для клиента «демон не прислал», а не «значения
+// нет». `enabled_count: 0` — это факт («b4 отвечает, включённых сетов нет»),
+// и молчать о нём значит выдавать факт за сбой связи.
 type Service struct {
-	Available bool    `json:"available"`
-	Version   *string `json:"version,omitempty"`
-	// Set — активный узел (Nikki) или сет (b4).
-	Set string `json:"set,omitempty"`
+	Available bool `json:"available"`
+	// Version — null, пока движок не ответил. Именно null, а не пропуск:
+	// поле обещано контрактом как всегда присутствующее.
+	Version *string `json:"version"`
+	// Set — активный узел (Nikki) или сет (b4). "" — движок недоступен либо
+	// однозначного выбора нет.
+	Set string `json:"set"`
 	// Pinned — выбран ли узел вручную.
 	//
 	// Без этого признака панель не отличит «движок подобрал» от «закреплено
 	// руками»: имя в Set в обоих случаях одинаковое.
+	//
+	// Единственное поле с omitempty: признак осмыслен только при
+	// Available, и его отсутствие читается как «не закреплено».
 	Pinned       bool `json:"pinned,omitempty"`
-	EnabledCount int  `json:"enabled_count,omitempty"`
+	EnabledCount int  `json:"enabled_count"`
 }
 
 // StatusReader собирает статус, кэшируя дорогие чтения.

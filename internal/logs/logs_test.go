@@ -71,17 +71,18 @@ func TestFormatIsJSONLines(t *testing.T) {
 			t.Errorf("строка %d не разбирается: %v", i, err)
 		}
 	}
-	// Поля названы по SPEC §9.
+	// Поля названы по SPEC §9. Все четыре — в каждой записи, включая err:
+	// пропущенный ключ читатель не отличит от «писатель про него не знал»,
+	// а пустая строка однозначно означает «ошибки не было».
 	var m map[string]any
 	_ = json.Unmarshal([]byte(lines[0]), &m)
-	for _, k := range []string{"ts", "nodes", "status"} {
+	for _, k := range []string{"ts", "nodes", "status", "err"} {
 		if _, ok := m[k]; !ok {
 			t.Errorf("нет поля %q: %v", k, m)
 		}
 	}
-	// Пустая ошибка не занимает место в каждой успешной записи.
-	if _, ok := m["err"]; ok {
-		t.Errorf("err присутствует в успешной записи: %v", m)
+	if m["err"] != "" {
+		t.Errorf("err успешной записи = %v, ожидалась пустая строка", m["err"])
 	}
 }
 

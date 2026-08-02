@@ -143,6 +143,108 @@ func TestCreateRejectsBadInput(t *testing.T) {
 	}
 }
 
+// ─────────── незнакомые поля ───────────
+
+// Поле `network` до этой правки принималось и молча выбрасывалось: клиент
+// получал 200 и секцию на wwan. Принять его нельзя — это смена upstream,
+// отложенная до фазы 2 (ADR-0016), — значит остаётся честно отказать.
+func TestNetworkFieldIsRejectedNotIgnored(t *testing.T) {
+	s, f := newServer(t)
+
+	rec := post(t, s, "/api/wifi/networks",
+		`{"ssid":"X","encryption":"none","network":"lan"}`, etag(t, s))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("код %d, ожидался 400: %s", rec.Code, rec.Body.String())
+	}
+	if got := errCode(t, rec); got != "unsupported_field" {
+		t.Errorf("код ошибки %q, ожидался unsupported_field", got)
+	}
+	// Текст обязан отсылать к решению, а не просто ругаться: клиент должен
+	// понять, что поле не забыли, а отложили.
+	if !strings.Contains(rec.Body.String(), "ADR-0016") {
+		t.Errorf("в сообщении нет отсылки к ADR-0016: %s", rec.Body.String())
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("отвергнутый запрос не смеет ничего писать: %v", f.Calls)
+	}
+}
+
+// Отказ общий, а не про одно поле: любое незнакомое поле означает, что
+// клиент и демон расходятся в понимании контракта.
+func TestUnknownFieldIsRejected(t *testing.T) {
+	s, _ := newServer(t)
+	e := etag(t, s)
+
+	for _, body := range []string{
+		`{"ssid":"X","encryption":"none","disabled":"0"}`,
+		`{"id":"wifinet2","bssid":"de:ad:be:ef:00:01"}`,
+		`{"ssid":"X","encryption":"none","Network":"lan"}`,
+	} {
+		rec := post(t, s, "/api/wifi/networks", body, e)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s → код %d, ожидался 400", body, rec.Code)
+			continue
+		}
+		if got := errCode(t, rec); got != "unsupported_field" {
+			t.Errorf("%s → код ошибки %q", body, got)
+		}
+	}
+}
+
+// Тела, которые шлёт панель, обязаны проходить: строгость разбора не должна
+// стоить записи сетей. Формы взяты из web/app.js (NetworkSheet.submit):
+// создание — {ssid, encryption, key?}, правка — {id, key?}.
+func TestPanelBodiesStillAccepted(t *testing.T) {
+	for _, tt := range []struct{ name, body string }{
+		{"создание с паролем", `{"ssid":"X","encryption":"psk2","key":"пароль12345"}`},
+		{"создание открытой", `{"ssid":"X","encryption":"none"}`},
+		{"правка только пароля", `{"id":"wifinet2","key":"новыйпароль1"}`},
+		{"правка без пароля", `{"id":"wifinet2","ssid":"ATOM-2","encryption":"psk2"}`},
+	} {
+		s, _ := newServer(t)
+		rec := post(t, s, "/api/wifi/networks", tt.body, etag(t, s))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: код %d, ожидался 200: %s", tt.name, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// Второе значение в теле — тот же класс ошибки: часть запроса была бы
+// прочитана и отброшена молча.
+func TestTrailingJSONIsRejected(t *testing.T) {
+	s, f := newServer(t)
+	rec := post(t, s, "/api/wifi/networks",
+		`{"ssid":"X","encryption":"none"} {"ssid":"Y","encryption":"none"}`, etag(t, s))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("код %d, ожидался 400: %s", rec.Code, rec.Body.String())
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("отвергнутый запрос не смеет ничего писать: %v", f.Calls)
+	}
+}
+
+// Имя поля достаётся из текста ошибки encoding/json: отдельного типа для
+// этого случая стандартная библиотека не заводит. Если формулировка изменится
+// в новой версии Go, упасть обязан этот тест, а не ответ клиенту в проде.
+func TestUnknownFieldNameExtracted(t *testing.T) {
+	dec := json.NewDecoder(strings.NewReader(`{"network":"lan"}`))
+	dec.DisallowUnknownFields()
+
+	err := dec.Decode(&NetworkWrite{})
+	if err == nil {
+		t.Fatal("DisallowUnknownFields не сработал")
+	}
+	field, ok := unknownField(err)
+	if !ok {
+		t.Fatalf("ошибка не опознана как «незнакомое поле»: %v", err)
+	}
+	if field != "network" {
+		t.Errorf("имя поля %q, ожидалось network", field)
+	}
+}
+
 // ─────────── правка ───────────
 
 func TestEditDisabledNetwork(t *testing.T) {

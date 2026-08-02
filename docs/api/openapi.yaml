@@ -248,6 +248,11 @@ paths:
 
         `key` отсутствует в теле → пароль не меняется. `key: ""` → записывается
         пустой пароль (осмысленно при `encryption: "none"`). Это разные вещи.
+
+        **Незнакомые поля отвергаются** — `400 unsupported_field`. Демон не
+        принимает того, чего не понимает: молча пропущенное поле выглядит как
+        выполненная просьба. В частности `network` (выбор L3-сети) — это
+        смена upstream, отложенная до фазы 2 (ADR-0016).
       parameters:
         - $ref: "#/components/parameters/IfMatch"
       requestBody:
@@ -264,7 +269,14 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/NetworksResponse" }
-        "400": { $ref: "#/components/responses/BadRequest" }
+        "400":
+          description: |
+            `bad_request` — тело не разбирается, нет обязательного поля,
+            значение вне набора.
+            `unsupported_field` — в теле поле, которого нет в `NetworkWrite`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/WifiWriteConflict" }
@@ -575,6 +587,7 @@ components:
             - foreign_staged_changes
             - fingerprint_mismatch
             - enabled_network_readonly
+            - unsupported_field
             - ambiguous_set_name
             - not_implemented
             - b4_unavailable
@@ -594,8 +607,11 @@ components:
       type: object
       description: |
         Порядок полей здесь = порядок полей в Go-структуре = порядок ключей в
-        эталонных фикстурах `docs/api/examples/status-*.json`, с которыми
-        ответы сравниваются байт в байт.
+        примерах `docs/api/examples/status-*.json`.
+
+        Сторожа у этого совпадения НЕТ: ни один тест не сверяет ответ с
+        примером, `scripts/check-routes.sh` видит только пути. Форма
+        синхронизируется руками, в том же коммите, что и правка Go-структуры.
       required:
         - generated_at
         - hostname
@@ -774,7 +790,7 @@ components:
         `409 job_busy`, очереди нет (SPEC §6).
         Поля `finished_at` и `error` добавлены к набору из мокапа: без них
         упавший джоб при опросе 1 Гц неотличим от успешного.
-      required: [id, kind, label, started_at, finished_at, eta_sec, state, error]
+      required: [id, kind, arg, label, started_at, finished_at, eta_sec, state, error]
       additionalProperties: false
       properties:
         id:
@@ -784,9 +800,20 @@ components:
           type: string
           enum: [mode, subscription]
           description: "`upstream` появится в фазе 2 (ADR-0016)."
+        arg:
+          type: string
+          description: >
+            Уточнение операции: для `kind=mode` это целевой режим
+            (`nikki`|`b4`|`off`), для `subscription` — пустая строка.
+            Панель строит подпись из `kind`+`arg` на своём языке, поэтому
+            поле машинное и переводу не подлежит.
+          examples: ["b4"]
         label:
           type: string
-          description: Готовый текст для панели, по-русски.
+          description: >
+            Человекочитаемая метка для журнала демона и диагностики по ssh,
+            по-русски. Панель её НЕ показывает: иначе русский текст попадал
+            бы в английский интерфейс. Для панели существуют `kind` и `arg`.
           examples: ["Переключение режима на b4"]
         started_at:
           type: string
@@ -819,18 +846,39 @@ components:
 
     NikkiStatus:
       type: object
-      required: [available, group, proxy]
+      description: |
+        Состояние движка nikki. Форма общая с `B4Status`: в Go оба поля
+        статуса — одна структура `Service`, и расходиться они не могут.
+      required: [available, version, set, enabled_count]
       additionalProperties: false
       properties:
         available:
           type: boolean
           description: "**В этой поставке всегда `false`** — RQ-01 не отвечён."
-        group:
+        version:
           type: [string, "null"]
-          examples: ["PROXY"]
-        proxy:
-          type: [string, "null"]
-          description: Выбранный элемент группы. `AUTO` — состояние по умолчанию.
+          description: "`null`, пока движок не ответил."
+        set:
+          type: string
+          description: |
+            Текущий узел группы `PROXY` (`AUTO` — состояние по умолчанию).
+            `""` — движок недоступен или узел не выбран. Не `null`: поле
+            всегда строка.
+          examples: ["AUTO"]
+        pinned:
+          type: boolean
+          description: |
+            Узел закреплён вручную. **Ключ отсутствует, если `false`** —
+            единственное поле статуса с `omitempty`: признак осмыслен только
+            при `available: true`, а его отсутствие читается как «не
+            закреплено».
+        enabled_count:
+          type: integer
+          minimum: 0
+          description: |
+            К nikki не относится и всегда `0` — поле есть, потому что состояние
+            обоих движков описывается одной структурой. Смысл оно имеет только
+            в `B4Status`.
 
     B4Status:
       type: object
@@ -842,15 +890,28 @@ components:
           description: "Проба `GET /api/version` — единственный маршрут b4 вне аутентификации."
         version:
           type: [string, "null"]
+          description: "`null`, пока b4 не ответил на `GET /api/version`."
           examples: ["1.74.1"]
         set:
-          type: [string, "null"]
+          type: string
           description: |
-            Имя сета, если включён ровно один. `null` при нуле и при двух и
-            более — эксклюзивность наша, не b4 (ADR-0008).
+            Имя сета, если включён ровно один. `""` при нуле, при двух и более
+            и при недоступном b4 — эксклюзивность наша, не b4 (ADR-0008).
+            Не `null`: поле всегда строка, различать случаи следует по
+            `available` и `enabled_count`.
+        pinned:
+          type: boolean
+          description: |
+            К b4 не относится; ключ в объекте `b4` не появляется. См.
+            `NikkiStatus.pinned`.
         enabled_count:
           type: integer
           minimum: 0
+          description: |
+            Сколько сетов включено. **Присутствует всегда, включая `0`** — это
+            факт «b4 отвечает, включённых сетов нет», а не отсутствие данных.
+            При `available: false` тоже `0`, и различать эти два случая нужно
+            по `available`.
 
     SubscriptionStatus:
       type: object
@@ -900,6 +961,11 @@ components:
           description: |
             Имя секции UCI. `null` — секция безымянная: показываем и учитываем
             при классификации, но не трогаем (ADR-0005).
+
+            Пустая строка на месте `null` не приходит никогда: в JS она
+            ложно-истинна и склеивается в валидный путь
+            `/api/wifi/networks/`, то есть «сеть без адреса» дошла бы до
+            `DELETE`. `null` падает раньше.
           examples: ["wifinet2"]
         ssid: { type: string }
         encryption:
@@ -910,6 +976,10 @@ components:
           description: |
             У секции есть непустой `key`. **Самого `key` в ответе нет никогда**
             — не `null` и не маска, ключа нет в JSON (ADR-0012).
+
+            Отвечает ровно на этот вопрос и ни на какой другой: у открытой сети
+            (`encryption: "none"`) — всегда `false`, потому что пароля в секции
+            нет. «Можно ли подключиться без пароля» — вопрос про `encryption`.
         network:
           type: string
           description: L3-интерфейс, к которому привязана секция.
@@ -928,12 +998,22 @@ components:
 
     NetworkWrite:
       type: object
-      required: [ssid, encryption]
+      description: |
+        Набор полей закрыт. `additionalProperties: false` здесь не декорация:
+        демон разбирает тело строгим декодером и отвечает
+        `400 unsupported_field` на любое поле вне этого списка.
+
+        Обязательное зависит от операции: создание (без `id`) требует `ssid` и
+        `encryption`, правка требует `id`. Отсюда `anyOf` вместо общего
+        `required`.
       additionalProperties: false
+      anyOf:
+        - required: [id]
+        - required: [ssid, encryption]
       properties:
         id:
           type: string
-          description: Имя секции. Отсутствует — создание новой.
+          description: Имя секции. Отсутствует или пусто — создание новой.
         ssid:
           type: string
           minLength: 1
@@ -947,10 +1027,13 @@ components:
             **Отсутствие поля и пустая строка — разные вещи.** Нет поля —
             пароль не меняется. `""` — записывается пустой (при
             `encryption: "none"`). В Go — `*string`.
-        network:
-          type: string
-          default: wwan
-          description: L3-интерфейс. По умолчанию `wwan` (`raw/11-uci-show-network.txt`).
+
+      # Поля `network` здесь нет и не будет до фазы 2. Секция всегда создаётся
+      # на `wwan` (raw/11-uci-show-network.txt). Выбор L3-сети станционной
+      # секции — это и есть смена upstream, отложенная ADR-0016 до ответов на
+      # RQ-03 и RQ-04. Пока поле стояло в схеме, а демон его выбрасывал,
+      # контракт обещал функцию, которой нет; теперь оно отвергается
+      # с `400 unsupported_field`.
 
     ScanResponse:
       type: object
@@ -1035,14 +1118,19 @@ components:
       properties:
         available: { type: boolean }
         version:
-          type: [string, "null"]
+          type: string
+          description: "`\"\"` — проба версии не прошла, хотя список сетов получен."
           examples: ["1.74.1"]
         selected:
-          type: [string, "null"]
-          description: Имя, если включён ровно один. Иначе `null`.
+          type: string
+          description: |
+            Имя, если включён ровно один. Иначе `""` — не `null`: ключ
+            присутствует всегда, отличать «ни одного» от «несколько» следует
+            по `enabled_count`.
         enabled_count:
           type: integer
           minimum: 0
+          description: Присутствует всегда, включая `0`.
         sets:
           type: array
           description: Порядок из b4 = приоритет обработки. Не сортировать.
@@ -1083,7 +1171,12 @@ components:
               ts: { type: string, format: date-time }
               nodes: { type: integer }
               status: { type: string, enum: [ok, fail] }
-              err: { type: [string, "null"] }
+              err:
+                type: string
+                description: |
+                  Текст ошибки; `""` при `status: "ok"`. Ключ присутствует
+                  всегда: пропущенный читатель не отличил бы от «писатель про
+                  него не знал». Не `null` — поле всегда строка.
 
   examples:
     StatusSingle:

@@ -51,13 +51,18 @@ type Selection struct {
 // Поля с паролем здесь нет намеренно: наружу идёт только факт его наличия
 // (ADR-0012). Структура без поля не может его случайно сериализовать.
 type Network struct {
-	ID         string `json:"id"` // имя секции; пусто у анонимной
-	SSID       string `json:"ssid"`
-	Encryption string `json:"encryption"`
-	HasKey     bool   `json:"has_key"`
-	Network    string `json:"network"`
-	Enabled    bool   `json:"enabled"`
-	Editable   bool   `json:"editable"`
+	// ID — имя секции UCI. Указатель, потому что у анонимной секции
+	// идентификатора НЕТ, и `null` — единственное честное значение
+	// (ADR-0005). Пустая строка на его месте лгала бы дважды: в JS она
+	// ложно-истинна, а `encodeURIComponent("")` склеивается в валидный
+	// путь — то есть «нет идентификатора» доехало бы до DELETE как адрес.
+	ID         *string `json:"id"`
+	SSID       string  `json:"ssid"`
+	Encryption string  `json:"encryption"`
+	HasKey     bool    `json:"has_key"`
+	Network    string  `json:"network"`
+	Enabled    bool    `json:"enabled"`
+	Editable   bool    `json:"editable"`
 }
 
 // ours сообщает, наша ли это секция: станция на нужном радио.
@@ -137,22 +142,28 @@ func Networks(c *uci.Config, sel Selection, radio string) []Network {
 		enabled := s.DisabledValid() && !s.Disabled()
 		named := !s.Anonymous
 
-		id := s.Name
-		if s.Anonymous {
+		var id *string
+		if named {
 			// Индекс наружу не отдаём: он съедет при удалении соседней
 			// секции, и вкладка, открытая пять минут назад, отредактирует
-			// чужую сеть (ADR-0005).
-			id = ""
+			// чужую сеть (ADR-0005). Значит у анонимной секции адреса нет —
+			// и поле остаётся null.
+			name := s.Name
+			id = &name
 		}
 
 		out = append(out, Network{
 			ID:         id,
 			SSID:       s.Options["ssid"],
 			Encryption: s.Options["encryption"],
-			HasKey:     s.Options["key"] != "" || s.Options["encryption"] == "none",
-			Network:    s.Options["network"],
-			Enabled:    enabled,
-			Editable:   named && !enabled && sel.State != Ambiguous,
+			// Ровно то, что написано: в секции сохранён непустой key.
+			// «Открытой сети пароль не нужен» — ответ на другой вопрос
+			// («можно ли подключиться»), и склеивать их нельзя: у сети с
+			// encryption=none пароля нет, а не «есть» (ADR-0012).
+			HasKey:   s.Options["key"] != "",
+			Network:  s.Options["network"],
+			Enabled:  enabled,
+			Editable: named && !enabled && sel.State != Ambiguous,
 		})
 	}
 	return out

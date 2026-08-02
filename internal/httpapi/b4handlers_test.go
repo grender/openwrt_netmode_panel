@@ -43,6 +43,41 @@ func TestB4SetsEndpoint(t *testing.T) {
 	}
 }
 
+// Ключи ответа /api/b4/sets присутствуют всегда, даже когда сообщать нечего.
+//
+// Разбор в типизированную структуру этого не ловит: пропущенный ключ и
+// нулевое значение дают одинаковый результат. Поэтому проверка идёт по карте:
+// `selected: ""` при нуле включённых — это ответ, а не молчание.
+func TestB4SetsResponseKeysAlwaysPresent(t *testing.T) {
+	s, _ := newServer(t)
+	fake := newFakeB4Client()
+	for i := range fake.sets {
+		fake.sets[i].Enabled = false
+	}
+	s.SetB4Client(fake)
+
+	rec := do(t, s, "GET", "/api/b4/sets", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("код %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("разбор: %v", err)
+	}
+	for _, k := range []string{"available", "version", "selected", "enabled_count", "sets"} {
+		if _, ok := got[k]; !ok {
+			t.Errorf("нет ключа %q: %v", k, got)
+		}
+	}
+	if got["selected"] != "" {
+		t.Errorf("selected = %#v, ожидалась пустая строка при нуле включённых", got["selected"])
+	}
+	if got["enabled_count"] != float64(0) {
+		t.Errorf("enabled_count = %#v, ожидался 0", got["enabled_count"])
+	}
+}
+
 // Эксклюзивность — наша семантика, не b4: там у каждого сета свой флаг,
 // и включённых может быть несколько.
 func TestB4SetSwitchIsExclusive(t *testing.T) {

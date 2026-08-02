@@ -1,6 +1,7 @@
 package wireless
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,6 +25,17 @@ func parse(t *testing.T, name string) *uci.Config {
 		t.Fatalf("разбор %s: %v", name, err)
 	}
 	return c
+}
+
+// idOf разворачивает Network.ID для сравнений. nil превращается в «‹null›»,
+// а не в пустую строку: иначе тест не заметил бы возврата к `""` вместо
+// `null` — то самое расхождение с ADR-0005, ради которого поле стало
+// указателем.
+func idOf(n Network) string {
+	if n.ID == nil {
+		return "‹null›"
+	}
+	return *n.ID
 }
 
 // Снимок живого роутера — канонический рабочий случай.
@@ -164,15 +176,15 @@ func TestNetworksFromFixture(t *testing.T) {
 	}
 
 	active, saved := nets[0], nets[1]
-	if active.ID != "wifinet0" || active.SSID != "John24" || !active.Enabled {
-		t.Errorf("первая сеть: %+v", active)
+	if idOf(active) != "wifinet0" || active.SSID != "John24" || !active.Enabled {
+		t.Errorf("первая сеть: id=%s %+v", idOf(active), active)
 	}
 	// Активную секцию в фазе 1 править нельзя (ADR-0009).
 	if active.Editable {
 		t.Error("активная сеть не должна быть редактируемой в фазе 1")
 	}
-	if saved.ID != "wifinet2" || saved.SSID != "ATOM" || saved.Enabled {
-		t.Errorf("вторая сеть: %+v", saved)
+	if idOf(saved) != "wifinet2" || saved.SSID != "ATOM" || saved.Enabled {
+		t.Errorf("вторая сеть: id=%s %+v", idOf(saved), saved)
 	}
 	if !saved.Editable {
 		t.Error("выключенная сеть должна быть редактируемой")
@@ -183,6 +195,52 @@ func TestNetworksFromFixture(t *testing.T) {
 	}
 }
 
+// has_key отвечает ровно на один вопрос: «в секции сохранён пароль».
+//
+// Вопрос «можно ли подключиться без пароля» — другой, и ответ на него у
+// открытой сети противоположный. Пока формула их складывала, открытая сеть
+// сообщала о сохранённом пароле, которого в секции нет вовсе.
+func TestOpenNetworkHasNoKey(t *testing.T) {
+	body := "wireless.radio0=wifi-device\n" +
+		"wireless.open=wifi-iface\nwireless.open.device='radio0'\n" +
+		"wireless.open.mode='sta'\nwireless.open.ssid='FreeWiFi'\n" +
+		"wireless.open.encryption='none'\nwireless.open.disabled='1'\n"
+
+	c, err := uci.ParseShow("wireless", []byte(body))
+	if err != nil {
+		t.Fatalf("разбор: %v", err)
+	}
+	nets := Networks(c, Classify(c, "radio0"), "radio0")
+	if len(nets) != 1 {
+		t.Fatalf("сетей %d, ожидалась 1", len(nets))
+	}
+	if nets[0].HasKey {
+		t.Error("у открытой сети has_key=true — пароля в секции нет")
+	}
+}
+
+// Пустой key — это тоже «пароля нет»: секция с encryption=psk2 и пустым
+// паролем не поднимется, и показывать её как настроенную нельзя.
+func TestEmptyKeyIsNoKey(t *testing.T) {
+	body := "wireless.radio0=wifi-device\n" +
+		"wireless.blank=wifi-iface\nwireless.blank.device='radio0'\n" +
+		"wireless.blank.mode='sta'\nwireless.blank.ssid='X'\n" +
+		"wireless.blank.encryption='psk2'\nwireless.blank.key=''\n" +
+		"wireless.blank.disabled='1'\n"
+
+	c, err := uci.ParseShow("wireless", []byte(body))
+	if err != nil {
+		t.Fatalf("разбор: %v", err)
+	}
+	nets := Networks(c, Classify(c, "radio0"), "radio0")
+	if len(nets) != 1 {
+		t.Fatalf("сетей %d, ожидалась 1", len(nets))
+	}
+	if nets[0].HasKey {
+		t.Error("has_key=true при пустом key")
+	}
+}
+
 func TestNetworksNeverExposeKey(t *testing.T) {
 	// Регрессия на ADR-0012: структура не должна иметь поля с паролем вовсе,
 	// иначе он однажды уедет в JSON вместе с остальным.
@@ -190,7 +248,7 @@ func TestNetworksNeverExposeKey(t *testing.T) {
 	nets := Networks(c, Classify(c, "radio0"), "radio0")
 	for _, n := range nets {
 		if containsSecret(n) {
-			t.Errorf("в сети %s просочился секрет", n.ID)
+			t.Errorf("в сети %s просочился секрет", idOf(n))
 		}
 	}
 }
@@ -205,7 +263,7 @@ func TestNetworksAmbiguousMakesNothingEditable(t *testing.T) {
 	sel := Classify(c, "radio0")
 	for _, n := range Networks(c, sel, "radio0") {
 		if n.Editable {
-			t.Errorf("при ambiguous секция %s не может быть редактируемой", n.ID)
+			t.Errorf("при ambiguous секция %s не может быть редактируемой", idOf(n))
 		}
 	}
 }
@@ -223,11 +281,51 @@ func TestAnonymousNetworkIsNotEditable(t *testing.T) {
 	if len(nets) != 1 {
 		t.Fatalf("сетей %d, ожидалась 1", len(nets))
 	}
-	if nets[0].ID != "" {
-		t.Errorf("id анонимной секции = %q, ожидался пустой", nets[0].ID)
+	if nets[0].ID != nil {
+		t.Errorf("id анонимной секции = %q, ожидался nil", *nets[0].ID)
 	}
 	if nets[0].Editable {
 		t.Error("анонимная секция не редактируется")
+	}
+}
+
+// Проверка на уровне JSON, а не структуры: расхождение с ADR-0005 наступает
+// именно в сериализованном виде. Пустая строка вместо null в JS ложно-истинна
+// и склеивается в валидный путь `/api/wifi/networks/` — то есть «сети без
+// адреса» хватило бы, чтобы дойти до DELETE.
+func TestAnonymousSectionSerializesIDAsNull(t *testing.T) {
+	body := "wireless.radio0=wifi-device\n" +
+		"wireless.@wifi-iface[0]=wifi-iface\n" +
+		"wireless.@wifi-iface[0].device='radio0'\nwireless.@wifi-iface[0].mode='sta'\n" +
+		"wireless.@wifi-iface[0].disabled='1'\n" +
+		"wireless.named=wifi-iface\nwireless.named.device='radio0'\n" +
+		"wireless.named.mode='sta'\nwireless.named.disabled='1'\n"
+
+	c, _ := uci.ParseShow("wireless", []byte(body))
+	nets := Networks(c, Classify(c, "radio0"), "radio0")
+	if len(nets) != 2 {
+		t.Fatalf("сетей %d, ожидалось 2", len(nets))
+	}
+
+	var got []map[string]any
+	b, err := json.Marshal(nets)
+	if err != nil {
+		t.Fatalf("сериализация: %v", err)
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("разбор: %v", err)
+	}
+
+	// Ключ обязан присутствовать — со значением null, а не исчезать.
+	v, ok := got[0]["id"]
+	if !ok {
+		t.Fatalf("в JSON нет ключа id: %s", b)
+	}
+	if v != nil {
+		t.Errorf("id анонимной секции = %#v, ожидался null: %s", v, b)
+	}
+	if got[1]["id"] != "named" {
+		t.Errorf("id именованной секции = %#v, ожидалось \"named\"", got[1]["id"])
 	}
 }
 

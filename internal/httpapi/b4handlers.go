@@ -34,11 +34,17 @@ func (s *Server) handleB4Sets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Версия не обязательна: список сетов уже получен, и терять его из-за
+	// неудачной пробы версии было бы обменом важного на украшение.
 	ver := ""
 	if v, err := s.b4.Version(r.Context()); err == nil {
 		ver = v.Version
 	}
 
+	// Все ключи пишутся всегда, включая пустые. `selected: ""` и
+	// `enabled_count: 0` — это ответ «включённых сетов нет», а не молчание;
+	// пропусти мы их, клиент не отличил бы одно от другого (openapi.yaml,
+	// SetsResponse: все поля required).
 	writeJSON(w, http.StatusOK, map[string]any{
 		"available":     true,
 		"version":       ver,

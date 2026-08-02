@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -407,6 +408,73 @@ func TestStatusSerializesWithoutSecrets(t *testing.T) {
 		if contains(b, bad) {
 			t.Errorf("в статусе просочилось %q", bad)
 		}
+	}
+}
+
+// Ноль включённых сетов — это факт, а не отсутствие данных.
+//
+// Пока поля стояли под omitempty, «b4 отвечает, включённых сетов нет» и
+// «демон вообще не прислал состояние b4» выглядели в JSON одинаково: ключа
+// нет ни там, ни там. Потребитель обязан их различать, поэтому проверка идёт
+// по сериализованному виду, а не по структуре — расхождение возникает именно
+// при маршалинге.
+func TestServiceFieldsAlwaysPresent(t *testing.T) {
+	cases := []struct {
+		name    string
+		prepare func(*StatusReader)
+		want    map[string]any
+	}{
+		{
+			name:    "b4 отвечает, включённых сетов нет",
+			prepare: func(r *StatusReader) { r.b4.(*fakeB4Client).sets[1].Enabled = false },
+			want: map[string]any{
+				"available":     true,
+				"version":       "1.74.1",
+				"set":           "",
+				"enabled_count": float64(0),
+			},
+		},
+		{
+			name:    "b4 недоступен",
+			prepare: func(r *StatusReader) { r.b4.(*fakeB4Client).err = errors.New("connection refused") },
+			want: map[string]any{
+				"available":     false,
+				"version":       nil,
+				"set":           "",
+				"enabled_count": float64(0),
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _ := newReader(t)
+			tc.prepare(r)
+
+			s, _ := r.Read(context.Background())
+			b, err := MarshalStatus(s)
+			if err != nil {
+				t.Fatalf("MarshalStatus: %v", err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(b, &got); err != nil {
+				t.Fatalf("разбор: %v", err)
+			}
+			b4obj, ok := got["b4"].(map[string]any)
+			if !ok {
+				t.Fatalf("в статусе нет объекта b4: %s", b)
+			}
+			for k, want := range tc.want {
+				v, present := b4obj[k]
+				if !present {
+					t.Errorf("нет ключа %q — «нет значения» неотличимо от «не прислали»: %v", k, b4obj)
+					continue
+				}
+				if v != want {
+					t.Errorf("b4.%s = %#v, ожидалось %#v", k, v, want)
+				}
+			}
+		})
 	}
 }
 

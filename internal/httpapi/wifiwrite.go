@@ -17,6 +17,11 @@ import (
 
 // NetworkWrite — тело POST /api/wifi/networks.
 //
+// Набор полей закрыт: всё, чего здесь нет, отвергается с 400, а не
+// проглатывается (см. decodeStrict). Молчаливое игнорирование поля — худший
+// из возможных ответов: клиент получает 200 и уверен, что его просьбу
+// выполнили.
+//
 // Key — указатель намеренно. Отсутствие поля означает «пароль не трогай»,
 // пустая строка — «запиши пустой». Слив их в одну строку, мы стирали бы
 // пароль при каждой правке имени сети.
@@ -46,8 +51,8 @@ func needsKey(enc string) bool { return enc != "none" }
 
 func (s *Server) handleWifiWrite(w http.ResponseWriter, r *http.Request) {
 	var in NetworkWrite
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeErr(w, http.StatusBadRequest, "bad_request", "Тело запроса не разбирается как JSON")
+	if errResp := decodeStrict(r, &in); errResp != nil {
+		errResp.send(w)
 		return
 	}
 
@@ -84,6 +89,66 @@ func (s *Server) handleWifiDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.commitAndRespond(w, ctx)
+}
+
+// ─────────── разбор тела ───────────
+
+// decodeStrict разбирает тело запроса и отвергает поля, которых нет в схеме.
+//
+// Мотив — конкретный: клиент, приславший `"network": "lan"`, получал 200 и
+// секцию на `wwan`. Просьбу не выполнили и об этом не сказали — худший
+// возможный ответ, потому что он неотличим от выполненной. Реализовать же
+// эту просьбу нельзя: выбор L3-сети станционной секции и есть смена
+// upstream, отложенная до фазы 2 (ADR-0016).
+//
+// Проверка сделана общей, а не про одно поле: любое незнакомое поле означает,
+// что клиент и демон расходятся в понимании контракта, и молчать об этом
+// расхождении нельзя ни в одном из случаев.
+func decodeStrict(r *http.Request, dst any) *httpErr {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+
+	if err := dec.Decode(dst); err != nil {
+		if field, ok := unknownField(err); ok {
+			return &httpErr{http.StatusBadRequest, "unsupported_field", unsupportedFieldMsg(field)}
+		}
+		return &httpErr{http.StatusBadRequest, "bad_request", "Тело запроса не разбирается как JSON"}
+	}
+	// Второе значение в теле — тот же класс ошибки: часть запроса была бы
+	// прочитана и отброшена молча.
+	if dec.More() {
+		return &httpErr{http.StatusBadRequest, "bad_request",
+			"В теле запроса больше одного JSON-значения"}
+	}
+	return nil
+}
+
+// unknownFieldPrefix — форма ошибки encoding/json при DisallowUnknownFields.
+//
+// Отдельного типа ошибки стандартная библиотека для этого случая не заводит,
+// поэтому имя поля достаётся только из текста. Сверку держит тест
+// TestUnknownFieldNameExtracted: если формулировка изменится в новой версии
+// Go, упадёт он, а не ответ клиенту в проде.
+const unknownFieldPrefix = `json: unknown field `
+
+func unknownField(err error) (string, bool) {
+	msg := err.Error()
+	if !strings.HasPrefix(msg, unknownFieldPrefix) {
+		return "", false
+	}
+	return strings.Trim(strings.TrimPrefix(msg, unknownFieldPrefix), `"`), true
+}
+
+// unsupportedFieldMsg объясняет отказ. Наружу идёт только ИМЯ поля: значения
+// в текст ошибки не попадают никогда (ADR-0012).
+func unsupportedFieldMsg(field string) string {
+	if field == "network" {
+		return "Поле \"network\" не принимается: выбор L3-сети станционной секции — " +
+			"это смена upstream, отложенная до фазы 2 (ADR-0016). " +
+			"Секция создаётся на " + upstreamIf + "."
+	}
+	return fmt.Sprintf("Поле %q не входит в тело запроса. Демон не принимает полей, "+
+		"которых не понимает: молча пропущенное поле выглядит как выполненная просьба.", field)
 }
 
 // ─────────── охрана записи ───────────

@@ -29,11 +29,15 @@ const DefaultPath = "/etc/nikki/updates.log"
 const MaxLines = 200
 
 // Entry — одна запись. Поля названы по SPEC §9 (ts, nodes, status, err).
+//
+// У err нет omitempty: строка журнала обязана выглядеть одинаково независимо
+// от исхода. Пропущенный ключ означал бы «версия писателя не знала про err»,
+// а не «ошибки не было», и читателю пришлось бы гадать, какое из двух.
 type Entry struct {
 	TS     time.Time `json:"ts"`
 	Nodes  int       `json:"nodes"`
 	Status string    `json:"status"` // ok | fail
-	Err    string    `json:"err,omitempty"`
+	Err    string    `json:"err"`
 }
 
 const (
