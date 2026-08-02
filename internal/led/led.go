@@ -15,6 +15,7 @@
 package led
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -107,11 +108,14 @@ func New(root string, logf func(string, ...any)) *Controller {
 // Set выставляет индикацию.
 //
 // Ошибка возвращается для журнала, но вызывающий обязан её проглотить.
+// Логирование и признак деградации — забота контроллера: Set зовётся при
+// КАЖДОМ переключении режима, и если бы вызывающий писал в журнал сам, на
+// железе без нужных светодиодов лог заполнился бы одинаковыми строками.
 func (c *Controller) Set(s State) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cancelRevertLocked()
-	return c.applyLocked(s)
+	return c.applyNotedLocked(s, "установка индикации")
 }
 
 // Flash показывает ошибку три секунды, затем возвращает индикацию `then`.
@@ -131,9 +135,7 @@ func (c *Controller) Flash(then State) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		c.revert = nil
-		if err := c.applyLocked(then); err != nil {
-			c.noteLocked("возврат индикации: %v", err)
-		}
+		_ = c.applyNotedLocked(then, "возврат индикации")
 	})
 }
 
@@ -154,6 +156,24 @@ func (c *Controller) cancelRevertLocked() {
 	}
 }
 
+// ErrUnknownState — состояние, которого нет в applyLocked.
+//
+// Отделено от ошибок записи намеренно: это баг вызывающего кода, а не
+// отсутствие железа. Уйти из-за него в деградацию значило бы навсегда
+// замолчать про настоящие проблемы sysfs — noteLocked идемпотентен и
+// второй раз уже ничего не скажет.
+var ErrUnknownState = errors.New("led: неизвестное состояние")
+
+// applyNotedLocked применяет состояние и, если оно не далось из-за железа,
+// один раз сообщает об этом и уходит в деградацию.
+func (c *Controller) applyNotedLocked(s State, what string) error {
+	err := c.applyLocked(s)
+	if err != nil && !errors.Is(err, ErrUnknownState) {
+		c.noteLocked("%s %s: %v", what, s, err)
+	}
+	return err
+}
+
 func (c *Controller) applyLocked(s State) error {
 	switch s {
 	case Nikki:
@@ -169,7 +189,7 @@ func (c *Controller) applyLocked(s State) error {
 	case ApplyingOff:
 		return c.both(c.blink(Blue, applyOnMS, applyOffMS), c.dark(White))
 	default:
-		return fmt.Errorf("led: неизвестное состояние %q", s)
+		return fmt.Errorf("%w %q", ErrUnknownState, s)
 	}
 }
 

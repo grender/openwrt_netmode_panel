@@ -1,6 +1,7 @@
 package led
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -194,11 +195,20 @@ func TestMissingSysfsDegradesQuietly(t *testing.T) {
 	})
 	defer c.Close()
 
-	// Первая попытка возвращает ошибку — вызывающий её логирует и глотает.
+	// Set — основной путь: он зовётся при каждом переключении режима.
+	// Ошибку он возвращает вызывающему, но деградацию помечает сам, иначе
+	// /api/status уверял бы, что с индикацией всё в порядке.
 	if err := c.Set(Nikki); err == nil {
 		t.Error("ожидалась ошибка записи")
 	}
-	// Но Flash не паникует и переводит в деградацию.
+	if !c.Degraded() {
+		t.Error("после неудачного Set контроллер должен уйти в деградацию")
+	}
+	if len(logged) != 1 {
+		t.Errorf("Set должен был залогировать ровно раз, а записей %d: %v", len(logged), logged)
+	}
+
+	// Flash не паникует и тоже не добавляет строк — деградация уже взведена.
 	c.Flash(Nikki)
 	if !c.Degraded() {
 		t.Error("после неудачи контроллер должен уйти в деградацию")
@@ -208,8 +218,39 @@ func TestMissingSysfsDegradesQuietly(t *testing.T) {
 	n := len(logged)
 	c.Flash(Nikki)
 	c.Flash(B4)
+	_ = c.Set(B4)
+	_ = c.Set(Off)
 	if len(logged) != n {
 		t.Errorf("повторные неудачи снова залогированы: %v", logged)
+	}
+}
+
+// Отсутствие sysfs — отказ железа, а неизвестное состояние — баг вызывающего.
+// Второе не должно уводить контроллер в деградацию: noteLocked идемпотентен,
+// и после такой пометки он навсегда замолчал бы про настоящий отказ записи.
+func TestUnknownStateDoesNotDegrade(t *testing.T) {
+	var logged []string
+	c := New(fakeSysfs(t), func(f string, a ...any) {
+		logged = append(logged, f)
+	})
+	defer c.Close()
+
+	if err := c.Set(State("выдумка")); err == nil {
+		t.Fatal("неизвестное состояние принято молча")
+	}
+	if c.Degraded() {
+		t.Error("баг вызывающего не должен выключать индикацию целиком")
+	}
+	if len(logged) != 0 {
+		t.Errorf("неизвестное состояние не повод объявлять деградацию: %v", logged)
+	}
+
+	// Железо на месте — следующее корректное состояние обязано примениться.
+	if err := c.Set(Nikki); err != nil {
+		t.Fatalf("Set после неизвестного состояния: %v", err)
+	}
+	if got := read(t, c.root, Blue, "brightness"); got != "255" {
+		t.Errorf("синий brightness=%q — контроллер замолчал после чужого бага", got)
 	}
 }
 
@@ -258,7 +299,14 @@ func TestStateMapping(t *testing.T) {
 func TestUnknownStateIsError(t *testing.T) {
 	c := New(fakeSysfs(t), nil)
 	defer c.Close()
-	if err := c.Set(State("выдумка")); err == nil {
-		t.Error("неизвестное состояние принято молча")
+	err := c.Set(State("выдумка"))
+	if err == nil {
+		t.Fatal("неизвестное состояние принято молча")
+	}
+	if !errors.Is(err, ErrUnknownState) {
+		t.Errorf("ошибка %v не опознаётся как ErrUnknownState", err)
+	}
+	if c.Degraded() {
+		t.Error("неизвестное состояние не должно помечать контроллер деградировавшим")
 	}
 }
