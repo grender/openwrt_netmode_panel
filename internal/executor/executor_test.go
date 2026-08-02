@@ -602,6 +602,234 @@ func TestFakeApplyModeExitCodes(t *testing.T) {
 	}
 }
 
+// stubBin кладёт во временный каталог исполняемый sh-скрипт с заданным телом
+// и возвращает путь к нему.
+//
+// Настоящий процесс, а не подставной commandRunner: лимиты применяются
+// только на реальном пути, и проверять их через подмену runner'а значило бы
+// проверять пустое место.
+func stubBin(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "stub")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Болтливая команда не должна уносить с собой демон. На роутере нет свопа:
+// неограниченный буфер стоит не деградации, а OOM-kill всего процесса —
+// и владелец теряет управление роутером без записи о причине.
+func TestRunRefusesOutputOverLimit(t *testing.T) {
+	// ~2 МиБ за 2048 итераций встроенного printf: два лимита подряд,
+	// без fork'ов на каждую строку.
+	e := New()
+	e.subscribeBin = stubBin(t, `
+line=$(awk 'BEGIN{s="";while(length(s)<1023)s=s "x";print s}')
+i=0
+while [ $i -lt 2048 ]; do printf '%s\n' "$line"; i=$((i+1)); done
+`)
+
+	start := time.Now()
+	out, err := e.UpdateSubscription(context.Background())
+	if err == nil {
+		t.Fatal("вывод сверх лимита принят молча — это и есть OOM в проде")
+	}
+	if !errors.Is(err, ErrOutputTooLarge) {
+		t.Errorf("ожидался ErrOutputTooLarge, получено %v", err)
+	}
+	// Усечённые байты наверх не уходят: разбор огрызка JSON дал бы
+	// загадочную ошибку парсера, и причину искали бы не там.
+	if len(out) != 0 {
+		t.Errorf("отдано %d Б усечённого вывода, ожидался пустой результат", len(out))
+	}
+	// Усечение обязано быть видимым в журнале, а не только в типе ошибки.
+	if !strings.Contains(err.Error(), "неполон") {
+		t.Errorf("в тексте ошибки не сказано, что вывод неполон: %v", err)
+	}
+	// Процесс снимается на лимите, а не дочитывается до конца таймаута
+	// (у подписки он 120 с).
+	if d := time.Since(start); d > 30*time.Second {
+		t.Errorf("вызов длился %v — процесс не сняли на лимите", d)
+	}
+}
+
+// Ловушка перехода со cmd.Output(): тот сам заводил буфер под stderr и клал
+// его в ExitError.Stderr, откуда текст ошибки и брался. Со своими буферами
+// это поле пустое навсегда, и диагностика молча опустела бы — при том, что
+// errors.As по коду возврата продолжал бы проходить.
+func TestRunStderrReachesErrorText(t *testing.T) {
+	const detail = "ОШИБКА: нет flock — цепочка «скрипт → stderr → текст ошибки»"
+
+	// Путь uci: stderr нужен ещё и для того, чтобы отличить «записи нет»
+	// от настоящего сбоя.
+	e := New()
+	e.uciBin = stubBin(t, "printf '%s\\n' '"+detail+"' >&2\nexit 1\n")
+	_, err := e.UCIChanges(context.Background(), "wireless")
+	if err == nil {
+		t.Fatal("ненулевой код проглочен")
+	}
+	if !strings.Contains(err.Error(), detail) {
+		t.Errorf("stderr не дошёл до текста ошибки: %v", err)
+	}
+
+	// Тот же путь для netmode-apply: die_code пишет причину в stderr
+	// (files/usr/local/bin/netmode-apply, err()), и это единственное, что
+	// владелец увидит о причине отказа.
+	e2 := New()
+	e2.applyBin = stubBin(t, "printf '%s\\n' '"+detail+"' >&2\nexit 4\n")
+	err = e2.ApplyMode(context.Background(), "nikki")
+	if !errors.Is(err, ErrApplyFirewall) {
+		t.Fatalf("код 4 не опознан: %v", err)
+	}
+	if !strings.Contains(err.Error(), detail) {
+		t.Errorf("stderr скрипта не дошёл до текста ошибки: %v", err)
+	}
+
+	// stdout в текст ошибки не подмешивается: обычные шаги скрипт пишет
+	// туда же, и они бы забили причину.
+	e3 := New()
+	e3.applyBin = stubBin(t, "printf 'обычный шаг\\n'\nprintf '%s\\n' '"+detail+"' >&2\nexit 5\n")
+	err = e3.ApplyMode(context.Background(), "b4")
+	if strings.Contains(err.Error(), "обычный шаг") {
+		t.Errorf("stdout попал в текст ошибки: %v", err)
+	}
+}
+
+// Усечённый stderr тоже обязан быть помечен: обрыв на середине фразы иначе
+// читается как полное сообщение и уводит не туда.
+func TestRunMarksTruncatedStderr(t *testing.T) {
+	e := New()
+	e.applyBin = stubBin(t, `
+line=$(awk 'BEGIN{s="";while(length(s)<1023)s=s "x";print s}')
+i=0
+while [ $i -lt 128 ]; do printf '%s\n' "$line" >&2; i=$((i+1)); done
+exit 6
+`)
+	err := e.ApplyMode(context.Background(), "nikki")
+	if !errors.Is(err, ErrApplyVerify) {
+		t.Fatalf("код 6 не опознан: %v", err)
+	}
+	if !strings.Contains(err.Error(), "усечён") {
+		t.Errorf("усечение stderr не помечено: длина текста %d", len(err.Error()))
+	}
+	// Но именно помечен, а не превращён в отказ по лимиту: код возврата
+	// тут настоящий и ценнее.
+	if errors.Is(err, ErrOutputTooLarge) {
+		t.Error("болтливость в stderr выдана за переполнение stdout")
+	}
+}
+
+// Обычный короткий вывод правкой не задет — включая завершающий перевод
+// строки, который UCIGet срезает сам.
+func TestRunShortOutputUnchanged(t *testing.T) {
+	e := New()
+	e.uciBin = stubBin(t, "printf '192.168.1.1\\n'\n")
+
+	out, err := e.UCIShow(context.Background(), "network")
+	if err != nil {
+		t.Fatalf("UCIShow: %v", err)
+	}
+	if string(out) != "192.168.1.1\n" {
+		t.Errorf("вывод = %q, ожидался неизменным", out)
+	}
+
+	got, err := e.UCIGet(context.Background(), "network", "lan", "ipaddr")
+	if err != nil {
+		t.Fatalf("UCIGet: %v", err)
+	}
+	if got != "192.168.1.1" {
+		t.Errorf("значение = %q, ожидалось 192.168.1.1", got)
+	}
+
+	// Пустой вывод (uci commit, uci set) остаётся пустым, а не становится
+	// ошибкой.
+	e.uciBin = stubBin(t, "exit 0\n")
+	if err := e.UCICommit(context.Background(), "wireless"); err != nil {
+		t.Errorf("успешный commit вернул ошибку: %v", err)
+	}
+}
+
+// Лимит не должен сам стать тратой памяти: буфер растёт по мере надобности,
+// а не аллоцируется на мегабайт под каждый `uci get`.
+func TestLimitedBufferGrowsLazily(t *testing.T) {
+	b := &limitedBuffer{limit: MaxStdout}
+	if _, err := b.Write([]byte("nikki\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if c := cap(b.buf.Bytes()); c > 4096 {
+		t.Errorf("под 6 байт занято %d Б — буфер аллоцируется на лимит", c)
+	}
+	if b.truncated {
+		t.Error("короткая запись помечена как усечённая")
+	}
+}
+
+func TestLimitedBufferKeepsPrefixAndFlags(t *testing.T) {
+	calls := 0
+	b := &limitedBuffer{limit: 10, onLimit: func() { calls++ }}
+
+	// Запись через границу: удерживается ровно limit байт.
+	n, err := b.Write([]byte("абвгде"))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if n != len("абвгде") {
+		t.Fatalf("Write вернул %d из %d — короткая запись убьёт процесс по SIGPIPE",
+			n, len("абвгде"))
+	}
+	if b.buf.Len() != 10 {
+		t.Errorf("удержано %d Б, ожидалось 10", b.buf.Len())
+	}
+	if !b.truncated {
+		t.Fatal("переполнение не отмечено")
+	}
+
+	// Запись в уже переполненный буфер: принимается целиком и
+	// отбрасывается, процесс снимается один раз, а не на каждой записи.
+	if n, err = b.Write([]byte("ещё")); err != nil || n != len("ещё") {
+		t.Errorf("Write после переполнения = (%d, %v), ожидалось (%d, nil)", n, err, len("ещё"))
+	}
+	if b.buf.Len() != 10 {
+		t.Errorf("буфер вырос до %d Б после переполнения", b.buf.Len())
+	}
+	if calls != 1 {
+		t.Errorf("onLimit вызван %d раз, ожидался ровно один", calls)
+	}
+}
+
+// Лимит stdout обязан с запасом покрывать самый объёмный вывод, который
+// роутер отдаёт легитимно, — иначе защита от OOM станет отказом на ровном
+// месте. Проверяется на снятых фикстурах, а не на догадке.
+func TestLimitCoversRealRouterOutput(t *testing.T) {
+	dir := filepath.Join("..", "..", "docs", "recon", "raw")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("не читается каталог фикстур: %v", err)
+	}
+	largest, name := 0, ""
+	for _, en := range entries {
+		info, err := en.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if int(info.Size()) > largest {
+			largest, name = int(info.Size()), en.Name()
+		}
+	}
+	if largest == 0 {
+		t.Fatal("фикстур не найдено — тест ничего не проверяет")
+	}
+	// Десятикратный запас минимум: самый большой снимок — скан эфира,
+	// а число видимых сетей меняется от места к месту.
+	if MaxStdout < largest*10 {
+		t.Errorf("лимит %d Б против %d Б (%s) — запаса нет", MaxStdout, largest, name)
+	}
+	if MaxStderr <= 0 || MaxStderr > MaxStdout {
+		t.Errorf("лимит stderr %d Б бессмыслен", MaxStderr)
+	}
+}
+
 func TestExecUCINotFoundMapping(t *testing.T) {
 	// «Записи нет» обязано отличаться от сбоя: на этом различии стоит
 	// правило «нет опции disabled → сеть включена».

@@ -15,6 +15,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -31,6 +32,21 @@ import (
 // означает «сеть включена» (ADR-0004), а не сбой чтения. Слить их в одну
 // ошибку — значит однажды принять живую сеть за поломку.
 var ErrNotFound = errors.New("uci: записи нет")
+
+// ErrOutputTooLarge — внешняя команда вылила больше отведённого ей лимита.
+//
+// Роутер имеет порядка 512 МБ ОЗУ и не имеет свопа: когда память кончается,
+// OOM-killer убивает демон целиком, и владелец теряет управление роутером,
+// причём без единой записи о причине. Таймауты от этого не спасают —
+// зациклившийся happ2clash за отведённые ему 120 секунд успевает налить
+// в stdout столько, сколько успеет.
+//
+// Усечение обязано быть видимым, поэтому оно возвращается ошибкой, а не
+// молчаливо обрезанными байтами. Тихое усечение хуже отказа: разбор
+// обрезанного JSON даёт загадочную ошибку парсера, и владелец ищет проблему
+// в нашем разборе вместо болтливой команды. По той же причине усечённый
+// stdout вызывающему не отдаётся вовсе — разбирать нечего.
+var ErrOutputTooLarge = errors.New("вывод команды превысил лимит")
 
 // Исходы netmode-apply.
 //
@@ -115,6 +131,79 @@ const (
 	ApplyTimeout        = 60 * time.Second
 	SubscriptionTimeout = 120 * time.Second
 )
+
+// Лимиты на вывод внешних команд. Дедлайн ограничивает ВРЕМЯ, эти два
+// числа — ПАМЯТЬ; без них таймаут лишь задаёт, сколько секунд у команды есть
+// на то, чтобы съесть роутер (см. ErrOutputTooLarge).
+const (
+	// MaxStdout — 1 МиБ, столько же, сколько у буфера сканера в
+	// internal/logs (logs.go:143): один и тот же порядок «больше этого
+	// на роутере не бывает», и заводить второе число незачем.
+	//
+	// Запас против самого объёмного легитимного вывода — стократный.
+	// Снятые размеры: iwinfo scan на 14 видимых сетей — 8 989 байт
+	// (raw/23-ubus-iwinfo-scan.json, ~640 байт на сеть), ubus call
+	// network.wireless status — 1 435 байт (raw/21-…json), uci show
+	// wireless — 1 583 байта (raw/10-…txt). Даже в эфире, где видно
+	// полторы тысячи точек, скан в мегабайт укладывается.
+	MaxStdout = 1024 * 1024
+
+	// MaxStderr — 64 КиБ. Там живут только аварийные сообщения (err() в
+	// netmode-apply — одна строка), и это ровно тот объём, который
+	// удерживал cmd.Output() в поле ExitError.Stderr: буфер stderr у него
+	// был ограничен и раньше, дырой был именно stdout.
+	MaxStderr = 64 * 1024
+)
+
+// waitDelay — сколько ждать закрытия труб после снятия процесса.
+//
+// Без него Wait висит, пока трубу держит хоть кто-то: netmode-apply
+// запускает init-скрипты, и внук, унаследовавший stdout, пережил бы и
+// таймаут, и убитого родителя. Обработчик, ради которого выставлялся
+// дедлайн, висел бы вместе с ним.
+const waitDelay = 2 * time.Second
+
+// limitedBuffer накапливает не больше limit байт и запоминает факт
+// переполнения.
+//
+// Растёт по мере надобности, а не аллоцируется на лимит сразу: типичный
+// вывод uci — десятки байт, и мегабайт под каждый из них был бы ровно той
+// тратой памяти, от которой лимит защищает.
+//
+// Write никогда не возвращает ошибку и всегда отчитывается о полной записи.
+// Короткая запись означала бы io.ErrShortWrite в копирующей горутине
+// os/exec, та закрыла бы трубу, и процесс умер бы от SIGPIPE — с потерей
+// настоящего кода возврата, по которому различаются исходы netmode-apply.
+// Лишнее поэтому отбрасывается молча, а факт переполнения читается через
+// truncated — уже после Wait, который дожидается копирующих горутин.
+type limitedBuffer struct {
+	buf   bytes.Buffer
+	limit int
+	// onLimit снимает процесс, как только лимит достигнут: дочитывать
+	// мусор до конца таймаута незачем, а на роутере это ещё и до двух
+	// минут CPU, отнятых у всего остального.
+	onLimit   func()
+	truncated bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	room := b.limit - b.buf.Len()
+	switch {
+	case len(p) <= room:
+		b.buf.Write(p)
+	default:
+		if room > 0 {
+			b.buf.Write(p[:room])
+		}
+		if !b.truncated {
+			b.truncated = true
+			if b.onLimit != nil {
+				b.onLimit()
+			}
+		}
+	}
+	return len(p), nil
+}
 
 // Executor — контракт из docs/contracts/executor.md.
 type Executor interface {
@@ -222,19 +311,53 @@ func (e *Exec) run(ctx context.Context, timeout time.Duration, name string, args
 		return e.commandRunner(ctx, name, args...)
 	}
 
+	// Свои буферы вместо cmd.Output(): тот буферизует stdout неограниченно.
+	stdout := &limitedBuffer{limit: MaxStdout, onLimit: cancel}
+	stderr := &limitedBuffer{limit: MaxStderr}
+
 	cmd := exec.CommandContext(ctx, name, args...)
-	out, err := cmd.Output()
-	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			// stderr uci короткий и по делу; в нём не бывает значений опций,
-			// поэтому включать его в ошибку безопасно.
-			return nil, fmt.Errorf("%s %s: %w: %s",
-				filepath.Base(name), strings.Join(args, " "), err, strings.TrimSpace(string(ee.Stderr)))
-		}
-		return nil, fmt.Errorf("%s %s: %w", filepath.Base(name), strings.Join(args, " "), err)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.WaitDelay = waitDelay
+	err := cmd.Run()
+
+	// Читать truncated можно только здесь: Run дождался копирующих горутин,
+	// и запись флага произошла раньше этого чтения.
+	what := filepath.Base(name) + " " + strings.Join(args, " ")
+
+	// Переполнение stdout — отказ, а не предупреждение. Код возврата при
+	// нём уже не значит ничего (процесс сняли на полуслове), а отдать
+	// обрезанный вывод наверх значит подсунуть парсеру огрызок JSON.
+	if stdout.truncated {
+		return nil, fmt.Errorf("%s: %w: stdout превысил %d Б, процесс снят, вывод неполон и не разбирается",
+			strings.TrimSpace(what), ErrOutputTooLarge, MaxStdout)
 	}
-	return out, nil
+
+	if err != nil {
+		// cmd.Output() клал stderr в поле ExitError.Stderr, и текст ошибки
+		// строился по нему. Со своими буферами это поле пустое навсегда,
+		// поэтому причину берём из своего буфера — иначе диагностика
+		// netmode-apply (die_code пишет в stderr) молча опустеет, а тесты
+		// на errors.Is продолжали бы проходить.
+		//
+		// stderr uci и netmode-apply короткий и по делу; значений опций
+		// (паролей WiFi) в нём не бывает, поэтому включать его безопасно.
+		detail := strings.TrimSpace(stderr.buf.String())
+		if stderr.truncated {
+			// Обрыв на середине фразы обязан быть виден: иначе усечённое
+			// сообщение читается как полное и уводит не туда.
+			detail += fmt.Sprintf(" […stderr усечён на %d Б]", MaxStderr)
+		}
+		if detail != "" {
+			return nil, fmt.Errorf("%s: %w: %s", strings.TrimSpace(what), err, detail)
+		}
+		return nil, fmt.Errorf("%s: %w", strings.TrimSpace(what), err)
+	}
+
+	// Успех при переполненном stderr отказом не считается: stdout полон и
+	// пригоден, а выбрасывать годные данные из-за болтливости в другой
+	// поток — это отказ там, где отказывать не за что.
+	return stdout.buf.Bytes(), nil
 }
 
 func (e *Exec) UCIShow(ctx context.Context, pkg string) ([]byte, error) {
@@ -373,8 +496,8 @@ func (e *Exec) ApplyMode(ctx context.Context, mode string) error {
 //
 // run уже заворачивает *exec.ExitError через %w — код достаётся errors.As
 // без переделки run, и в тексте уже лежит stderr скрипта (die_code пишет
-// аварийные сообщения именно туда: cmd.Output() кладёт stdout в результат,
-// а в ошибку отдаёт только stderr).
+// аварийные сообщения именно туда, а run собирает stderr в собственный
+// ограниченный буфер и подставляет его в текст ошибки).
 //
 // Не ExitError — процесс не запустился вовсе (нет файла, права, таймаут
 // контекста). Кода возврата не существует, классифицировать нечего.
