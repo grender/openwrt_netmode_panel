@@ -154,9 +154,15 @@ func unsupportedFieldMsg(field string) string {
 // ─────────── охрана записи ───────────
 
 // writeGuard — состояние, проверенное перед записью.
+//
+// radios здесь не для удобства: разрешение делается один раз на запрос, и
+// все шаги записи обязаны говорить об ОДНОМ радио. Разреши его повторно в
+// target() — и правка могла бы уйти на другое радио, чем то, по которому
+// считалась однозначность выбора.
 type writeGuard struct {
-	cfg *uci.Config
-	sel wireless.Selection
+	cfg    *uci.Config
+	sel    wireless.Selection
+	radios wireless.Radios
 }
 
 // httpErr — отложенная ошибка: проверки собирают её, обработчик отправляет.
@@ -206,9 +212,18 @@ func (s *Server) openWrite(r *http.Request) (*writeGuard, *httpErr) {
 	if err != nil {
 		return nil, &httpErr{http.StatusInternalServerError, "parse_failed", err.Error()}
 	}
-	sel := wireless.Classify(cfg, stationRadio)
 
-	// 3. Отпечаток: клиент обязан доказать, что видел актуальное состояние.
+	// 3. Какое радио станционное. Раньше классификации: без ответа на этот
+	//    вопрос неизвестно даже, какие секции наши, и инвариант фазы 1
+	//    («трогаем только станционное радио», ADR-0009) проверять не по
+	//    чему. Отказ, а не догадка (ADR-0019).
+	radios := s.resolveRadios(ctx, nil, cfg)
+	if errResp := requireStationRadio(radios); errResp != nil {
+		return nil, errResp
+	}
+	sel := wireless.Classify(cfg, radios.Station)
+
+	// 4. Отпечаток: клиент обязан доказать, что видел актуальное состояние.
 	//
 	// Без него панель, открытая полчаса назад, перезаписала бы правки,
 	// сделанные в LuCI за это время, не заметив их.
@@ -222,7 +237,7 @@ func (s *Server) openWrite(r *http.Request) (*writeGuard, *httpErr) {
 			"Конфигурация изменилась с момента чтения. Обновите список и повторите.")
 	}
 
-	// 4. Неоднозначность запрещает любую запись — включая правку
+	// 5. Неоднозначность запрещает любую запись — включая правку
 	//    выключенных секций. Пока неизвестно, какую секцию поднимет netifd,
 	//    доказать безвредность правки нельзя (ADR-0010).
 	if sel.State == wireless.Ambiguous {
@@ -231,7 +246,7 @@ func (s *Server) openWrite(r *http.Request) (*writeGuard, *httpErr) {
 				"Демон не выбирает за владельца: оставьте одну через LuCI или ssh.")
 	}
 
-	return &writeGuard{cfg: cfg, sel: sel}, nil
+	return &writeGuard{cfg: cfg, sel: sel, radios: radios}, nil
 }
 
 // target находит секцию для правки или удаления и проверяет, что её вообще
@@ -251,9 +266,11 @@ func (g *writeGuard) target(id string) (*uci.Section, *httpErr) {
 	if !ok {
 		return nil, &httpErr{http.StatusNotFound, "not_found", "Сеть не найдена"}
 	}
-	// Чужая секция — не наша забота. Домашняя точка доступа сюда не попадёт.
+	// Чужая секция — не наша забота. Домашняя точка доступа сюда не попадёт:
+	// радио сверяется с выведенным, а не с константой, иначе после
+	// перестановки радио «чужой» оказалась бы как раз наша (ADR-0019).
 	if sec.Type != "wifi-iface" ||
-		sec.Options["device"] != stationRadio ||
+		sec.Options["device"] != g.radios.Station ||
 		sec.Options["mode"] != "sta" {
 		return nil, &httpErr{http.StatusNotFound, "not_found",
 			"Секция не относится к внешним сетям роутера"}
@@ -287,7 +304,7 @@ func (s *Server) createNetwork(w http.ResponseWriter, ctx context.Context, g *wr
 	}
 
 	opts := [][2]string{
-		{"device", stationRadio},
+		{"device", g.radios.Station},
 		{"mode", "sta"},
 		{"network", upstreamIf},
 		{"ssid", in.SSID},
@@ -431,7 +448,15 @@ func (s *Server) respondNetworks(w http.ResponseWriter, ctx context.Context, cod
 		writeErr(w, http.StatusInternalServerError, "parse_failed", err.Error())
 		return
 	}
-	sel := wireless.Classify(cfg, stationRadio)
+	// Радио разрешается заново: ответ идёт и после записи, и на голое
+	// чтение, и врать в поле `radio` он не имеет права ни в одном из
+	// случаев — панель показывает по нему, на каком диапазоне искать сеть.
+	radios := s.resolveRadios(ctx, nil, cfg)
+	if errResp := requireStationRadio(radios); errResp != nil {
+		errResp.send(w)
+		return
+	}
+	sel := wireless.Classify(cfg, radios.Station)
 	fp := wireless.Fingerprint(raw)
 
 	w.Header().Set("ETag", fp)
@@ -439,10 +464,10 @@ func (s *Server) respondNetworks(w http.ResponseWriter, ctx context.Context, cod
 		"fingerprint":     fp,
 		"selection_state": string(sel.State),
 		"radio": map[string]string{
-			"device": stationRadio,
-			"band":   "2g",
+			"device": radios.Station,
+			"band":   radios.StationBand,
 			"mode":   "sta",
 		},
-		"networks": wireless.Networks(cfg, sel, stationRadio),
+		"networks": wireless.Networks(cfg, sel, radios.Station),
 	})
 }

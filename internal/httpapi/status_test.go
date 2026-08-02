@@ -61,6 +61,160 @@ func newReaderWithLog(t *testing.T) (*StatusReader, *executor.Fake, *logSink) {
 	return r, f, sink
 }
 
+// ─────────── перестановка радио ───────────
+//
+// Фикстуры разведки сняты с роутера, где станция действительно на radio0, —
+// поэтому на них невозможно отличить выведенную привязку от угаданной по
+// индексу. Эти фикстуры переставляют радио местами И меняют диапазоны:
+// станция уезжает на radio1 (5 ГГц), домашняя точка — на radio0 (2.4 ГГц).
+// Ровно это делает перепрошивка или другая ревизия железа, и ровно на этом
+// старый хардкод начинал бы править домашнюю сеть вместо внешней (ADR-0019).
+
+const swappedStatusJSON = `{
+	"radio0": {
+		"up": true, "pending": false, "disabled": false,
+		"config": {"band": "2g", "channel": "auto", "country": "RU"},
+		"interfaces": [{"section": "wifinet1", "ifname": "phy0.0-ap0",
+			"config": {"mode": "ap", "ssid": "grenderNet"}}]
+	},
+	"radio1": {
+		"up": true, "pending": false, "disabled": false,
+		"config": {"band": "5g", "channel": "auto", "country": "RU"},
+		"interfaces": [{"section": "wifinet0", "ifname": "phy0.1-sta0",
+			"config": {"mode": "sta", "ssid": "John24"}}]
+	}
+}`
+
+const swappedWirelessUCI = "wireless.radio0=wifi-device\n" +
+	"wireless.radio0.band='2g'\n" +
+	"wireless.radio1=wifi-device\n" +
+	"wireless.radio1.band='5g'\n" +
+	"wireless.wifinet0=wifi-iface\n" +
+	"wireless.wifinet0.device='radio1'\n" +
+	"wireless.wifinet0.mode='sta'\n" +
+	"wireless.wifinet0.network='wwan'\n" +
+	"wireless.wifinet0.ssid='John24'\n" +
+	"wireless.wifinet0.encryption='psk2'\n" +
+	"wireless.wifinet1=wifi-iface\n" +
+	"wireless.wifinet1.device='radio0'\n" +
+	"wireless.wifinet1.mode='ap'\n" +
+	"wireless.wifinet1.ssid='grenderNet'\n" +
+	"wireless.wifinet1.network='lan'\n" +
+	"wireless.wifinet2=wifi-iface\n" +
+	"wireless.wifinet2.device='radio1'\n" +
+	"wireless.wifinet2.mode='sta'\n" +
+	"wireless.wifinet2.ssid='ATOM'\n" +
+	"wireless.wifinet2.encryption='psk2'\n" +
+	"wireless.wifinet2.disabled='1'\n"
+
+// swapRadios переставляет радио местами в обоих источниках сразу.
+func swapRadios(f *executor.Fake) {
+	f.Fixtures["ubus network.wireless status"] = []byte(swappedStatusJSON)
+	f.Fixtures["uci show wireless"] = []byte(swappedWirelessUCI)
+}
+
+// noStationAnywhere убирает станцию отовсюду: радио включено, но станционного
+// интерфейса нет ни в живом состоянии, ни в конфигурации.
+func noStationAnywhere(f *executor.Fake) {
+	f.Fixtures["ubus network.wireless status"] = []byte(
+		`{"radio0":{"up":true,"config":{"band":"2g"},"interfaces":[]}}`)
+	f.Fixtures["uci show wireless"] = []byte(
+		"wireless.radio0=wifi-device\nwireless.radio0.band='2g'\n" +
+			"wireless.wifinet1=wifi-iface\nwireless.wifinet1.device='radio0'\n" +
+			"wireless.wifinet1.mode='ap'\nwireless.wifinet1.ssid='grenderNet'\n")
+}
+
+// Привязка идёт за режимом интерфейса, а не за индексом радио.
+func TestStatusFollowsSwappedRadios(t *testing.T) {
+	r, f := newReader(t)
+	swapRadios(f)
+
+	s, err := r.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	// Станция теперь на radio1: классификация обязана считать нашими
+	// секции с device=radio1, иначе внешних сетей «не окажется».
+	if s.SelectionState != "single" {
+		t.Errorf("selection_state = %q, ожидалось single: станция уехала на другое радио, а не исчезла", s.SelectionState)
+	}
+	if s.ConfiguredSSID == nil || *s.ConfiguredSSID != "John24" {
+		t.Errorf("configured_ssid = %v", s.ConfiguredSSID)
+	}
+	if s.AssociatedSSID == nil || *s.AssociatedSSID != "John24" {
+		t.Errorf("associated_ssid = %v: имя интерфейса выведено не по тому радио", s.AssociatedSSID)
+	}
+	// Домашняя точка теперь на radio0 и на 2.4 ГГц. Прежний хардкод дал бы
+	// сюда 5g — то есть панель показывала бы чужой диапазон.
+	if s.AP.SSID != "grenderNet" || s.AP.Band != "2g" {
+		t.Errorf("ap = %+v, ожидалось grenderNet/2g", s.AP)
+	}
+}
+
+// Станционная секция фазы 1 создаётся выключенной (ADR-0009) и в ubus не
+// появляется вовсе. Роутер, у которого ещё не поднята ни одна внешняя сеть,
+// обязан оставаться понятным: радио выводится из UCI.
+func TestStatusResolvesStationFromUCIWhenRadioIsOff(t *testing.T) {
+	r, f := newReader(t)
+	f.Fixtures["ubus network.wireless status"] = []byte(`{
+		"radio0": {"up": true, "config": {"band": "2g"},
+			"interfaces": [{"section": "wifinet1", "ifname": "phy0.0-ap0",
+				"config": {"mode": "ap", "ssid": "grenderNet"}}]},
+		"radio1": {"up": false, "disabled": true, "config": {"band": "5g"},
+			"interfaces": []}
+	}`)
+	f.Fixtures["uci show wireless"] = []byte(
+		"wireless.radio0=wifi-device\nwireless.radio0.band='2g'\n" +
+			"wireless.radio1=wifi-device\nwireless.radio1.band='5g'\n" +
+			"wireless.wifinet1=wifi-iface\nwireless.wifinet1.device='radio0'\n" +
+			"wireless.wifinet1.mode='ap'\nwireless.wifinet1.ssid='grenderNet'\n" +
+			"wireless.netmode_a1b2c3d4=wifi-iface\n" +
+			"wireless.netmode_a1b2c3d4.device='radio1'\n" +
+			"wireless.netmode_a1b2c3d4.mode='sta'\n" +
+			"wireless.netmode_a1b2c3d4.ssid='ATOM'\n" +
+			"wireless.netmode_a1b2c3d4.disabled='1'\n")
+
+	s, err := r.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	// Секция найдена и выключена — это all_disabled, а не empty. Empty
+	// означало бы «сохранённых сетей нет», и панель предложила бы завести
+	// вторую копию той же сети.
+	if s.SelectionState != "all_disabled" {
+		t.Errorf("selection_state = %q, ожидалось all_disabled: секция есть, просто выключена", s.SelectionState)
+	}
+	if s.AssociatedSSID != nil {
+		t.Errorf("associated_ssid = %v, станционного интерфейса в системе нет", *s.AssociatedSSID)
+	}
+	if s.AP.SSID != "grenderNet" || s.AP.Band != "2g" {
+		t.Errorf("ap = %+v", s.AP)
+	}
+}
+
+// Статус не отказывает никогда (ADR-0017): невыясненное радио гасит поля,
+// а не превращает ответ в ошибку. 503 radio_unknown — удел путей, которые
+// собираются что-то ТРОГАТЬ.
+func TestStatusStaysAnsweringWhenRadioUnknown(t *testing.T) {
+	r, f := newReader(t)
+	noStationAnywhere(f)
+
+	s, err := r.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if s.SelectionState != "empty" {
+		t.Errorf("selection_state = %q, ожидалось empty", s.SelectionState)
+	}
+	if s.ConfiguredSSID != nil {
+		t.Errorf("configured_ssid = %v, станционного радио не выяснено", *s.ConfiguredSSID)
+	}
+	// Домашняя точка выведена независимо и обязана остаться видимой.
+	if s.AP.SSID != "grenderNet" || s.AP.Band != "2g" {
+		t.Errorf("ap = %+v: неизвестная станция не должна гасить домашнюю точку", s.AP)
+	}
+}
+
 func TestStatusFromRealFixtures(t *testing.T) {
 	r, _ := newReader(t)
 	s, err := r.Read(context.Background())

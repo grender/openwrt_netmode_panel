@@ -20,6 +20,7 @@ import (
 	"netmoded/internal/logs"
 	"netmoded/internal/nikki"
 	"netmoded/internal/sched"
+	"netmoded/internal/uci"
 	"netmoded/internal/wireless"
 )
 
@@ -286,9 +287,11 @@ func (s *Server) handleWifiNetworks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWifiScan(w http.ResponseWriter, r *http.Request) {
-	// Имя интерфейса выводится из живого состояния, а не берётся литералом:
-	// оно меняется с конфигурацией радио (scripts/check-no-hardcoded-if.sh).
-	b, err := s.ex.UbusCall(r.Context(), "network.wireless", "status", nil)
+	ctx := r.Context()
+	// И имя интерфейса, и само станционное радио выводятся из живого
+	// состояния, а не берутся литералом: они меняются с конфигурацией
+	// радио и с ревизией железа (scripts/check-no-hardcoded-if.sh).
+	b, err := s.ex.UbusCall(ctx, "network.wireless", "status", nil)
 	if err != nil {
 		writeErr(w, http.StatusServiceUnavailable, "ubus_unavailable", err.Error())
 		return
@@ -298,7 +301,14 @@ func (s *Server) handleWifiScan(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "parse_failed", err.Error())
 		return
 	}
-	dev := wireless.IfnameForMode(st, stationRadio, "sta")
+
+	radios := s.resolveRadios(ctx, st, nil)
+	if errResp := requireStationRadio(radios); errResp != nil {
+		errResp.send(w)
+		return
+	}
+
+	dev := wireless.IfnameForMode(st, radios.Station, "sta")
 	if dev == "" {
 		// Не угадываем `wlan0`: без подтверждённого имени скан невозможен.
 		writeErr(w, http.StatusServiceUnavailable, "ifname_unknown",
@@ -306,7 +316,7 @@ func (s *Server) handleWifiScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sb, err := s.ex.UbusCall(r.Context(), "iwinfo", "scan", map[string]any{"device": dev})
+	sb, err := s.ex.UbusCall(ctx, "iwinfo", "scan", map[string]any{"device": dev})
 	if err != nil {
 		writeErr(w, http.StatusServiceUnavailable, "scan_failed", err.Error())
 		return
@@ -320,10 +330,69 @@ func (s *Server) handleWifiScan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"scanned_at": time.Now().UTC().Format(time.RFC3339),
 		"ifname":     dev,
-		"band":       "2g",
-		"note":       "Станция роутера работает только в диапазоне 2.4 ГГц — сети 5 ГГц в этом списке не появятся.",
+		"band":       radios.StationBand,
+		"note":       bandNote(radios.StationBand),
 		"networks":   nets,
 	})
+}
+
+// resolveRadios выводит привязку «радио ↔ роль ↔ диапазон» из системы.
+//
+// Аргументы — то, что вызывающий уже прочитал; nil означает «не читал, дочитай
+// сам». Так путь скана не запускает `uci show` второй раз, а путь записи —
+// `ubus call`: на роутере с 512 МБ лишний запуск процесса стоит дороже, чем
+// эта развилка.
+//
+// Порядок источников задан в wireless.ResolveRadios и здесь не дублируется.
+// Литерального запаса нет ни на одном шаге: не вывелось — вызывающий обязан
+// отказать (ADR-0019).
+func (s *Server) resolveRadios(ctx context.Context, st map[string]wireless.Radio, cfg *uci.Config) wireless.Radios {
+	if st == nil {
+		if b, err := s.ex.UbusCall(ctx, "network.wireless", "status", nil); err == nil {
+			st, _ = wireless.ParseStatus(b)
+		}
+	}
+	if cfg == nil {
+		if raw, err := s.ex.UCIShow(ctx, "wireless"); err == nil {
+			cfg, _ = uci.ParseShow("wireless", raw)
+		}
+	}
+	return wireless.ResolveRadios(st, cfg)
+}
+
+// requireStationRadio превращает «не выяснили» в отказ.
+//
+// Отдельная функция, потому что отказ обязан быть одинаковым на всех путях:
+// стоит одному из них вернуть «ну возьмём radio0», и весь смысл разрешения
+// пропадает. 503, а не 500: радио может появиться (его включат) — повтор
+// осмыслен.
+func requireStationRadio(radios wireless.Radios) *httpErr {
+	if radios.Known() {
+		return nil
+	}
+	return &httpErr{http.StatusServiceUnavailable, "radio_unknown",
+		"Не удалось определить, какое радио работает станцией: ни в " +
+			"network.wireless status, ни в /etc/config/wireless нет интерфейса " +
+			"с mode=sta. Демон не выбирает радио наугад."}
+}
+
+// bandNote — объяснение для панели про то, каких сетей в списке не будет.
+//
+// Текст условен, потому что утверждение проверяемо ложно на другом радио:
+// «видны только 2.4 ГГц» при станции на 5 ГГц — это не пояснение, а
+// дезинформация ровно в том месте, где владелец ищет пропавшую сеть.
+func bandNote(band string) string {
+	switch band {
+	case "2g":
+		return "Станция роутера работает в диапазоне 2.4 ГГц — сети 5 ГГц в этом списке не появятся."
+	case "5g":
+		return "Станция роутера работает в диапазоне 5 ГГц — сети 2.4 ГГц в этом списке не появятся."
+	case "":
+		return "Диапазон станционного радио выяснить не удалось — список может быть неполным."
+	default:
+		return "Станция роутера работает в диапазоне " + band +
+			" — сети других диапазонов в этом списке не появятся."
+	}
 }
 
 // handleUpstream отвечает 501 всю первую фазу.
@@ -333,7 +402,8 @@ func (s *Server) handleWifiScan(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUpstream(w http.ResponseWriter, _ *http.Request) {
 	writeErr(w, http.StatusNotImplemented, "not_implemented",
 		"Переключение внешней сети появится во второй фазе: сначала надо выяснить, "+
-			"можно ли применить изменение только к radio0, не уронив домашнюю сеть.")
+			"можно ли применить изменение только к станционному радио, не уронив "+
+			"домашнюю сеть — оба радио делят одну phy0 (RQ-03).")
 }
 
 // ─────────── ответы ───────────

@@ -92,6 +92,10 @@
     "station_band": "2g",
     "ap_radio": "radio1",
     "ap_band": "5g",
+    "radio_role_is_derived": true,
+    "radio_role_derivation": "station_radio/ap_radio/station_band/ap_band выше — СНИМОК этого роутера, а не константы кода. Демон выводит привязку заново: interfaces[].config.mode (sta/ap) и config.band в raw/21-ubus-network-wireless-status.json; при выключенном радио — секция wifi-iface с mode=sta и опция band её wifi-device в raw/10-uci-show-wireless.txt. Не вывелось ни там, ни там — 503 radio_unknown, без запасного литерала (ADR-0019).",
+    "radio_index_does_not_imply_band": "индекс радио задаётся порядком регистрации диапазонов драйвером, а не диапазоном: radio0 и radio1 — два диапазона ОДНОЙ phy0 (одинаковый path в raw/10-uci-show-wireless.txt, в /sys/class/ieee80211/ только phy0 — raw/30-leds-and-phy.txt, RQ-03). Перепрошивка, другой порядок загрузки модулей или иная ревизия железа переставляют их местами.",
+    "radio_role_enforced_by": "scripts/check-no-hardcoded-if.sh",
     "upstream_netif": "wwan",
     "upstream_netif_raw": "raw/11-uci-show-network.txt",
     "lan_addr": "192.168.9.1",
@@ -114,7 +118,8 @@
     "evidence": "radio0 and radio1 have an identical `path` in raw/10-uci-show-wireless.txt; /sys/class/ieee80211/ lists only phy0",
     "consequence_phase1": "none — phase 1 applies nothing",
     "consequence_phase2": "wifi reload cycles the whole phy; the home AP may drop for seconds. Must be measured before phase 2 code.",
-    "channel_steal_risk": "none — station is 2.4 GHz, AP is 5 GHz"
+    "channel_steal_risk": "none — station is 2.4 GHz, AP is 5 GHz",
+    "radio_index_meaning": "индекс в имени radioN — порядок регистрации диапазона драйвером, НЕ диапазон и НЕ отдельный модуль. Опираться на него в коде нельзя: ADR-0019, гейт scripts/check-no-hardcoded-if.sh."
   },
   "ubus": {
     "status": "verified",
@@ -184,7 +189,8 @@
     "ifname_station_observed": "phy0.0-sta0",
     "ifname_ap_observed": "phy0.1-ap0",
     "ifname_rule": "NEVER hardcode. Derive from network.wireless status: radio -> interfaces[] -> {section, ifname}. The section<->ifname link is given directly in the response.",
-    "enforced_by": "scripts/check-no-hardcoded-if.sh"
+    "enforced_by": "scripts/check-no-hardcoded-if.sh",
+    "radio_role_rule": "NEVER hardcode radio0/radio1 either. The station radio is the one whose interfaces[] contains config.mode == 'sta'; the home AP radio is the one with 'ap'; the band comes from that radio's config.band. If no radio is disabled-but-present in ubus, fall back to the wifi-iface section with mode=sta in UCI; if neither answers, refuse with 503 radio_unknown (ADR-0019)."
   },
   "led": {
     "status": "verified",

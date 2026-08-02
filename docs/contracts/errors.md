@@ -113,10 +113,21 @@
 | `b4_unavailable` | `GET /api/version` у b4 (порт 7000) не ответил или ответил не `200` | `{"probe": "GET /api/version", "err": "connection refused"}` |
 | `b4_auth_required` | b4 включил аутентификацию (`/api/auth/check` → `auth_required: true`) | `{}` — пароль не угадываем ([ADR-0007](../adr/0007-b4-api-only.md)) |
 | `nikki_unavailable` | Clash API не ответил. **В этой поставке — постоянное состояние: RQ-01 не отвечён** | `{"rq": "RQ-01"}` |
-| `ifname_unknown` | имя интерфейса станции не выводится из `network.wireless status`: радио выключено, нет секций, объект не ответил | `{"radio": "radio0"}` |
+| `radio_unknown` | не выяснено, какое радио работает станцией: интерфейса с `mode=sta` нет ни в `network.wireless status`, ни в `/etc/config/wireless` ([ADR-0019](../adr/0019-radio-role-derived.md)) | `{}` — угадывать нечем |
+| `ifname_unknown` | станционное радио выяснено, но имя его интерфейса не выводится из `network.wireless status`: радио выключено, объект не ответил | `{"radio": "radio1"}` |
 
-`ifname_unknown` возвращает `GET /api/wifi/scan` и всё, что требует обращения
-к живому радио. `/api/status` при этом **отдаёт 200** — там недоступность
+`radio_unknown` и `ifname_unknown` — два разных незнания, и сливать их нельзя:
+первое означает «неизвестно, ЧТО трогать», второе — «известно что, но не
+поднято». Первое запрещает и запись тоже (демон не знает, какие секции наши);
+второе мешает только обращению к живому радио.
+
+Ни то, ни другое не лечится догадкой. «Возьмём радио с меньшим индексом» — это
+тот же хардкод, который [ADR-0019](../adr/0019-radio-role-derived.md) убрал:
+индекс радио задаётся порядком регистрации драйверов, а не диапазоном.
+
+`radio_unknown` возвращают `GET /api/wifi/scan`, `GET`/`POST /api/wifi/networks`
+и `DELETE /api/wifi/networks/{id}`. `ifname_unknown` — `GET /api/wifi/scan` и
+всё, что требует обращения к живому радио. `/api/status` при этом **отдаёт 200** — там недоступность
 выражается полями (`associated_ssid: null`, `b4.available: false`), а не
 кодом ответа ([ADR-0017](../adr/0017-polling-no-push.md)).
 
@@ -169,5 +180,7 @@
 | `409 foreign_staged_changes` | непустой `uci changes` |
 | `501` на `POST /api/upstream` | тело содержит `blocked_by` |
 | `503 b4_unavailable` | клиент b4 с отказом соединения |
+| `503 radio_unknown` | фикстура без `mode=sta` и в ubus, и в UCI |
+| Радио переставлены местами | код идёт за `mode=sta`, а не за индексом |
 | `/api/status` при лежащем b4 | **200**, `b4.available: false` |
 | Ни в одном ответе нет `key` | грепом по всем телам в тестах |

@@ -70,7 +70,7 @@ type Network struct {
 func ours(s uci.Section, radio string) bool {
 	return s.Type == "wifi-iface" &&
 		s.Options["device"] == radio &&
-		s.Options["mode"] == "sta"
+		s.Options["mode"] == modeStation
 }
 
 // Classify вычисляет состояние выбора.
@@ -243,6 +243,139 @@ func IfnameForMode(st map[string]Radio, radio, mode string) string {
 		}
 	}
 	return ""
+}
+
+// ─────────── привязка «радио ↔ роль ↔ диапазон» ───────────
+
+// Режимы интерфейса, которые нас различают. Больше нигде в пакете строкой
+// не пишутся: одна опечатка в одном из мест увела бы разрешение молча.
+const (
+	modeStation = "sta"
+	modeAP      = "ap"
+)
+
+// Radios — какое радио работает станцией, какое домашней точкой и в каких
+// диапазонах. Пустая строка означает «не выяснили», а не значение по
+// умолчанию: значения по умолчанию тут нет и быть не может.
+//
+// Держать это компайл-тайм константой нельзя. Индекс радио задаётся
+// порядком регистрации драйверов, а не диапазоном: на снимке роутера
+// radio0 и radio1 — два диапазона ОДНОЙ phy0 (одинаковый path в
+// raw/10-uci-show-wireless.txt, в /sys/class/ieee80211/ только phy0 —
+// RQ-03 в ADR-0016). Перепрошивка, другой порядок загрузки модулей или
+// иная ревизия железа переставляют их местами, и инвариант фазы 1
+// («трогаем только станционное радио, домашнюю точку не задеваем»,
+// ADR-0009) молча начал бы применяться не к тому радио: панель правила
+// бы домашнюю сеть, считая её внешней. Отсюда ADR-0019.
+type Radios struct {
+	Station     string // радио станции; "" — не выяснено
+	AP          string // радио домашней точки доступа
+	StationBand string // "2g", "5g", …; "" — диапазон неизвестен
+	APBand      string
+}
+
+// Known сообщает, выяснено ли станционное радио.
+//
+// Отдельный метод, а не сравнение с "" по месту: вызывающему нельзя
+// давать повода дописать «а если нет, то возьмём первое» — не выяснили
+// значит отказ (503 radio_unknown).
+func (r Radios) Known() bool { return r.Station != "" }
+
+// ResolveRadios выводит привязку из живого состояния ubus и конфигурации UCI.
+//
+// Порядок разрешения — сверху вниз, ЗАПАСНОГО ЛИТЕРАЛА НЕТ (ADR-0019):
+//
+//  1. ubus: станционное радио — то, у которого есть интерфейс с
+//     config.mode == "sta"; домашняя точка — с "ap". Диапазон берётся из
+//     config.band ТОГО ЖЕ радио. Это самый честный источник: он говорит,
+//     что радио делает сейчас, а не что про него написано.
+//  2. UCI: секция wifi-iface с mode=sta и её опция device. Нужно потому,
+//     что в фазе 1 станционная секция создаётся выключенной (ADR-0009) и
+//     в network.wireless status не появляется вовсе — по одному ubus
+//     радио выключенной станции неотличимо от несуществующего.
+//     Диапазон — опция band соответствующей секции wifi-device.
+//  3. Ничего. Возвращается нулевая структура, Known() == false, и
+//     вызывающий обязан отказать. Угаданное радио («возьмём с меньшим
+//     индексом») — это тот же хардкод, только без комментария и без гейта.
+//
+// Оба аргумента могут быть nil: недоступность источника — штатная ветка,
+// а не ошибка. Функция чистая, поэтому проверяется на записанном выводе
+// живого роутера без единого мока.
+func ResolveRadios(st map[string]Radio, c *uci.Config) Radios {
+	var out Radios
+	radiosFromStatus(st, &out)
+	radiosFromConfig(c, &out)
+	return out
+}
+
+// radiosFromStatus — шаг 1: живое состояние.
+func radiosFromStatus(st map[string]Radio, out *Radios) {
+	// Обход map в Go случаен, а на роутере с двумя станционными радио
+	// ответ обязан быть одним и тем же от запроса к запросу: иначе демон
+	// правил бы то одну секцию, то другую, и воспроизвести это было бы
+	// нечем.
+	names := make([]string, 0, len(st))
+	for name := range st {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		r := st[name]
+		for _, i := range r.Interfaces {
+			switch i.Config.Mode {
+			case modeStation:
+				if out.Station == "" {
+					out.Station, out.StationBand = name, r.Config.Band
+				}
+			case modeAP:
+				if out.AP == "" {
+					out.AP, out.APBand = name, r.Config.Band
+				}
+			}
+		}
+	}
+}
+
+// radiosFromConfig — шаг 2: конфигурация. Заполняет ТОЛЬКО то, чего не дал
+// ubus: живое состояние главнее записанного намерения.
+func radiosFromConfig(c *uci.Config, out *Radios) {
+	if c == nil {
+		return
+	}
+	for _, s := range c.Sections {
+		if s.Type != "wifi-iface" || s.Options["device"] == "" {
+			continue
+		}
+		switch s.Options["mode"] {
+		case modeStation:
+			if out.Station == "" {
+				out.Station = s.Options["device"]
+			}
+		case modeAP:
+			if out.AP == "" {
+				out.AP = s.Options["device"]
+			}
+		}
+	}
+	if out.StationBand == "" {
+		out.StationBand = bandOf(c, out.Station)
+	}
+	if out.APBand == "" {
+		out.APBand = bandOf(c, out.AP)
+	}
+}
+
+// bandOf читает диапазон радио из его секции wifi-device.
+func bandOf(c *uci.Config, radio string) string {
+	if radio == "" {
+		return ""
+	}
+	s, ok := c.Section(radio)
+	if !ok || s.Type != "wifi-device" {
+		return ""
+	}
+	return s.Options["band"]
 }
 
 // PendingApply сообщает, есть ли изменения, не применённые к радио.

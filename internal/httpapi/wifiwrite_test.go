@@ -108,10 +108,92 @@ func TestCreateSetsRequiredOptions(t *testing.T) {
 	post(t, s, "/api/wifi/networks", `{"ssid":"X","encryption":"psk2","key":"пароль12345"}`, etag(t, s))
 
 	joined := strings.Join(f.Calls, "\n")
+	// radio0 здесь — не константа кода, а факт снимка роутера: станция
+	// действительно живёт там (raw/10, raw/21).
 	for _, want := range []string{".device=radio0", ".mode=sta", ".network=wwan", ".ssid=X"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("не записано %s\nвызовы:\n%s", want, joined)
 		}
+	}
+}
+
+// Новая секция обязана лечь на то радио, которое работает станцией.
+// С прежней константой она легла бы на домашнюю точку — и панель, задуманная
+// как физически не способная порвать связь (ADR-0009), правила бы ровно ту
+// сеть, через которую владелец в неё и зашёл.
+func TestCreateWritesResolvedRadioNotIndex(t *testing.T) {
+	s, f := newServer(t)
+	swapRadios(f)
+
+	rec := post(t, s, "/api/wifi/networks",
+		`{"ssid":"X","encryption":"psk2","key":"пароль12345"}`, etag(t, s))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("код %d: %s", rec.Code, rec.Body.String())
+	}
+
+	joined := strings.Join(f.Calls, "\n")
+	if !strings.Contains(joined, ".device=radio1") {
+		t.Errorf("секция создана не на станционном радио\nвызовы:\n%s", joined)
+	}
+	if strings.Contains(joined, ".device=radio0") {
+		t.Errorf("секция создана на радио домашней точки\nвызовы:\n%s", joined)
+	}
+}
+
+// Список тоже обязан описывать выведенное радио: панель показывает по полю
+// `radio`, в каком диапазоне искать сеть.
+func TestNetworksListFollowsSwappedRadios(t *testing.T) {
+	s, f := newServer(t)
+	swapRadios(f)
+
+	rec := do(t, s, "GET", "/api/wifi/networks", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("код %d: %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		SelectionState string `json:"selection_state"`
+		Radio          struct {
+			Device string `json:"device"`
+			Band   string `json:"band"`
+			Mode   string `json:"mode"`
+		} `json:"radio"`
+		Networks []struct {
+			SSID string `json:"ssid"`
+		} `json:"networks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("разбор: %v", err)
+	}
+	if got.Radio.Device != "radio1" || got.Radio.Band != "5g" || got.Radio.Mode != "sta" {
+		t.Errorf("radio = %+v, ожидалось radio1/5g/sta", got.Radio)
+	}
+	// Наши секции переехали вместе с радио — их обязано быть видно.
+	if got.SelectionState != "single" || len(got.Networks) != 2 {
+		t.Errorf("состояние %q, сетей %d — секции ищутся не на том радио", got.SelectionState, len(got.Networks))
+	}
+}
+
+// Запись без выясненного радио невозможна: неизвестно даже, какие секции
+// наши. Отказ, а не догадка (ADR-0019).
+func TestWriteRefusesWhenStationRadioUnknown(t *testing.T) {
+	s, f := newServer(t)
+	// Отпечаток берём до подмены — просто чтобы заголовок If-Match вообще
+	// был. Значение здесь роли не играет: радио разрешается РАНЬШЕ сверки
+	// отпечатка, потому что без него неизвестно, о каких секциях идёт речь.
+	e := etag(t, s)
+	noStationAnywhere(f)
+
+	rec := post(t, s, "/api/wifi/networks",
+		`{"ssid":"X","encryption":"psk2","key":"пароль12345"}`, e)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("код %d, ожидался 503: %s", rec.Code, rec.Body.String())
+	}
+	if code := errCode(t, rec); code != "radio_unknown" {
+		t.Errorf("код ошибки %q, ожидался radio_unknown", code)
+	}
+	// И ничего не записано: отказ до первой команды uci.
+	if len(f.Calls) != 0 {
+		t.Errorf("при невыясненном радио сделаны записи: %v", f.Calls)
 	}
 }
 

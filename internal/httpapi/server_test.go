@@ -249,6 +249,60 @@ func TestScanFailsLoudlyWithoutIfname(t *testing.T) {
 	}
 }
 
+// Скан обязан идти на радио, которое РАБОТАЕТ станцией, а не на radio0.
+// Здесь станция на radio1 и на 5 ГГц — прежний хардкод отдал бы имя
+// интерфейса домашней точки и подпись «сети 5 ГГц не появятся» поверх
+// списка, целиком состоящего из сетей 5 ГГц.
+func TestScanFollowsSwappedRadios(t *testing.T) {
+	s, f := newServer(t)
+	swapRadios(f)
+
+	rec := do(t, s, "GET", "/api/wifi/scan", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("код %d: %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Ifname string `json:"ifname"`
+		Band   string `json:"band"`
+		Note   string `json:"note"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("разбор: %v", err)
+	}
+	if got.Ifname != "phy0.1-sta0" {
+		t.Errorf("ifname = %q, ожидался интерфейс станции с radio1", got.Ifname)
+	}
+	if got.Band != "5g" {
+		t.Errorf("band = %q, ожидался 5g — диапазон взят не у того радио", got.Band)
+	}
+	// Пояснение обязано соответствовать диапазону: «видны только 2.4 ГГц»
+	// на пятигигагерцовой станции — не пояснение, а дезинформация ровно
+	// там, где владелец ищет пропавшую сеть.
+	if !strings.Contains(got.Note, "5 ГГц") || strings.Contains(got.Note, "сети 5 ГГц в этом списке не появятся") {
+		t.Errorf("note = %q — текст не следует за диапазоном", got.Note)
+	}
+}
+
+// Не выяснили радио — отказываем. Взять «первое попавшееся» нельзя: на
+// этом роутере первым попадётся домашняя точка.
+func TestScanRefusesWhenStationRadioUnknown(t *testing.T) {
+	s, f := newServer(t)
+	noStationAnywhere(f)
+
+	rec := do(t, s, "GET", "/api/wifi/scan", true)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("код %d, ожидался 503: %s", rec.Code, rec.Body.String())
+	}
+	var e apiError
+	_ = json.Unmarshal(rec.Body.Bytes(), &e)
+	if e.Code != "radio_unknown" {
+		t.Errorf("код ошибки %q, ожидался radio_unknown", e.Code)
+	}
+	if e.Error == "" {
+		t.Error("пустое тело неотличимо от неисправного сервера")
+	}
+}
+
 // Переключение внешней сети — вторая фаза. Заглушка обязана объяснять
 // причину: пользователь видит кнопку и должен понять, почему она не
 // работает, не читая ADR.

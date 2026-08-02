@@ -22,13 +22,16 @@ import (
 	"netmoded/internal/wireless"
 )
 
-// Имена, выведенные разведкой. Держатся здесь, а не в конфиге: сделать их
-// настраиваемыми означало бы дать способ увести вызовы на чужой объект.
-const (
-	stationRadio = "radio0" // станция, 2.4 ГГц (raw/10)
-	apRadio      = "radio1" // домашняя точка, 5 ГГц
-	upstreamIf   = "wwan"   // L3 upstream (raw/11)
-)
+// upstreamIf — L3-интерфейс внешнего канала (raw/11). Держится здесь, а не
+// в конфиге: сделать его настраиваемым означало бы дать способ увести
+// вызовы на чужой объект.
+//
+// Имён радио рядом НЕТ намеренно. Какое радио работает станцией, а какое
+// домашней точкой, выводится из системы за каждую сборку статуса
+// (wireless.ResolveRadios, ADR-0019): индекс радио задаётся порядком
+// регистрации драйверов, а не диапазоном, и после перепрошивки константа
+// молча указывала бы на домашнюю сеть.
+const upstreamIf = "wwan"
 
 // StatusCacheTTL — кэш дорогих чтений.
 //
@@ -260,50 +263,65 @@ func (r *StatusReader) build(ctx context.Context) *Status {
 		B4:          Service{Available: false},
 	}
 
-	// Конфигурация wireless: выбор, отпечаток.
+	// Конфигурация wireless: отпечаток и разбор.
 	//
 	// Разбор считается частью чтения: неразобранный вывод — такой же слепой
 	// статус, как и не полученный, и в журнале обязан выглядеть так же.
+	var cfg *uci.Config
 	rawWireless, err := r.ex.UCIShow(ctx, "wireless")
 	if err == nil {
 		s.Fingerprint = wireless.Fingerprint(rawWireless)
-		var cfg *uci.Config
-		if cfg, err = uci.ParseShow("wireless", rawWireless); err == nil {
-			sel := wireless.Classify(cfg, stationRadio)
-			s.SelectionState = string(sel.State)
-			s.Conflict = sel.Conflict
-			if sel.State == wireless.Single {
-				if sec, ok := cfg.Section(sel.Active); ok {
-					v := sec.Options["ssid"]
-					s.ConfiguredSSID = &v
-				}
-			}
-			if ap := apSection(cfg); ap != nil {
-				s.AP.SSID = ap.Options["ssid"]
+		cfg, err = uci.ParseShow("wireless", rawWireless)
+	}
+	r.noteLocked(srcWirelessCfg, err)
+
+	// Живое состояние радио: pending и то, что даёт разрешение ролей.
+	var st map[string]wireless.Radio
+	b, err := r.ex.UbusCall(ctx, "network.wireless", "status", nil)
+	if err == nil {
+		if st, err = wireless.ParseStatus(b); err == nil {
+			s.PendingApply = wireless.PendingApply(st)
+		}
+	}
+	r.noteLocked(srcWirelessState, err)
+
+	// Привязка «радио ↔ роль ↔ диапазон» разрешается ОДИН раз за сборку и
+	// дальше переиспользуется: два разрешения в одном ответе могли бы
+	// разойтись между собой, и статус описывал бы два разных роутера.
+	//
+	// Не вывелась — поля просто остаются пустыми. Статус обязан отвечать
+	// при любом сбое источников (ADR-0017), поэтому 503 radio_unknown —
+	// удел путей, которые собираются что-то ТРОГАТЬ, а не докладывать.
+	radios := wireless.ResolveRadios(st, cfg)
+
+	if cfg != nil && radios.Known() {
+		sel := wireless.Classify(cfg, radios.Station)
+		s.SelectionState = string(sel.State)
+		s.Conflict = sel.Conflict
+		if sel.State == wireless.Single {
+			if sec, ok := cfg.Section(sel.Active); ok {
+				v := sec.Options["ssid"]
+				s.ConfiguredSSID = &v
 			}
 		}
 	}
-	r.noteLocked(srcWirelessCfg, err)
 	if s.SelectionState == "" {
 		s.SelectionState = string(wireless.Empty)
 	}
 
-	// Живое состояние радио: имена интерфейсов и pending.
-	var stationIf, apIf string
-	b, err := r.ex.UbusCall(ctx, "network.wireless", "status", nil)
-	if err == nil {
-		var st map[string]wireless.Radio
-		if st, err = wireless.ParseStatus(b); err == nil {
-			s.PendingApply = wireless.PendingApply(st)
-			stationIf = wireless.IfnameForMode(st, stationRadio, "sta")
-			apIf = wireless.IfnameForMode(st, apRadio, "ap")
-			if r0, ok := st[apRadio]; ok {
-				s.AP.Band = r0.Config.Band
-			}
+	// Домашняя точка: имя из конфигурации, диапазон из разрешения. Имя её
+	// интерфейса не выводится и не нужно: число клиентов остаётся null,
+	// пока не отвечён RQ-05.
+	if cfg != nil {
+		if ap := apSection(cfg, radios.AP); ap != nil {
+			s.AP.SSID = ap.Options["ssid"]
 		}
 	}
-	r.noteLocked(srcWirelessState, err)
-	_ = apIf // RQ-05: число клиентов не подтверждено, поле остаётся null
+	s.AP.Band = radios.APBand
+
+	// Имя станционного интерфейса — по выведенному радио, а не по константе.
+	// Пусто, если радио не выяснено или станция не поднята.
+	stationIf := wireless.IfnameForMode(st, radios.Station, "sta")
 
 	// Ассоциация. Имя интерфейса выведено, а не захардкожено.
 	//
@@ -431,10 +449,17 @@ func (r *StatusReader) hostname(ctx context.Context) string {
 
 // apSection находит домашнюю точку доступа — только чтобы показать её имя.
 // Мы её не трогаем: она не наша (ADR-0003).
-func apSection(c *uci.Config) *uci.Section {
+//
+// Радио передаётся, а не берётся из константы: какое из них домашняя точка,
+// выясняется из системы (ADR-0019). Пустое имя означает «не выяснили» — и
+// тогда секции нет, а не «подойдёт любая точка доступа».
+func apSection(c *uci.Config, radio string) *uci.Section {
+	if radio == "" {
+		return nil
+	}
 	for i := range c.Sections {
 		s := &c.Sections[i]
-		if s.Type == "wifi-iface" && s.Options["device"] == apRadio && s.Options["mode"] == "ap" {
+		if s.Type == "wifi-iface" && s.Options["device"] == radio && s.Options["mode"] == "ap" {
 			return s
 		}
 	}

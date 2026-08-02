@@ -29,6 +29,7 @@
 | [0016](0016-upstream-deferred.md) | Смена upstream отложена, `501` | **отменяет SPEC §11 п.7** |
 | [0017](0017-polling-no-push.md) | Опрос 1 Гц, без WebSocket и SSE | сохраняет SPEC §7 |
 | [0018](0018-spec-superseded.md) | SPEC §4, §6, §10, §11 заменены этим набором | — |
+| [0019](0019-radio-role-derived.md) | Привязка «радио ↔ роль ↔ диапазон» выводится из системы | уточняет [0009](0009-phase1-write-invariant.md) |
 
 ## Механические гейты
 
@@ -39,7 +40,7 @@
 |---|---|
 | 0006 | `scripts/check-no-rollback.sh` |
 | 0007 | `scripts/check-b4json.sh` |
-| 0005 | `scripts/check-no-hardcoded-if.sh` |
+| 0005, 0019 | `scripts/check-no-hardcoded-if.sh` |
 | — | `scripts/check-evidence.sh` (любой внешний литерал) |
 | 0001 | `scripts/check-layering.sh` — **ещё не написан** |
 | 0009 | `scripts/check-disabled-write.sh` — **ещё не написан** |

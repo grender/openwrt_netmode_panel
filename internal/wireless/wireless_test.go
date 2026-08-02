@@ -401,6 +401,163 @@ func TestPendingApply(t *testing.T) {
 	}
 }
 
+// ─────────── привязка «радио ↔ роль ↔ диапазон» ───────────
+
+// Снимок живого роутера: станция действительно на radio0. Разрешение обязано
+// дать ровно то, что раньше было константой, — иначе доказать, что новый код
+// эквивалентен старому на подтверждённом железе, нечем.
+func TestResolveRadiosFromRealFixtures(t *testing.T) {
+	st, _ := ParseStatus(raw(t, "21-ubus-network-wireless-status.json"))
+	got := ResolveRadios(st, parse(t, "10-uci-show-wireless.txt"))
+
+	want := Radios{Station: "radio0", AP: "radio1", StationBand: "2g", APBand: "5g"}
+	if got != want {
+		t.Errorf("ResolveRadios = %+v, ожидалось %+v", got, want)
+	}
+	if !got.Known() {
+		t.Error("станционное радио выведено, Known() обязан быть true")
+	}
+}
+
+// Главный сценарий отказа, ради которого убраны константы: перепрошивка или
+// другая ревизия железа переставляют радио местами. Код обязан пойти за
+// mode=sta, а не за индексом, иначе инвариант фазы 1 (ADR-0009) молча
+// применится к домашней точке.
+func TestResolveRadiosFollowsModeNotIndex(t *testing.T) {
+	swapped := []byte(`{
+		"radio0": {"up": true, "config": {"band": "5g"},
+			"interfaces": [{"section": "wifinet1", "ifname": "phy0.0-ap0",
+				"config": {"mode": "ap", "ssid": "grenderNet"}}]},
+		"radio1": {"up": true, "config": {"band": "2g"},
+			"interfaces": [{"section": "wifinet0", "ifname": "phy0.1-sta0",
+				"config": {"mode": "sta", "ssid": "John24"}}]}
+	}`)
+	st, err := ParseStatus(swapped)
+	if err != nil {
+		t.Fatalf("ParseStatus: %v", err)
+	}
+
+	got := ResolveRadios(st, nil)
+	want := Radios{Station: "radio1", AP: "radio0", StationBand: "2g", APBand: "5g"}
+	if got != want {
+		t.Errorf("ResolveRadios = %+v, ожидалось %+v — разрешение пошло за индексом, а не за режимом", got, want)
+	}
+}
+
+// Фаза 1 создаёт станционную секцию ВЫКЛЮЧЕННОЙ (ADR-0009), поэтому в
+// network.wireless status её нет вовсе. Без чтения UCI такой роутер выглядел
+// бы как роутер без станции, и панель не дала бы завести первую сеть.
+func TestResolveRadiosFallsBackToUCIWhenRadioIsOff(t *testing.T) {
+	// В ubus только домашняя точка: станционное радио выключено.
+	st, _ := ParseStatus([]byte(`{
+		"radio0": {"up": true, "config": {"band": "5g"},
+			"interfaces": [{"section": "ap", "ifname": "phy0.0-ap0",
+				"config": {"mode": "ap"}}]},
+		"radio1": {"up": false, "disabled": true, "config": {"band": "2g"},
+			"interfaces": []}
+	}`))
+	c, err := uci.ParseShow("wireless", []byte(
+		"wireless.radio0=wifi-device\nwireless.radio0.band='5g'\n"+
+			"wireless.radio1=wifi-device\nwireless.radio1.band='2g'\n"+
+			"wireless.ap=wifi-iface\nwireless.ap.device='radio0'\nwireless.ap.mode='ap'\n"+
+			"wireless.up=wifi-iface\nwireless.up.device='radio1'\nwireless.up.mode='sta'\nwireless.up.disabled='1'\n"))
+	if err != nil {
+		t.Fatalf("разбор: %v", err)
+	}
+
+	got := ResolveRadios(st, c)
+	if got.Station != "radio1" {
+		t.Errorf("станция = %q, ожидалось radio1 из секции UCI с mode=sta", got.Station)
+	}
+	// Диапазон выключенного радио в ubus взять негде — берётся из wifi-device.
+	if got.StationBand != "2g" {
+		t.Errorf("диапазон станции = %q, ожидалось 2g из секции wifi-device", got.StationBand)
+	}
+	if got.AP != "radio0" || got.APBand != "5g" {
+		t.Errorf("домашняя точка = %q/%q, ожидалось radio0/5g", got.AP, got.APBand)
+	}
+}
+
+// Живое состояние главнее записанного намерения: если ubus говорит, что
+// станция на radio1, устаревшая секция UCI не имеет права это перебить.
+func TestResolveRadiosPrefersUbusOverUCI(t *testing.T) {
+	st, _ := ParseStatus([]byte(`{
+		"radio1": {"up": true, "config": {"band": "5g"},
+			"interfaces": [{"section": "s", "ifname": "phy0.1-sta0",
+				"config": {"mode": "sta"}}]}
+	}`))
+	c, _ := uci.ParseShow("wireless", []byte(
+		"wireless.radio0=wifi-device\nwireless.radio0.band='2g'\n"+
+			"wireless.old=wifi-iface\nwireless.old.device='radio0'\nwireless.old.mode='sta'\n"))
+
+	got := ResolveRadios(st, c)
+	if got.Station != "radio1" || got.StationBand != "5g" {
+		t.Errorf("разрешение = %+v, ожидалось radio1/5g из живого ubus", got)
+	}
+}
+
+// Не выяснили — значит не выяснили. Никакого «возьмём радио с меньшим
+// индексом»: это тот же хардкод, только без комментария.
+func TestResolveRadiosGuessesNothing(t *testing.T) {
+	cases := []struct {
+		name string
+		st   map[string]Radio
+		c    *uci.Config
+	}{
+		{"источников нет вовсе", nil, nil},
+		{"радио есть, интерфейсов нет", mustStatus(t, `{"radio0":{"up":true,"config":{"band":"2g"},"interfaces":[]}}`), nil},
+		{"в UCI только точка доступа", nil, mustConfig(t,
+			"wireless.radio0=wifi-device\nwireless.radio0.band='2g'\n"+
+				"wireless.ap=wifi-iface\nwireless.ap.device='radio0'\nwireless.ap.mode='ap'\n")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ResolveRadios(tc.st, tc.c)
+			if got.Station != "" || got.StationBand != "" {
+				t.Errorf("выведено %+v, ожидалась пустота: угадывать нечем", got)
+			}
+			if got.Known() {
+				t.Error("Known() == true без единого mode=sta — вызывающий не отказал бы")
+			}
+		})
+	}
+}
+
+// Порядок обхода map в Go случаен, а ответ обязан быть одним и тем же:
+// иначе демон правил бы то одну секцию, то другую, и воспроизвести это
+// было бы нечем.
+func TestResolveRadiosIsDeterministic(t *testing.T) {
+	st, _ := ParseStatus([]byte(`{
+		"radio0": {"config": {"band": "2g"}, "interfaces": [{"config": {"mode": "sta"}}]},
+		"radio1": {"config": {"band": "5g"}, "interfaces": [{"config": {"mode": "sta"}}]},
+		"radio2": {"config": {"band": "6g"}, "interfaces": [{"config": {"mode": "sta"}}]}
+	}`))
+	first := ResolveRadios(st, nil)
+	for i := 0; i < 50; i++ {
+		if got := ResolveRadios(st, nil); got != first {
+			t.Fatalf("итерация %d дала %+v, первая — %+v", i, got, first)
+		}
+	}
+}
+
+func mustStatus(t *testing.T, s string) map[string]Radio {
+	t.Helper()
+	st, err := ParseStatus([]byte(s))
+	if err != nil {
+		t.Fatalf("ParseStatus: %v", err)
+	}
+	return st
+}
+
+func mustConfig(t *testing.T, s string) *uci.Config {
+	t.Helper()
+	c, err := uci.ParseShow("wireless", []byte(s))
+	if err != nil {
+		t.Fatalf("разбор: %v", err)
+	}
+	return c
+}
+
 // ─────────── скан ───────────
 
 func TestParseScanFixture(t *testing.T) {
