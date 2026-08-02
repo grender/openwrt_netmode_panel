@@ -1,0 +1,45 @@
+{
+    "phy": "phy0",
+    "ssid": "John24",
+    "bssid": "94:83:C4:E4:69:D8",
+    "country": "RU",
+    "mode": "Client",
+    "channel": 1,
+    "center_chan1": 1,
+    "frequency": 2412,
+    "txpower": 20,
+    "quality": 65,
+    "quality_max": 70,
+    "signal": -45,
+    "noise": -79,
+    "bitrate": 1000,
+    "encryption": {
+        "enabled": true,
+        "wpa": [
+            2
+        ],
+        "authentication": [
+            "psk"
+        ],
+        "ciphers": [
+            "ccmp"
+        ]
+    },
+    "htmodes": [
+        "HT20", "HT40", "VHT20", "VHT40", "VHT80", "VHT160",
+        "HE20", "HE40", "HE80", "HE160",
+        "EHT20", "EHT40", "EHT80", "EHT160"
+    ],
+    "hwmodes": [
+        "b", "g", "n", "ac", "ax", "be"
+    ],
+    "hwmodes_text": "ac/ax/b/be/g/n",
+    "hwmode": "n",
+    "htmode": "HT20",
+    "hardware": {
+        "id": [
+            5315, 31123, 5315, 31123
+        ],
+        "name": "Generic MAC80211"
+    }
+}

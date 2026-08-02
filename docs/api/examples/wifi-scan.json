@@ -1,0 +1,48 @@
+{
+  "scanned_at": "2026-08-02T10:18:22Z",
+  "ifname": "phy0.0-sta0",
+  "band": "2g",
+  "note": "Станция роутера работает только в диапазоне 2.4 ГГц — сети 5 ГГц в этом списке не появятся.",
+  "networks": [
+    {
+      "ssid": "John24",
+      "bssid": "de:ad:be:ef:00:01",
+      "signal_dbm": -47,
+      "quality": 63,
+      "quality_max": 70,
+      "encryption": "psk2",
+      "channel": 6,
+      "saved_id": "wifinet0"
+    },
+    {
+      "ssid": "ATOM",
+      "bssid": "de:ad:be:ef:00:02",
+      "signal_dbm": -71,
+      "quality": 39,
+      "quality_max": 70,
+      "encryption": "psk2",
+      "channel": 11,
+      "saved_id": "wifinet2"
+    },
+    {
+      "ssid": "Keenetic-4821",
+      "bssid": "de:ad:be:ef:00:03",
+      "signal_dbm": -83,
+      "quality": 27,
+      "quality_max": 70,
+      "encryption": "psk2",
+      "channel": 1,
+      "saved_id": null
+    },
+    {
+      "ssid": "",
+      "bssid": "de:ad:be:ef:00:04",
+      "signal_dbm": -88,
+      "quality": 22,
+      "quality_max": 70,
+      "encryption": "none",
+      "channel": 13,
+      "saved_id": null
+    }
+  ]
+}

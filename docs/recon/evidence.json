@@ -1,0 +1,387 @@
+{
+  "_comment": "Каждый внешний литерал в internal/{b4,nikki,led,executor,wireless} обязан быть здесь со status=verified и ссылкой на raw/. scripts/check-evidence.sh проверяет это механически. status=hypothesis считается НЕподтверждённым.",
+  "_snapshot": "grenderRouter, OpenWrt 25.12, 2026-08-02",
+  "b4_api": {
+    "status": "verified",
+    "base_url": "http://127.0.0.1:7000",
+    "base_path": "/api",
+    "listen_observed": ":::7000",
+    "auth_required": false,
+    "version_on_router": "1.74.1",
+    "source_tree": "/Users/aleksandrkopytov/sources/b4 @ v1.74.2 25e054d7",
+    "raw": "raw/50-b4-api.txt",
+    "surfaces": [
+      {
+        "method": "GET",
+        "path": "/api/version",
+        "auth_exempt": true,
+        "purpose": "health probe + version gate",
+        "response_keys": [
+          "version",
+          "commit",
+          "build_date"
+        ],
+        "raw": "raw/50-b4-api.txt",
+        "src": "src/http/handler/system.go:21,234-248"
+      },
+      {
+        "method": "GET",
+        "path": "/api/auth/check",
+        "auth_exempt": true,
+        "response_keys": [
+          "auth_required"
+        ],
+        "raw": "raw/50-b4-api.txt",
+        "src": "src/http/auth.go:149,220-223"
+      },
+      {
+        "method": "GET",
+        "path": "/api/sets",
+        "purpose": "list sets; flat array",
+        "response_keys": [
+          "id",
+          "name",
+          "enabled"
+        ],
+        "src": "src/http/handler/sets.go:16,233-242,270-277"
+      },
+      {
+        "method": "POST",
+        "path": "/api/sets/batch-set-enabled",
+        "purpose": "enable/disable N sets; hot-applies AND persists",
+        "request_keys": [
+          "ids",
+          "enabled"
+        ],
+        "response_keys": [
+          "success",
+          "updated"
+        ],
+        "min_version": "1.64.0",
+        "src": "src/http/handler/sets.go:23,634-698"
+      }
+    ],
+    "set_survives_restart": true,
+    "set_survives_restart_src": "src/http/handler/config.go:439 (SaveToFile before cfgPtr.Store)",
+    "hot_apply": true,
+    "hot_apply_src": "src/http/handler/config.go:402-407 (globalPool.UpdateConfig)",
+    "forbidden": [
+      {
+        "method": "PUT",
+        "path": "/api/sets/{id}",
+        "why": "full replace, not merge — decodes into a zero-valued SetConfig; sending {enabled:true} wipes the whole strategy",
+        "src": "src/http/handler/sets.go:351-368"
+      }
+    ],
+    "notes": [
+      "name is NOT unique and NOT a key — resolve name->id by scanning GET /api/sets",
+      "there is no 'current set': each set has its own enabled flag, several may be on, order = priority",
+      "exclusive selection is imposed by US: disable others + enable target (two calls)",
+      "b4's SaveToFile uses O_TRUNC without temp+rename (src/config/methods.go:36-45) — not atomic. Not our file, not our bug; mention in README."
+    ]
+  },
+  "b4_json": {
+    "status": "out_of_scope",
+    "why": "owner decision: b4 is driven exclusively through its HTTP API; /etc/b4/b4.json is never read or written",
+    "enforced_by": "scripts/check-b4json.sh"
+  },
+  "wireless": {
+    "status": "verified",
+    "raw": "raw/10-uci-show-wireless.txt",
+    "station_radio": "radio0",
+    "station_band": "2g",
+    "ap_radio": "radio1",
+    "ap_band": "5g",
+    "upstream_netif": "wwan",
+    "upstream_netif_raw": "raw/11-uci-show-network.txt",
+    "lan_addr": "192.168.9.1",
+    "sections_are_named": true,
+    "missing_disabled_means_enabled": true,
+    "missing_disabled_evidence": "wifinet0 has no `disabled` option and is the live association (raw/21-ubus-network-wireless-status.json)",
+    "selection_at_snapshot": "Single",
+    "notes": [
+      "wifinet0 = John24, enabled (no disabled option) — the active upstream",
+      "wifinet2 = ATOM, disabled='1' — a saved-but-unselected upstream; the model already exists on the router",
+      "wifinet1 = grenderNet, mode=ap on radio1 — home AP, not ours to touch"
+    ]
+  },
+  "phy": {
+    "status": "verified",
+    "raw": "raw/30-leds-and-phy.txt",
+    "phy_count": 1,
+    "phy_name": "phy0",
+    "radios_share_phy": true,
+    "evidence": "radio0 and radio1 have an identical `path` in raw/10-uci-show-wireless.txt; /sys/class/ieee80211/ lists only phy0",
+    "consequence_phase1": "none — phase 1 applies nothing",
+    "consequence_phase2": "wifi reload cycles the whole phy; the home AP may drop for seconds. Must be measured before phase 2 code.",
+    "channel_steal_risk": "none — station is 2.4 GHz, AP is 5 GHz"
+  },
+  "ubus": {
+    "status": "verified",
+    "raw_list": "raw/20-ubus-list.txt",
+    "raw_wireless_status": "raw/21-ubus-network-wireless-status.json",
+    "raw_iwinfo_sigs": "raw/22-ubus-v-list-iwinfo.txt",
+    "raw_iwinfo_scan": "raw/23-ubus-iwinfo-scan.json",
+    "raw_iwinfo_info": "raw/24-ubus-iwinfo-info.json",
+    "raw_wwan_status": "raw/26-ubus-network-interface-wwan.json",
+    "objects": {
+      "network.wireless": "status -> per-radio {up, pending, config, interfaces[{section, config, ifname, stations}]}",
+      "iwinfo": "devices{}, info{device}, scan{device}, assoclist{device,mac}, freqlist{device}, survey{device}, phyname{section}",
+      "network.interface.wwan": "upstream L3 status"
+    },
+    "scan_shape": {
+      "root": "{results: [...]}",
+      "fields": [
+        "ssid?",
+        "bssid",
+        "mode",
+        "band",
+        "channel",
+        "mhz",
+        "signal",
+        "quality",
+        "quality_max",
+        "encryption"
+      ],
+      "ssid_may_be_absent": true,
+      "ssid_absent_meaning": "скрытая сеть; в снимке 3 из 14 результатов без ssid — парсер обязан это переживать, панель обязана показывать",
+      "signal_unit": "dBm, отрицательное — используем его (макет рисует «−48 dBm»)",
+      "quality_scale": "quality из quality_max (70), альтернативная шкала",
+      "raw": "raw/23-ubus-iwinfo-scan.json"
+    },
+    "info_shape": {
+      "associated_ssid_field": "ssid",
+      "verified": "raw/24-ubus-iwinfo-info.json — ssid == John24 совпадает с включённой секцией wifinet0",
+      "bssid_field_unreliable": true,
+      "bssid_warning": "в режиме station поле bssid содержит MAC самого роутера (94:83:C4:E4:69:D8 == fe80::9683:c4ff:fee4:69d8 из raw/25-netstat.txt), а не точки доступа. В raw/23 сеть John24 видна с BSSID 1C:3B:F3:DF:74:88. Не использовать без отдельной проверки.",
+      "other_useful": [
+        "signal",
+        "noise",
+        "quality",
+        "bitrate",
+        "channel",
+        "frequency",
+        "mode"
+      ]
+    },
+    "wwan_shape": {
+      "online_rule": "up == true И len(ipv4-address) > 0 И есть маршрут target 0.0.0.0/mask 0 с nexthop",
+      "why_not_just_up": "интерфейс поднят и без аренды DHCP — одного up недостаточно",
+      "fields": [
+        "up",
+        "pending",
+        "uptime",
+        "l3_device",
+        "proto",
+        "ipv4-address[{address,mask}]",
+        "route[]",
+        "dns-server[]",
+        "data.dhcpserver"
+      ],
+      "observed_upstream_subnet": "192.168.0.0/24, шлюз 192.168.0.1 — с LAN 192.168.9.0/24 не пересекается",
+      "raw": "raw/26-ubus-network-interface-wwan.json"
+    },
+    "ifname_station_observed": "phy0.0-sta0",
+    "ifname_ap_observed": "phy0.1-ap0",
+    "ifname_rule": "NEVER hardcode. Derive from network.wireless status: radio -> interfaces[] -> {section, ifname}. The section<->ifname link is given directly in the response.",
+    "enforced_by": "scripts/check-no-hardcoded-if.sh"
+  },
+  "led": {
+    "status": "verified",
+    "raw": "raw/30-leds-and-phy.txt",
+    "paths": [
+      "/sys/class/leds/blue:status",
+      "/sys/class/leds/white:status"
+    ],
+    "current_trigger": "none",
+    "timer_trigger_available": true,
+    "available_triggers": [
+      "none",
+      "timer",
+      "heartbeat",
+      "default-on",
+      "netdev",
+      "pattern",
+      "phy0rx",
+      "phy0tx",
+      "phy0assoc",
+      "phy0radio"
+    ],
+    "conflicts_in_etc_config_system": false,
+    "conflicts_evidence": "`uci show system | grep -i led` returns nothing — no `config led` sections exist",
+    "policy": "best-effort: LED errors are logged and swallowed, never fail a job. Read back trigger/brightness after write as a cheap guard."
+  },
+  "etc_config_perms": {
+    "status": "verified",
+    "raw": "raw/40-etc-config-perms.txt",
+    "wireless_mode": "644",
+    "wireless_world_readable": true,
+    "consequence": "the API token must NOT live in UCI. Sidecar /etc/netmoded/token at 0600; our own /etc/config/netmode also 0600."
+  },
+  "daemon_port": {
+    "status": "verified",
+    "raw": "raw/25-netstat.txt",
+    "port_8080_free": false,
+    "port_8080_taken_by": "mihomo",
+    "occupied": [
+      22,
+      53,
+      80,
+      443,
+      1053,
+      1080,
+      7890,
+      7891,
+      7892,
+      8080,
+      9090,
+      40253
+    ],
+    "note_7000_absent": "порт b4 в этом снимке отсутствует, хотя в raw/50 был: b4 перезапускался. Клиент обязан переживать это как 503.",
+    "chosen": 8088,
+    "chosen_rationale": "свободен в снимке, вне диапазонов mihomo (7890-7892, 1080, 9090, 8080) и uhttpd (80, 443). Проверить netstat перед первым запуском."
+  },
+  "nikki": {
+    "status": "verified",
+    "clash_api_port": 9090,
+    "listen_uci": "nikki.mixin.api_listen (по умолчанию [::]:9090)",
+    "secret_uci": "nikki.mixin.api_secret",
+    "auth": "Authorization: Bearer <секрет>",
+    "auth_query_param_does_not_work": "?secret= отвечает {\"message\":\"Unauthorized\"} — параметр предназначен веб-морде LuCI",
+    "version": "mihomo v1.19.27, meta=true",
+    "raw": [
+      "raw/60-clash-proxies.json",
+      "raw/61-clash-groups.json"
+    ],
+    "surfaces": [
+      {
+        "method": "GET",
+        "path": "/version",
+        "response_keys": [
+          "meta",
+          "version"
+        ],
+        "raw": "raw/60-clash-proxies.json"
+      },
+      {
+        "method": "GET",
+        "path": "/proxies",
+        "shape": "{proxies: {name: {...}}} — ОБЪЕКТ, не массив",
+        "raw": "raw/60-clash-proxies.json"
+      },
+      {
+        "method": "GET",
+        "path": "/proxies/{name}/delay",
+        "status": "hypothesis",
+        "note": "форма ответа не снята; POST /api/nikki/test не реализуется до подтверждения"
+      },
+      {
+        "method": "PUT",
+        "path": "/proxies/{group}",
+        "body": {
+          "name": "<участник>"
+        },
+        "note": "закрепляет участника; 400 «Must be a Selector» если цель не SelectAble",
+        "src": "hub/route/proxies.go updateProxy; adapter/outboundgroup/urltest.go Set"
+      },
+      {
+        "method": "DELETE",
+        "path": "/proxies/{group}",
+        "note": "снимает закрепление (ForceSet(\"\")) — это и есть AUTO; только для не-Selector групп",
+        "src": "hub/route/proxies.go unfixedProxy"
+      }
+    ],
+    "delay_zero_means_no_probe": "в history значение delay:0 — это НЕ ноль миллисекунд, а несостоявшаяся проба. Наружу обязано уходить как null, иначе мёртвый узел покажется самым быстрым.",
+    "group_layout": {
+      "PROXY": {
+        "type": "URLTest",
+        "members": 29,
+        "now": "выбирается движком"
+      },
+      "BYPASS": {
+        "type": "Fallback",
+        "all": [
+          "PROXY",
+          "REJECT"
+        ],
+        "note": "это и есть fail-closed"
+      },
+      "GLOBAL": {
+        "type": "Selector",
+        "all": [
+          "DIRECT",
+          "REJECT",
+          "PROXY",
+          "BYPASS"
+        ]
+      }
+    },
+    "spec_divergence": "SPEC §7 предполагает PROXY типа selector со вложенным AUTO. Фактически PROXY — URLTest, но это НЕ мешает: mihomo проверяет интерфейс SelectAble (hub/route/proxies.go), и URLTest его реализует через Set()/ForceSet(). Закреплённый узел хранится в поле selected и отдаётся как fixed. Возврат к автовыбору — DELETE /proxies/{группа} (только для не-Selector групп). Правка профиля НЕ требуется; внешний контракт спеки ({\"name\":\"AUTO\"}) сохранён.",
+    "doc": "docs/recon/nikki.md",
+    "fixed_field": "поле fixed = selected группы; отличает ручное закрепление от автовыбора, по одному now это неразличимо",
+    "residual_risk": "поведение fail-closed при закреплённом МЁРТВОМ узле не прослежено. Закрепление трактуется как временное: панель держит возврат к AUTO на виду."
+  },
+  "b4_sets_observed": {
+    "status": "verified",
+    "raw": "raw/51-b4-sets.json",
+    "count": 2,
+    "names": [
+      "workki",
+      "HomeSet"
+    ],
+    "enabled_at_snapshot": [
+      "HomeSet"
+    ],
+    "shape_confirms_source_analysis": true,
+    "mockup_names_are_fiction": "макет рисует general/general_alt/general_mod/faceless/discord/discord_ipv4 — на роутере таких нет. Панель обязана брать имена из API, а не из макета.",
+    "payload_size_warning": "каждый сет тащит ~2.5 КБ стратегии; полный ответ ~5 КБ. /api/status опрашивается раз в секунду, поэтому демон проецирует ответ до {id,name,enabled} и кэширует, а не проксирует."
+  },
+  "open_questions": [
+    {
+      "id": "RQ-01",
+      "text": "Nikki: секрет Clash API и текущая раскладка групп (PROXY должна стать selector с вложенной AUTO)",
+      "blocks": [],
+      "answer": "ЗАКРЫТ. Порт 9090, секрет в nikki.mixin.api_secret, аутентификация Bearer. Раскладка групп: PROXY=URLTest (не selector), BYPASS=Fallback[PROXY,REJECT], GLOBAL=Selector. Ручной выбор узла невозможен без правки профиля — см. docs/recon/nikki.md."
+    },
+    {
+      "id": "RQ-02",
+      "text": "Сохраняет ли LuCI Save&Apply именованные секции и неизвестные опции? Проверять на черновой выключенной секции.",
+      "blocks": [],
+      "severity": "низкая — влияет только на стратегию идентификаторов",
+      "answer": null
+    },
+    {
+      "id": "RQ-03",
+      "text": "БЛОКЕР ФАЗЫ 2: самый узкий глагол применения — остаётся ли grenderNet поднятой при применении только radio0?",
+      "blocks": [
+        "phase2-upstream"
+      ],
+      "answer": null
+    },
+    {
+      "id": "RQ-04",
+      "text": "ФАЗА 2: рвёт ли iwinfo scan на phy0.0-sta0 активную ассоциацию?",
+      "blocks": [
+        "phase2-upstream"
+      ],
+      "answer": "косвенно: скан выполнен при активной ассоциации, ассоциация в raw/24 жива (uptime wwan 215 с в raw/26). Прямой проверки ping во время скана не было."
+    },
+    {
+      "id": "RQ-05",
+      "text": "Число клиентов домашней точки: стоит ли брать assoclist по phy0.1-ap0 или stations[] из network.wireless status",
+      "blocks": [],
+      "severity": "низкая — ap.clients отдаётся как null, пока не подтверждено",
+      "resolve_with": "ubus call iwinfo assoclist '{\"device\":\"phy0.1-ap0\"}'",
+      "answer": null
+    },
+    {
+      "id": "RQ-06",
+      "text": "Форма ответа GET /proxies/{name}/delay — нужна для POST /api/nikki/test",
+      "blocks": [
+        "nikki-test"
+      ],
+      "resolve_with": "curl -s -H \"Authorization: Bearer $S\" 'http://127.0.0.1:9090/proxies/PROXY/delay?timeout=3000&url=https://www.gstatic.com/generate_204'",
+      "answer": null
+    }
+  ]
+}

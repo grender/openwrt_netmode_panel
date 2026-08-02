@@ -1,0 +1,29 @@
+{
+  "fingerprint": "sha256:1f0c9a3b7d2e4a58",
+  "selection_state": "single",
+  "radio": {
+    "device": "radio0",
+    "band": "2g",
+    "mode": "sta"
+  },
+  "networks": [
+    {
+      "id": "wifinet0",
+      "ssid": "John24",
+      "encryption": "psk2",
+      "has_key": true,
+      "network": "wwan",
+      "enabled": true,
+      "editable": false
+    },
+    {
+      "id": "wifinet2",
+      "ssid": "ATOM",
+      "encryption": "psk2",
+      "has_key": true,
+      "network": "wwan",
+      "enabled": false,
+      "editable": true
+    }
+  ]
+}

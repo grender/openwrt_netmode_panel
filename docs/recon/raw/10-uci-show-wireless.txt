@@ -1,0 +1,43 @@
+# snapshot: grenderRouter, OpenWrt 25.12, 2026-08-02
+# command: uci show wireless
+# REDACTED: option key values replaced with placeholders that preserve
+#           character-class shape (see docs/recon/README.md). Nothing else changed.
+wireless.radio0=wifi-device
+wireless.radio0.type='mac80211'
+wireless.radio0.path='soc/11280000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0'
+wireless.radio0.radio='0'
+wireless.radio0.cell_density='0'
+wireless.radio0.country='RU'
+wireless.radio0.band='2g'
+wireless.radio0.channel='auto'
+wireless.radio1=wifi-device
+wireless.radio1.type='mac80211'
+wireless.radio1.path='soc/11280000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0'
+wireless.radio1.radio='1'
+wireless.radio1.band='5g'
+wireless.radio1.channel='auto'
+wireless.radio1.country='RU'
+wireless.radio1.cell_density='0'
+wireless.radio1.htmode='HT20'
+wireless.wifinet0=wifi-iface
+wireless.wifinet0.device='radio0'
+wireless.wifinet0.mode='sta'
+wireless.wifinet0.network='wwan'
+wireless.wifinet0.ssid='John24'
+wireless.wifinet0.encryption='psk2'
+wireless.wifinet0.key='REDACTED_PSK_NUMERIC8'
+wireless.wifinet1=wifi-iface
+wireless.wifinet1.device='radio1'
+wireless.wifinet1.mode='ap'
+wireless.wifinet1.ssid='grenderNet'
+wireless.wifinet1.encryption='psk2'
+wireless.wifinet1.key='REDACTED_PSK_NUMERIC8'
+wireless.wifinet1.network='lan'
+wireless.wifinet2=wifi-iface
+wireless.wifinet2.device='radio0'
+wireless.wifinet2.mode='sta'
+wireless.wifinet2.ssid='ATOM'
+wireless.wifinet2.encryption='psk2'
+wireless.wifinet2.key='REDACTED_PSK!!SPECIAL@@'
+wireless.wifinet2.network='wwan'
+wireless.wifinet2.disabled='1'

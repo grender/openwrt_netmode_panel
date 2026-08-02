@@ -1,0 +1,85 @@
+{
+	"radio0": {
+		"up": true,
+		"pending": false,
+		"autostart": true,
+		"disabled": false,
+		"retry_setup_failed": false,
+		"config": {
+			"type": "mac80211",
+			"band": "2g",
+			"cell_density": 0,
+			"channel": "auto",
+			"country": "RU",
+			"path": "soc/11280000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0",
+			"radio": 0
+		},
+		"interfaces": [
+			{
+				"section": "wifinet0",
+				"config": {
+					"network": [
+						"wwan"
+					],
+					"device": [
+						"radio0"
+					],
+					"mode": "sta",
+					"encryption": "psk2",
+					"key": "REDACTED_PSK_NUMERIC8",
+					"ssid": "John24",
+					"radios": [
+						0
+					]
+				},
+				"ifname": "phy0.0-sta0",
+				"vlans": [
+				],
+				"stations": [
+				]
+			}
+		]
+	},
+	"radio1": {
+		"up": true,
+		"pending": false,
+		"autostart": true,
+		"disabled": false,
+		"retry_setup_failed": false,
+		"config": {
+			"type": "mac80211",
+			"band": "5g",
+			"cell_density": 0,
+			"channel": "auto",
+			"country": "RU",
+			"htmode": "HT20",
+			"path": "soc/11280000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0",
+			"radio": 1
+		},
+		"interfaces": [
+			{
+				"section": "wifinet1",
+				"config": {
+					"network": [
+						"lan"
+					],
+					"device": [
+						"radio1"
+					],
+					"mode": "ap",
+					"encryption": "psk2",
+					"key": "REDACTED_PSK_NUMERIC8",
+					"ssid": "grenderNet",
+					"radios": [
+						1
+					]
+				},
+				"ifname": "phy0.1-ap0",
+				"vlans": [
+				],
+				"stations": [
+				]
+			}
+		]
+	}
+}

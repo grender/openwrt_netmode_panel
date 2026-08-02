@@ -1,0 +1,16 @@
+# snapshot: grenderRouter, OpenWrt 25.12, 2026-08-02
+# command: ls -l /etc/config/
+-rw-r--r--    1 root     root           230 Jun 29 18:27 attendedsysupgrade
+-rw-------    1 root     root          1175 Aug  2 00:10 dhcp
+-rw-------    1 root     root           286 Jun 29 15:59 dropbear
+-rw-r--r--    1 root     root          2739 Aug  2 00:16 firewall
+-rw-r--r--    1 root     root          1031 Aug  2 00:16 luci
+-rw-------    1 root     root           693 Jun 29 19:12 network
+-rw-------    1 root     root          6044 Aug  2 10:00 nikki
+-rw-------    1 root     root           167 Jun 29 15:59 rpcd
+-rw-------    1 root     root           456 Jun 29 18:35 system
+-rw-------    1 root     root            68 Mar 30  2024 ttyd
+-rw-r--r--    1 root     root            73 Jun 29 15:59 ubihealthd
+-rw-r--r--    1 root     root             0 Jan  1  1970 ubootenv
+-rw-------    1 root     root           783 Jun 29 15:59 uhttpd
+-rw-r--r--    1 root     root          1007 Jul 31 18:35 wireless

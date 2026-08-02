@@ -1,0 +1,183 @@
+// Command netmoded — демон управления сетевыми режимами роутера.
+//
+// Слушает только на LAN-адресе, требует токен, отдаёт API и панель
+// из одного бинаря. Наружу не выставляется ни при каких условиях.
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"flag"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+
+	"netmoded/internal/executor"
+	"netmoded/internal/httpapi"
+)
+
+var version = "dev"
+
+const (
+	defaultPort      = 8088 // 8080 занят mihomo (docs/recon/raw/25-netstat.txt)
+	defaultTokenFile = "/etc/netmoded/token"
+)
+
+func main() {
+	showVersion := flag.Bool("version", false, "напечатать версию и выйти")
+	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
+
+	if err := run(); err != nil {
+		log.Fatalf("netmoded: %v", err)
+	}
+}
+
+func run() error {
+	ex := executor.New()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	cfg, err := loadConfig(ctx, ex)
+	if err != nil {
+		return err
+	}
+
+	cfg.Logf = log.Printf
+	srv, err := httpapi.NewServer(cfg, ex)
+	if err != nil {
+		return err
+	}
+	defer srv.Close()
+
+	// Расписание обновления подписки. Строку happ2clash из
+	// /etc/crontabs/root надо убрать руками — чужой crontab демон не правит
+	// (SPEC §9).
+	go srv.Scheduler().Run(ctx)
+
+	log.Printf("netmoded %s слушает http://%s", version, srv.Addr())
+	if err := srv.ListenAndServe(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	return nil
+}
+
+// loadConfig читает /etc/config/netmode.
+//
+// Отсутствие файла — валидное состояние свежей установки, а не ошибка.
+// Единственное, без чего демон не стартует, — адрес прослушивания:
+// отката на «слушать везде» нет (ADR-0014).
+func loadConfig(ctx context.Context, ex executor.Executor) (httpapi.Config, error) {
+	get := func(opt, fallback string) string {
+		v, err := ex.UCIGet(ctx, "netmode", "main", opt)
+		if err != nil || v == "" {
+			return fallback
+		}
+		return v
+	}
+
+	listen := get("listen", "")
+	if listen == "" {
+		// Выводим из LAN-адреса роутера, отбрасывая маску.
+		v, err := ex.UCIGet(ctx, "network", "lan", "ipaddr")
+		if err != nil {
+			return httpapi.Config{}, fmt.Errorf(
+				"адрес прослушивания не задан и не выводится из network.lan.ipaddr: %w", err)
+		}
+		listen = strings.SplitN(v, "/", 2)[0]
+	}
+
+	port := defaultPort
+	if v := get("port", ""); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return httpapi.Config{}, fmt.Errorf("порт %q не число", v)
+		}
+		port = n
+	}
+
+	token, err := loadOrCreateToken(get("token_file", defaultTokenFile))
+	if err != nil {
+		return httpapi.Config{}, err
+	}
+
+	return httpapi.Config{
+		Listen:      listen,
+		Port:        port,
+		Token:       token,
+		NikkiURL:    nikkiURL(ctx, ex),
+		NikkiSecret: get2(ctx, ex, "nikki", "mixin", "api_secret"),
+	}, nil
+}
+
+// nikkiURL выводит адрес Clash API из nikki.mixin.api_listen.
+//
+// Значение вида "[::]:9090" означает «слушает везде»; ходить туда надо
+// по петле, а не по literal-адресу из конфига.
+func nikkiURL(ctx context.Context, ex executor.Executor) string {
+	listen := get2(ctx, ex, "nikki", "mixin", "api_listen")
+	if listen == "" {
+		return "http://127.0.0.1:9090"
+	}
+	i := strings.LastIndex(listen, ":")
+	if i < 0 {
+		return "http://127.0.0.1:9090"
+	}
+	return "http://127.0.0.1:" + listen[i+1:]
+}
+
+func get2(ctx context.Context, ex executor.Executor, pkg, section, opt string) string {
+	v, err := ex.UCIGet(ctx, pkg, section, opt)
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
+// loadOrCreateToken читает токен, создавая его при первом запуске.
+//
+// Существующий не перезаписывается никогда: ротация — это осознанное
+// `rm` плюс перезапуск, а не побочный эффект старта демона.
+//
+// Файл, а не UCI: /etc/config/wireless имеет права 644
+// (docs/recon/raw/40-etc-config-perms.txt), то есть мировидимость в этом
+// каталоге зависит от пакета, а не от нашей политики.
+func loadOrCreateToken(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err == nil {
+		tok := strings.TrimSpace(string(b))
+		if tok == "" {
+			return "", fmt.Errorf("%s пуст: удалите его, токен будет создан заново", path)
+		}
+		return tok, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("чтение токена %s: %w", path, err)
+	}
+
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("генерация токена: %w", err)
+	}
+	tok := base64.RawURLEncoding.EncodeToString(raw)
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("каталог токена: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(tok+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("запись токена: %w", err)
+	}
+	log.Printf("создан токен %s (права 0600)", path)
+	return tok, nil
+}

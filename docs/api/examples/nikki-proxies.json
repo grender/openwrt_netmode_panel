@@ -1,0 +1,32 @@
+{
+  "available": true,
+  "group": "PROXY",
+  "selected": "AUTO",
+  "tested_at": "2026-08-02T09:59:40Z",
+  "members": [
+    {
+      "name": "AUTO",
+      "type": "url-test",
+      "delay_ms": 118,
+      "alive": true
+    },
+    {
+      "name": "NL-01",
+      "type": "vless",
+      "delay_ms": 118,
+      "alive": true
+    },
+    {
+      "name": "NL-02",
+      "type": "vless",
+      "delay_ms": 142,
+      "alive": true
+    },
+    {
+      "name": "DE-01",
+      "type": "vless",
+      "delay_ms": null,
+      "alive": false
+    }
+  ]
+}

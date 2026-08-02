@@ -1,0 +1,30 @@
+# snapshot: grenderRouter, OpenWrt 25.12, 2026-08-02
+# command: uci show network
+# REDACTED: dhcp_default_duid and ula_prefix (device-identifying), shape preserved.
+network.loopback=interface
+network.loopback.device='lo'
+network.loopback.proto='static'
+network.loopback.ipaddr='127.0.0.1/8'
+network.globals=globals
+network.globals.dhcp_default_duid='REDACTED_DUID_36HEX'
+network.globals.ula_prefix='fdxx:xxxx:xxxx::/48'
+network.globals.packet_steering='1'
+network.@device[0]=device
+network.@device[0].name='br-lan'
+network.@device[0].type='bridge'
+network.@device[0].ports='eth1'
+network.lan=interface
+network.lan.device='br-lan'
+network.lan.proto='static'
+network.lan.ip6assign='60'
+network.lan.ipaddr='192.168.9.1/24'
+network.lan.multipath='off'
+network.wan=interface
+network.wan.device='eth0'
+network.wan.proto='dhcp'
+network.wan6=interface
+network.wan6.device='eth0'
+network.wan6.proto='dhcpv6'
+network.wwan=interface
+network.wwan.proto='dhcp'
+network.wwan.multipath='off'

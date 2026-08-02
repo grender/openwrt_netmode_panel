@@ -1,0 +1,54 @@
+{
+    "up": true,
+    "pending": false,
+    "available": true,
+    "autostart": true,
+    "dynamic": false,
+    "uptime": 215,
+    "l3_device": "phy0.0-sta0",
+    "proto": "dhcp",
+    "device": "phy0.0-sta0",
+    "updated": [
+        "addresses",
+        "routes",
+        "data"
+    ],
+    "metric": 0,
+    "dns_metric": 0,
+    "delegation": true,
+    "ipv4-address": [
+        {
+            "address": "192.168.0.234",
+            "mask": 24
+        }
+    ],
+    "ipv6-address": [],
+    "ipv6-prefix": [],
+    "ipv6-prefix-assignment": [],
+    "route": [
+        {
+            "target": "0.0.0.0",
+            "mask": 0,
+            "nexthop": "192.168.0.1",
+            "source": "192.168.0.234/32"
+        }
+    ],
+    "dns-server": [
+        "192.168.0.1"
+    ],
+    "dns-search": [],
+    "neighbors": [],
+    "inactive": {
+        "ipv4-address": [],
+        "ipv6-address": [],
+        "route": [],
+        "dns-server": [],
+        "dns-search": [],
+        "neighbors": []
+    },
+    "data": {
+        "dhcpserver": "192.168.0.1",
+        "hostname": "grenderRouter",
+        "leasetime": 7200
+    }
+}

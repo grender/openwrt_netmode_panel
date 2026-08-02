@@ -1,0 +1,350 @@
+{
+    "results": [
+        {
+            "ssid": "John24",
+            "bssid": "1C:3B:F3:DF:74:88",
+            "mode": "Master",
+            "band": 2,
+            "channel": 1,
+            "mhz": 2412,
+            "signal": -48,
+            "quality": 62,
+            "quality_max": 70,
+            "ht_operation": {
+                "primary_channel": 75,
+                "secondary_channel_offset": "no secondary",
+                "channel_width": 20
+            },
+            "vht_operation": {
+                "channel_width": 40,
+                "center_freq_1": 85,
+                "center_freq_2": 54
+            },
+            "encryption": {
+                "enabled": true,
+                "wpa": [
+                    2
+                ],
+                "authentication": [
+                    "psk"
+                ],
+                "ciphers": [
+                    "ccmp"
+                ]
+            }
+        },
+        {
+            "ssid": "REDACTED_NEIGHBOUR_A",
+            "bssid": "00:00:5E:00:53:01",
+            "mode": "Master",
+            "band": 2,
+            "channel": 1,
+            "mhz": 2412,
+            "signal": -50,
+            "quality": 60,
+            "quality_max": 70,
+            "vht_operation": {
+                "channel_width": 40,
+                "center_freq_1": 11,
+                "center_freq_2": 0
+            },
+            "eht_operation": {
+                "channel_width": 0,
+                "center_freq_1": 1,
+                "center_freq_2": 0
+            },
+            "encryption": {
+                "enabled": true,
+                "wpa": [
+                    2,
+                    3
+                ],
+                "authentication": [
+                    "psk",
+                    "sae"
+                ],
+                "ciphers": [
+                    "ccmp"
+                ]
+            }
+        },
+        {
+            "bssid": "00:00:5E:00:53:02",
+            "mode": "Master",
+            "band": 2,
+            "channel": 1,
+            "mhz": 2412,
+            "signal": -50,
+            "quality": 60,
+            "quality_max": 70,
+            "encryption": {
+                "enabled": true,
+                "wpa": [
+                    2,
+                    3
+                ],
+                "authentication": [
+                    "psk",
+                    "sae"
+                ],
+                "ciphers": [
+                    "ccmp"
+                ]
+            }
+        },
+        {
+            "ssid": "REDACTED_NEIGHBOUR_B",
+            "bssid": "00:00:5E:00:53:03",
+            "mode": "Master",
+            "band": 2,
+            "channel": 10,
+            "mhz": 2457,
+            "signal": -53,
+            "quality": 57,
+            "quality_max": 70,
+            "encryption": {
+                "enabled": true,
+                "wpa": [
+                    2
+                ],
+                "authentication": [
+                    "psk"
+                ],
+                "ciphers": [
+                    "ccmp"
+                ]
+            }
+        },
+        {
+            "bssid": "00:00:5E:00:53:04",
+            "mode": "Master",
+            "band": 2,
+            "channel": 10,
+            "mhz": 2457,
+            "signal": -54,
+            "quality": 56,
+            "quality_max": 70,
+            "encryption": {
+                "enabled": true,
+                "wpa": [
+                    2,
+                    3
+                ],
+                "authentication": [
+                    "psk",
+                    "sae"
+                ],
+                "ciphers": [
+                    "ccmp"
+                ]
+            }
+        },
+        {
+            "ssid": "REDACTED_NEIGHBOUR_C",
+            "bssid": "00:00:5E:00:53:05",
+            "mode": "Master",
+            "band": 2,
+            "channel": 1,
+            "mhz": 2412,
+            "signal": -65,
+            "quality": 45,
+            "quality_max": 70,
+            "encryption": {
+                "enabled": true,
+                "wpa": [
+                    2
+                ],
+                "authentication": [
+                    "psk"
+                ],
+                "ciphers": [
+                    "ccmp"
+                ]
+            }
+        },
+        {
+            "bssid": "00:00:5E:00:53:06",
+            "mode": "Master",
+            "band": 2,
+            "channel": 1,
+            "mhz": 2412,
+            "signal": -45,
+            "quality": 65,
+            "quality_max": 70,
+            "encryption": {
+                "enabled": true,
+                "wpa": [
+                    2
+                ],
+                "authentication": [
+                    "psk"
+                ],
+                "ciphers": [
+                    "ccmp"
+                ]
+            }
+        },
+        {
+            "ssid": "REDACTED_NEIGHBOUR_D",
+            "bssid": "00:00:5E:00:53:07",
+            "mode": "Master",
+            "band": 2,
+            "channel": 6,
+            "mhz": 2437,
+            "signal": -62,
+            "quality": 48,
+            "quality_max": 70,
+            "encryption": {
+                "enabled": true,
+                "wpa": [
+                    2
+                ],
+                "authentication": [
+                    "psk"
+                ],
+                "ciphers": [
+                    "ccmp"
+                ]
+            }
+        },
+        {
+            "ssid": "REDACTED_NEIGHBOUR_E",
+            "bssid": "00:00:5E:00:53:08",
+            "mode": "Master",
+            "band": 2,
+            "channel": 1,
+            "mhz": 2412,
+            "signal": -69,
+            "quality": 41,
+            "quality_max": 70,
+            "encryption": {
+                "enabled": true,
+                "wpa": [
+                    2
+                ],
+                "authentication": [
+                    "psk"
+                ],
+                "ciphers": [
+                    "ccmp"
+                ]
+            }
+        },
+        {
+            "ssid": "REDACTED_NEIGHBOUR_F",
+            "bssid": "00:00:5E:00:53:09",
+            "mode": "Master",
+            "band": 2,
+            "channel": 4,
+            "mhz": 2427,
+            "signal": -66,
+            "quality": 44,
+            "quality_max": 70,
+            "encryption": {
+                "enabled": true,
+                "wpa": [
+                    2
+                ],
+                "authentication": [
+                    "psk"
+                ],
+                "ciphers": [
+                    "ccmp"
+                ]
+            }
+        },
+        {
+            "ssid": "REDACTED_NEIGHBOUR_G",
+            "bssid": "00:00:5E:00:53:0A",
+            "mode": "Master",
+            "band": 2,
+            "channel": 9,
+            "mhz": 2452,
+            "signal": -66,
+            "quality": 44,
+            "quality_max": 70,
+            "encryption": {
+                "enabled": true,
+                "wpa": [
+                    2
+                ],
+                "authentication": [
+                    "psk"
+                ],
+                "ciphers": [
+                    "ccmp"
+                ]
+            }
+        },
+        {
+            "ssid": "REDACTED_NEIGHBOUR_H",
+            "bssid": "00:00:5E:00:53:0B",
+            "mode": "Master",
+            "band": 2,
+            "channel": 9,
+            "mhz": 2452,
+            "signal": -69,
+            "quality": 41,
+            "quality_max": 70,
+            "encryption": {
+                "enabled": true,
+                "wpa": [
+                    1,
+                    2
+                ],
+                "authentication": [
+                    "psk"
+                ],
+                "ciphers": [
+                    "ccmp"
+                ]
+            }
+        },
+        {
+            "ssid": "REDACTED_NEIGHBOUR_I",
+            "bssid": "00:00:5E:00:53:0C",
+            "mode": "Master",
+            "band": 2,
+            "channel": 13,
+            "mhz": 2472,
+            "signal": -71,
+            "quality": 39,
+            "quality_max": 70,
+            "encryption": {
+                "enabled": true,
+                "wpa": [
+                    2
+                ],
+                "authentication": [
+                    "psk"
+                ],
+                "ciphers": [
+                    "ccmp"
+                ]
+            }
+        },
+        {
+            "ssid": "REDACTED_NEIGHBOUR_J",
+            "bssid": "00:00:5E:00:53:0D",
+            "mode": "Master",
+            "band": 2,
+            "channel": 11,
+            "mhz": 2462,
+            "signal": -69,
+            "quality": 41,
+            "quality_max": 70,
+            "encryption": {
+                "enabled": true,
+                "wpa": [
+                    2
+                ],
+                "authentication": [
+                    "psk"
+                ],
+                "ciphers": [
+                    "ccmp"
+                ]
+            }
+        }
+    ]
+}

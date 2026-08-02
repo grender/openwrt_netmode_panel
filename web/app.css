@@ -1,0 +1,282 @@
+/* Токены взяты из макета Claude Design («Router Panel.dc.html»).
+   Тема одна — тёмная: панель открывают ночью, чтобы понять, почему не
+   работает интернет. Переключателя светлой темы нет намеренно. */
+
+:root {
+	--bg: #0f1113;
+	--card: #181c20;
+	--card-2: #15181b;
+	--line: #1f2429;
+	--line-2: #23282d;
+	--fg: #eef1f4;
+	--fg-2: #c6cfd7;
+	--muted: #9aa4ae;
+	--muted-2: #7d8791;
+	--muted-3: #5c666f;
+
+	--nikki: #2f5fd0;
+	--link: #4d8cff;
+	--b4: #e9eef5;
+	--off: #2b3138;
+
+	--ok: #7fd1a5;
+	--warn: #d8c48a;
+	--bad: #d99a8f;
+
+	--bad-bg: #241514;
+	--bad-line: #4a2926;
+	--ok-bg: #16241b;
+	--ok-line: #2b422f;
+
+	--r: 12px;
+	--r-lg: 14px;
+	--mono: ui-monospace, Menlo, Consolas, monospace;
+	--sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--fg);
+	font: 15px/1.5 var(--sans);
+	-webkit-font-smoothing: antialiased;
+}
+
+button, input { font-family: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+
+/* Фокус виден всегда: панелью пользуются с клавиатуры, когда мышь
+   недоступна — например, с ноутбука по ssh-туннелю. */
+:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+
+/* ─────────── шапка ─────────── */
+
+.top {
+	display: flex; align-items: center; justify-content: space-between;
+	gap: 14px; padding: 12px 16px;
+	background: #0c0e10; border-bottom: 1px solid var(--line);
+	flex-wrap: wrap;
+}
+.top-id { display: flex; align-items: baseline; gap: 12px; min-width: 0; flex-wrap: wrap; }
+.host { font: 600 15px var(--mono); letter-spacing: .02em; }
+.ap-meta { font: 12.5px var(--mono); color: var(--muted-2); }
+.top-links { display: flex; gap: 8px; flex: none; align-items: center; }
+.top-links a {
+	font: 12px var(--mono); padding: 7px 11px; border-radius: 8px;
+	border: 1px solid #262b30; color: var(--fg-2); text-decoration: none;
+}
+.top-links a:hover { border-color: var(--link); color: var(--link); }
+.top-links a[aria-disabled="true"] { opacity: .4; pointer-events: none; }
+
+.lang { display: flex; gap: 2px; background: #14181c; border-radius: 8px; padding: 2px; }
+.lang button {
+	border: 0; background: transparent; color: var(--muted-2);
+	font: 11.5px var(--mono); padding: 5px 8px; border-radius: 6px; min-height: 30px;
+}
+.lang button[aria-pressed="true"] { background: #22282e; color: var(--fg); }
+
+/* ─────────── баннер режима ─────────── */
+
+.banner { padding: 18px 16px 20px; color: #fff; }
+.banner.m-nikki { background: var(--nikki); }
+.banner.m-b4    { background: var(--b4); color: #0f1113; }
+.banner.m-off   { background: #1b1f24; }
+.banner.m-unknown { background: #3a2a2a; }
+
+.banner h1 { margin: 0; font: 700 34px/1 var(--sans); letter-spacing: -.02em; }
+.banner .sub { margin-top: 8px; font-size: 15px; opacity: .85; }
+.chips { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.chip {
+	font: 12.5px var(--mono); padding: 7px 11px; border-radius: 99px;
+	background: rgba(255,255,255,.16); white-space: nowrap;
+}
+.banner.m-b4 .chip { background: rgba(15,17,19,.10); }
+.chip.bad { background: var(--bad); color: #2a0f0c; }
+.chip.ok  { background: rgba(127,209,165,.22); }
+
+/* ─────────── карточки и секции ─────────── */
+
+.wrap { padding: 14px; display: grid; gap: 14px; }
+.card { background: var(--card-2); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px; }
+.card > h2 {
+	margin: 0 0 12px; font: 600 13px var(--sans); color: var(--muted);
+	display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+}
+.hint { font-size: 12.5px; line-height: 1.45; color: var(--muted-2); }
+.hint.tight { margin-top: 8px; }
+
+.linkbtn {
+	background: none; border: 0; padding: 0; min-height: 32px;
+	color: var(--link); font: 13px var(--sans);
+}
+.linkbtn:disabled { color: var(--muted-3); }
+
+/* ─────────── переключатель режима ─────────── */
+
+.modes { display: flex; background: rgba(0,0,0,.22); border-radius: var(--r); padding: 4px; gap: 4px; }
+.banner.m-b4 .modes { background: rgba(15,17,19,.10); }
+.modes button {
+	flex: 1; min-height: 46px; border: 0; border-radius: 9px;
+	font: 600 14px var(--sans); background: transparent; color: rgba(255,255,255,.62);
+	white-space: nowrap;
+}
+.banner.m-b4 .modes button { color: #5c666f; }
+.modes button[aria-pressed="true"].m-nikki { background: var(--nikki); color: #fff; }
+/* На светлом баннере b4 выбранная кнопка совпадает с фоном по цвету,
+   поэтому «нажатость» читается только тенью. Без неё непонятно, какой
+   режим включён, — а это первое, ради чего панель открывают. */
+.modes button[aria-pressed="true"].m-b4 {
+	background: #fff; color: #0f1113;
+	box-shadow: 0 1px 3px rgba(15,17,19,.28);
+}
+.modes button[aria-pressed="true"].m-off   { background: var(--off); color: var(--fg); }
+.modes button:disabled { opacity: .45; }
+
+/* ─────────── джоб ─────────── */
+
+.job { margin-top: 16px; background: rgba(255,255,255,.14); border-radius: var(--r); padding: 12px 13px; }
+.banner.m-b4 .job { background: rgba(15,17,19,.08); }
+.job-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13.5px; }
+.job-row .blink { animation: blink 1.2s infinite; }
+@keyframes blink { 0%,100% { opacity: 1 } 50% { opacity: .4 } }
+.bar { height: 4px; background: rgba(0,0,0,.25); margin-top: 10px; border-radius: 2px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: currentColor; transition: width .3s linear; }
+
+/* ─────────── уведомления ─────────── */
+
+.note { border-radius: var(--r-lg); padding: 14px 16px; border: 1px solid; }
+.note h3 { margin: 0 0 6px; font: 600 15px/1.35 var(--sans); }
+.note p { margin: 0; font-size: 14px; line-height: 1.45; }
+.note.err { background: var(--bad-bg); border-color: var(--bad-line); color: #f0c3bc; }
+.note.err p { color: #c2a19c; }
+.note.warn { background: #241f14; border-color: #4a3f26; color: #f0e2bc; }
+.note.warn p { color: #c2b79c; }
+.note code {
+	display: block; margin-top: 9px; padding: 8px 10px; border-radius: 8px;
+	background: rgba(0,0,0,.35); font: 12px var(--mono); color: var(--fg-2);
+	overflow-x: auto; white-space: pre;
+}
+
+/* ─────────── строки списков ─────────── */
+
+.rows { display: flex; flex-direction: column; gap: 8px; }
+.row {
+	display: flex; align-items: center; gap: 10px;
+	padding: 12px 14px; min-height: 48px; border-radius: var(--r);
+	background: var(--card); color: var(--fg-2); font-size: 14.5px;
+	border: 1px solid transparent; text-align: left; width: 100%;
+}
+.row.sel { background: #1d2a41; color: var(--fg); border-color: var(--nikki); }
+.row.dim { opacity: .55; }
+/* min-width задан намеренно: с flex:1 и min-width:0 имя сети ужимается
+   до одной буквы, как только справа появляются кнопки. Имя — главное
+   в строке, оно обязано оставаться читаемым. */
+.row .name { flex: 1 1 auto; min-width: 7ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .tag { font: 10.5px var(--mono); color: var(--muted-2); flex: none; }
+/* Автовыбор и ручное закрепление обязаны отличаться на глаз: в первом
+   случае движок продолжает следить за задержками, во втором — нет. */
+.row .tag-auto { color: var(--muted-2); }
+.row .tag-pin  { color: var(--warn); }
+.row .ms { width: 54px; text-align: right; font: 13px var(--mono); flex: none; }
+.meter { width: 46px; height: 5px; background: #23282d; border-radius: 3px; overflow: hidden; flex: none; }
+.meter > i { display: block; height: 100%; }
+.lat-ok { color: var(--ok); } .lat-warn { color: var(--warn); } .lat-bad { color: var(--bad); }
+.bg-ok { background: var(--ok); } .bg-warn { background: var(--warn); } .bg-bad { background: var(--bad); }
+
+.mark { font-size: 15px; line-height: 1; flex: none; cursor: help; }
+.empty { padding: 14px; border-radius: var(--r); background: var(--card); color: var(--muted); font-size: 14px; }
+
+/* ─────────── чипы сетов b4 ─────────── */
+
+.sets { display: flex; flex-wrap: wrap; gap: 8px; }
+.sets button {
+	padding: 10px 14px; min-height: 44px; border: 0; border-radius: 99px;
+	font: 13.5px var(--mono); background: var(--card); color: var(--fg-2);
+}
+.sets button[aria-pressed="true"] { background: var(--b4); color: #0f1113; }
+.sets button:disabled { opacity: .45; }
+
+/* ─────────── подписка ─────────── */
+
+.wide {
+	width: 100%; min-height: 46px; margin-top: 12px; border: 0;
+	border-radius: var(--r); background: #22282e; color: var(--fg);
+	font: 600 14px var(--sans);
+}
+.wide:disabled { opacity: .5; }
+.log { margin-top: 14px; display: flex; flex-direction: column; gap: 7px; }
+.log div { display: flex; gap: 10px; font-size: 12.5px; color: var(--muted-2); }
+.log .when { flex: 1; }
+
+/* ─────────── подвал ─────────── */
+
+.foot {
+	padding: 4px 16px 26px; font: 11.5px var(--mono); color: var(--muted-3);
+	display: flex; gap: 10px; flex-wrap: wrap; justify-content: space-between;
+}
+.stale { color: var(--bad); }
+
+/* ─────────── десктоп ─────────── */
+
+@media (min-width: 900px) {
+	.banner { padding: 24px 26px; display: flex; align-items: center; gap: 28px; flex-wrap: wrap; }
+	.banner .headline { flex: 1; min-width: 260px; }
+	.banner h1 { font-size: 42px; }
+	.banner .side { display: flex; flex-direction: column; gap: 12px; align-items: flex-end; }
+	.modes { flex: none; }
+	.job { width: 100%; margin-top: 0; }
+	.wrap { padding: 18px 26px 30px; grid-template-columns: repeat(3, 1fr); align-items: start; }
+	.wrap > .full { grid-column: 1 / -1; }
+}
+
+/* ─────────── мелкие кнопки в строках ─────────── */
+
+.mini {
+	flex: none; min-height: 36px; padding: 0 12px; border: 0; border-radius: 9px;
+	background: #22282e; color: var(--fg-2); font: 12.5px var(--sans);
+}
+.mini:hover { background: #2b3239; }
+.mini.danger { background: transparent; border: 1px solid #3a2a2a; color: var(--bad); }
+.mini:disabled { opacity: .45; }
+.mini.icon { padding: 0; width: 36px; text-align: center; font-size: 13px; }
+
+/* ─────────── шторка формы ─────────── */
+
+/* Снизу на телефоне, по центру на десктопе: на телефоне низ экрана —
+   зона большого пальца, на десктопе центр читается как диалог. */
+.sheet-bg {
+	position: fixed; inset: 0; background: rgba(6, 8, 10, .78);
+	display: flex; align-items: flex-end; justify-content: center; z-index: 10;
+}
+.sheet {
+	width: 100%; max-height: 92vh; overflow-y: auto;
+	background: var(--card-2); border-top: 1px solid var(--line-2);
+	border-radius: 18px 18px 0 0; padding: 20px 16px calc(22px + env(safe-area-inset-bottom));
+}
+.sheet h3 { margin: 0 0 14px; font: 600 17px var(--sans); }
+
+.field { display: block; margin-bottom: 14px; }
+.field > span { display: block; margin-bottom: 6px; font-size: 12.5px; color: var(--muted); }
+.field input, .field select {
+	width: 100%; min-height: 50px; padding: 0 14px; border-radius: 12px;
+	background: var(--bg); border: 1px solid #2a3138; color: var(--fg);
+	font: 16px var(--mono); /* 16px: меньше — и iOS зумит страницу при фокусе */
+}
+.field select { font-family: var(--sans); }
+.field input:focus, .field select:focus { border-color: var(--link); outline: none; }
+
+.sheet-actions { margin-top: 18px; display: flex; flex-direction: column; gap: 9px; }
+.wide.primary { background: var(--nikki); color: #fff; }
+
+@media (min-width: 900px) {
+	.sheet-bg { align-items: center; }
+	.sheet {
+		width: 520px; max-width: 92vw; border-radius: 16px;
+		border: 1px solid var(--line-2); padding: 24px;
+	}
+	.sheet-actions { flex-direction: row-reverse; }
+	.sheet-actions .wide { margin-top: 0; }
+}

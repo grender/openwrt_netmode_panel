@@ -1,0 +1,23 @@
+{
+  "available": true,
+  "version": "1.74.1",
+  "selected": "general",
+  "enabled_count": 1,
+  "sets": [
+    {
+      "id": "4d1f9a2e-7c30-4b58-9a61-0e2f8b7c1d34",
+      "name": "general",
+      "enabled": true
+    },
+    {
+      "id": "b8e0c153-2a44-49df-8f27-63a1d905ee72",
+      "name": "youtube",
+      "enabled": false
+    },
+    {
+      "id": "0c73a6b1-95d2-4e10-b3cc-51f8e4270a9b",
+      "name": "discord",
+      "enabled": false
+    }
+  ]
+}

@@ -1,0 +1,85 @@
+{
+  "_snapshot": "grenderRouter, 2026-08-02, ОБРЕЗАН на 3000 байт — группы PROXY/AUTO не попали",
+  "_command": "curl -s -H 'Authorization: Bearer <secret>' http://127.0.0.1:9090/proxies",
+  "_version": "mihomo v1.19.27 (meta: true)",
+  "_redacted": "адреса узлов и uuid заменены; форма сохранена дословно",
+  "proxies": {
+    "203.0.113.10:443": {
+      "alive": true,
+      "dialer-proxy": "",
+      "extra": {
+        "https://www.gstatic.com/generate_204": {
+          "alive": true,
+          "history": [
+            { "time": "2026-08-02T17:14:47.316257681Z", "delay": 0 },
+            { "time": "2026-08-02T17:15:45.072372244Z", "delay": 34 },
+            { "time": "2026-08-02T17:44:48.836050307Z", "delay": 126 },
+            { "time": "2026-08-02T17:49:48.826763398Z", "delay": 38 }
+          ]
+        }
+      },
+      "history": [
+        { "time": "2026-08-02T17:14:47.316257681Z", "delay": 0 },
+        { "time": "2026-08-02T17:15:45.072372244Z", "delay": 34 },
+        { "time": "2026-08-02T17:44:48.836050307Z", "delay": 126 },
+        { "time": "2026-08-02T17:49:48.826763398Z", "delay": 38 }
+      ],
+      "id": "00000000-0000-0000-0000-000000000001",
+      "interface": "",
+      "mptcp": false,
+      "name": "203.0.113.10:443",
+      "provider-name": "sub",
+      "routing-mark": 0,
+      "smux": false,
+      "tfo": false,
+      "type": "Vless",
+      "udp": true,
+      "uot": true,
+      "xudp": true
+    },
+    "203.0.113.20:8443": {
+      "alive": true,
+      "dialer-proxy": "",
+      "extra": {
+        "https://www.gstatic.com/generate_204": {
+          "alive": true,
+          "history": [
+            { "time": "2026-08-02T17:39:47.3166509Z", "delay": 0 },
+            { "time": "2026-08-02T17:44:48.543891345Z", "delay": 34 },
+            { "time": "2026-08-02T17:49:48.826717628Z", "delay": 38 }
+          ]
+        }
+      },
+      "history": [
+        { "time": "2026-08-02T17:39:47.3166509Z", "delay": 0 },
+        { "time": "2026-08-02T17:44:48.543891345Z", "delay": 34 },
+        { "time": "2026-08-02T17:49:48.826717628Z", "delay": 38 }
+      ],
+      "id": "00000000-0000-0000-0000-000000000002",
+      "interface": "",
+      "mptcp": false,
+      "name": "203.0.113.20:8443",
+      "provider-name": "sub",
+      "routing-mark": 0,
+      "smux": false,
+      "tfo": false,
+      "type": "Vless",
+      "udp": true,
+      "uot": true,
+      "xudp": true
+    },
+    "BYPASS": {
+      "alive": true,
+      "all": ["PROXY", "REJECT"],
+      "dialer-proxy": "",
+      "emptyFallback": "COMPATIBLE",
+      "expectedStatus": "*",
+      "extra": {},
+      "fixed": "",
+      "hidden": false,
+      "history": [],
+      "icon": "",
+      "interface": "ОБРЕЗАНО — остальные поля и группы PROXY/AUTO не получены"
+    }
+  }
+}

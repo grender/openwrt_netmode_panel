@@ -1,0 +1,1089 @@
+openapi: 3.1.0
+
+info:
+  title: netmoded — HTTP API панели управления роутером
+  version: "1.0.0-phase1"
+  description: |
+    Единственный источник правды для обоих треков разработки: Go-обработчики и
+    фронтенд пишутся по этому файлу, а не друг по другу.
+
+    ## Что нужно знать до чтения
+
+    - **Только LAN.** Сервер слушает адрес из `netmode.main.listen`
+      (сид `192.168.9.1`). `0.0.0.0` запрещён. ADR-0014.
+    - **Токен** `Authorization: Bearer <…>` обязателен на всех `/api/*`.
+      Файл `/etc/netmoded/token`, права 0600.
+    - **`/api/status` опрашивается 1 Гц** (SPEC §7). Внешние вызовы внутри него
+      кэшируются 500 мс. WebSocket и SSE не используются — ADR-0017.
+    - **Формат ошибок один на все коды** — см. `docs/contracts/errors.md`
+      и схему `Error`.
+    - **Пароли только на запись.** В ответах есть `has_key: bool`, поля `key`
+      нет никогда. ADR-0012.
+    - **Идентификатор сети — имя секции UCI** (`wifinet0`), не индекс
+      `@wifi-iface[N]`. ADR-0005.
+    - **Фаза 1 не меняет поведение radio0.** Демон трогает только выключенные
+      секции и не вызывает применения. ADR-0009.
+    - Времена — RFC 3339 в UTC (`…Z`).
+
+    ## Эндпоинты SPEC §7, которых здесь нет
+
+    `POST /api/confirm` — **удалён**. Он подтверждал взведённый откат;
+    автоматического отката нет ни в какой форме (ADR-0006), подтверждать
+    нечего. Запрос к нему получит `404 not_found`.
+
+    ## Отложено
+
+    `POST /api/upstream` документирован и всегда отвечает `501` с объясняющим
+    телом — ADR-0016. Блокеры: RQ-03, RQ-04.
+
+    ## Не подтверждено разведкой
+
+    Clash API у Nikki не проверялся (`evidence.json` → `nikki.status:
+    "unknown"`, RQ-01). Эндпоинты `/api/nikki/*` заморожены по форме, но до
+    ответа на RQ-01 отвечают `503 nikki_unavailable`. Порт, наличие секрета и
+    раскладку групп подтверждает фаза 4.
+
+servers:
+  - url: http://192.168.9.1:8080
+    description: |
+      LAN-адрес роутера. Порт из netmode.main.port.
+      NEEDS RECON: свободен ли 8080 — `netstat -lntp`.
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: status
+  - name: mode
+  - name: wifi
+  - name: nikki
+  - name: b4
+  - name: subscription
+
+paths:
+
+  /api/status:
+    get:
+      tags: [status]
+      summary: Полная картина состояния
+      description: |
+        Опрашивается фронтендом раз в секунду. **Никогда не отвечает 409, 501
+        или 503**: недоступность внешних компонентов выражается полями
+        (`b4.available`, `nikki.available`, `associated_ssid: null`), а не
+        кодом. Иначе лежащий b4 ослеплял бы всю панель.
+
+        Внешние вызовы (ubus, b4, Clash API) кэшируются 500 мс; `uci show
+        wireless` читается каждый раз — из него берётся `wireless_fingerprint`.
+      responses:
+        "200":
+          description: Состояние
+          headers:
+            Cache-Control:
+              schema: { type: string, const: "no-store" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+              examples:
+                single:       { $ref: "#/components/examples/StatusSingle" }
+                ambiguous:    { $ref: "#/components/examples/StatusAmbiguous" }
+                allDisabled:  { $ref: "#/components/examples/StatusAllDisabled" }
+                empty:        { $ref: "#/components/examples/StatusEmpty" }
+                b4Down:       { $ref: "#/components/examples/StatusB4Unavailable" }
+                jobRunning:   { $ref: "#/components/examples/StatusJobRunning" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/mode:
+    post:
+      tags: [mode]
+      summary: Сменить режим обработки трафика
+      description: |
+        Медленная операция (5–15 с): `uci set netmode.main.mode` + commit,
+        затем `/usr/local/bin/netmode-apply <mode>`. Джоб и светодиод —
+        ADR-0013, SPEC §8.
+
+        UCI пишется **до** запуска скрипта: конфиг хранит намерение, скрипт
+        приводит систему к намерению. Если скрипт упал, намерение сохранено,
+        джоб в состоянии `failed`, повтор возможен. Отката нет — ADR-0006.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              additionalProperties: false
+              properties:
+                mode:
+                  type: string
+                  enum: [nikki, b4, off]
+      responses:
+        "202":
+          description: Джоб принят
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: |
+            `job_busy` — уже выполняется джоб. Очереди нет сознательно
+            (SPEC §6): второй запрос отбивается.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/upstream:
+    post:
+      tags: [wifi]
+      summary: Сменить активную upstream-сеть — ОТЛОЖЕНО ДО ФАЗЫ 2
+      description: |
+        **Всегда отвечает 501 в этой поставке.** Форма запроса заморожена
+        сейчас, чтобы фронтенд не переписывался в фазе 2.
+
+        Причины отсрочки (ADR-0016): нет автоматического отката (ADR-0006);
+        не отвечены RQ-03 (существует ли применение только к radio0, или
+        домашняя точка `grenderNet` моргает — радио делят одну phy0) и RQ-04
+        (рвёт ли скан активную ассоциацию).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              additionalProperties: false
+              properties:
+                id:
+                  type: string
+                  description: Имя секции UCI сохранённой сети
+                  examples: ["wifinet2"]
+      responses:
+        "501":
+          description: Не реализовано в этой поставке
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: not_implemented
+                message: >-
+                  Смена upstream отложена до фазы 2: нет автоматического отката
+                  (ADR-0006), не отвечены RQ-03 и RQ-04. Переключите сеть в LuCI.
+                details:
+                  adr: "0016"
+                  blocked_by: [RQ-03, RQ-04]
+
+  /api/wifi/scan:
+    get:
+      tags: [wifi]
+      summary: Скан эфира
+      description: |
+        `ubus call iwinfo scan` по интерфейсу станции. Имя интерфейса
+        **выводится** из `network.wireless status` (`radio0.interfaces[].ifname`),
+        не хардкодится — `scripts/check-no-hardcoded-if.sh`.
+
+        Станция работает в 2.4 ГГц (`radio0.band = "2g"`), поэтому **скан
+        физически не может показать сети 5 ГГц**. Поле `band` и текст `note`
+        существуют, чтобы панель это написала: отсутствие знакомой
+        5-гигагерцовой сети иначе выглядит как баг.
+
+        Синхронный, без джоба, хотя и медленный: ничего не меняет, результат
+        нужен целиком (ADR-0013).
+
+        **NEEDS RECON:** имена полей ответа `iwinfo scan` не подтверждены —
+        фикстуры вывода нет. Разрешается:
+        `ubus call iwinfo scan '{"device":"phy0.0-sta0"}'`.
+        Отдельно RQ-04: не рвёт ли скан активную ассоциацию.
+      responses:
+        "200":
+          description: Результат скана
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScanResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503":
+          description: |
+            `ifname_unknown` — имя интерфейса станции не выводится
+            (радио выключено, секций нет, ubus не ответил).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/wifi/networks:
+    get:
+      tags: [wifi]
+      summary: Сохранённые upstream-сети
+      description: |
+        Секции `wifi-iface` из `/etc/config/wireless` с `device=radio0` и
+        `mode=sta` (ADR-0003). `wifinet1` (`grenderNet`, `mode=ap`, `radio1`) —
+        домашняя точка доступа, в список не входит.
+
+        Порядок — как в файле. `ETag` и поле `fingerprint` содержат одно и то
+        же значение; оно требуется в `If-Match` при записи.
+      responses:
+        "200":
+          description: Список
+          headers:
+            ETag:
+              schema: { type: string }
+              description: Отпечаток `/etc/config/wireless`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NetworksResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [wifi]
+      summary: Создать или изменить сохранённую сеть
+      description: |
+        Быстрая операция: `uci set` + `uci commit wireless`, десятки
+        миллисекунд, синхронный ответ. **Применения нет** — ни `wifi reload`,
+        ни джоба, ни светодиода (ADR-0009).
+
+        Без `id` — создание. Секция создаётся именованной (`netmode_<8 hex>`)
+        и **всегда с `disabled='1'`**: отсутствие `disabled` означает
+        «включена», а создать включённую станционную секцию фаза 1 не вправе.
+        Это единственное место, где демон вообще пишет `disabled`.
+
+        С `id` — правка существующей. Разрешена только для **выключенной**
+        секции; правка включённой отбивается `409 enabled_network_readonly`.
+
+        `key` отсутствует в теле → пароль не меняется. `key: ""` → записывается
+        пустой пароль (осмысленно при `encryption: "none"`). Это разные вещи.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NetworkWrite" }
+      responses:
+        "200":
+          description: Записано. Тело — обновлённый список, как у `GET`.
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NetworksResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/WifiWriteConflict" }
+
+  /api/wifi/networks/{id}:
+    delete:
+      tags: [wifi]
+      summary: Удалить сохранённую сеть
+      description: |
+        Разрешено только для выключенной секции. Удаление включённой —
+        `409 enabled_network_readonly` (ADR-0009). Как и правка: `uci delete` +
+        `uci commit`, без применения.
+
+        `id` в пути — имя секции. Индексы `@wifi-iface[N]` не принимаются
+        никогда: они сдвигаются при удалении в LuCI и указали бы на чужую сеть
+        (ADR-0005).
+      parameters:
+        - $ref: "#/components/parameters/NetworkId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: Удалено. Тело — обновлённый список.
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NetworksResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/WifiWriteConflict" }
+
+  /api/nikki/proxies:
+    get:
+      tags: [nikki]
+      summary: Узлы группы PROXY с задержками
+      description: |
+        **RQ-01 не отвечён** — в этой поставке всегда `503 nikki_unavailable`.
+        Форма ответа заморожена, реализация после подтверждения порта, секрета
+        и раскладки групп.
+
+        По SPEC §7 группа `PROXY` должна быть `selector`, а не `url-test`, и
+        обязана содержать пункт `AUTO` (вложенный `url-test`) — он же
+        состояние по умолчанию. Без `AUTO` ломается fail-closed: группа
+        `BYPASS` видит `PROXY` как один элемент и не отличает «выбран мёртвый
+        узел» от «всё умерло».
+      responses:
+        "200":
+          description: Узлы
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProxiesResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/NikkiUnavailable" }
+
+  /api/nikki/proxy:
+    post:
+      tags: [nikki]
+      summary: Выбрать узел (быстрая операция)
+      description: |
+        Быстрая: Clash API, ~0.2 с, без джоба и без светодиода (SPEC §5).
+
+        Ручной выбор трактуется как временное действие. Возврат к
+        автоматическому — тот же запрос с `{"name": "AUTO"}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                  description: Имя узла или `AUTO` для возврата к url-test
+                  examples: ["AUTO"]
+      responses:
+        "200":
+          description: Выбрано. Тело — как у `GET /api/nikki/proxies`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProxiesResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/NikkiUnavailable" }
+
+  /api/nikki/test:
+    post:
+      tags: [nikki]
+      summary: Замерить задержки всех узлов
+      responses:
+        "200":
+          description: Замерено. Тело — как у `GET /api/nikki/proxies`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProxiesResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/NikkiUnavailable" }
+
+  /api/b4/sets:
+    get:
+      tags: [b4]
+      summary: Сеты b4
+      description: |
+        `GET /api/sets` у b4 (`127.0.0.1:7000`, аутентификации нет,
+        `docs/recon/b4-api.md`). Массив плоский и никогда не `null`.
+
+        **У b4 нет «текущего сета»**: у каждого свой флаг `enabled`, включённых
+        может быть несколько, порядок задаёт приоритет. Эксклюзивность —
+        наша семантика (ADR-0008). Поэтому:
+
+        - ровно один включён → `selected` = имя, `enabled_count: 1`;
+        - ноль → `selected: null`, `enabled_count: 0`;
+        - два и более → `selected: null`, `enabled_count: N`. Это не ошибка и
+          не повод «чинить»; следующее нажатие в панели приведёт к одному.
+
+        `id` показывается для отладки, но клиент шлёт **имя**: `id` — UUID,
+        генерируемый сервером, и может смениться при пересоздании сета.
+      responses:
+        "200":
+          description: Сеты
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SetsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/B4Unavailable" }
+
+  /api/b4/set:
+    post:
+      tags: [b4]
+      summary: Выбрать сет эксклюзивно (быстрая операция)
+      description: |
+        Два вызова `POST /api/sets/batch-set-enabled`: сначала гасим все
+        прочие, потом зажигаем целевой. Порядок важен — при обрыве между
+        вызовами остаёмся без обработки (заметно и безопасно), а не с двумя
+        включёнными (тихое изменение приоритетов).
+
+        `updated: 0` от b4 — **не ошибка**: значение уже стояло.
+
+        Применяется горячо, рестарт b4 не нужен, выбор переживает рестарт
+        (`src/http/handler/config.go:439` — файл пишется до подмены конфига).
+        Поэтому `/etc/b4/b4.json` мы не трогаем — ADR-0007.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [set]
+              additionalProperties: false
+              properties:
+                set:
+                  type: string
+                  description: Имя сета. `name` не уникален — при совпадении `409`.
+                  examples: ["general"]
+      responses:
+        "200":
+          description: Переключено. Тело — как у `GET /api/b4/sets`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SetsResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`ambiguous_set_name` — имя встретилось дважды, угадывать не будем."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/B4Unavailable" }
+
+  /api/subscription/update:
+    post:
+      tags: [subscription]
+      summary: Обновить подписку (джоб)
+      description: |
+        Запускает `happ2clash` (2–10 с) — джоб, без светодиода (SPEC §5).
+        Скрипт держит собственный `flock`, ручной запуск из ssh безопасен.
+
+        Предохранитель конвертера сохранён: при нуле распарсенных узлов старый
+        файл провайдера не перезаписывается, джоб завершается как `failed`,
+        в лог пишется строка со `status: "fail"`.
+      responses:
+        "202":
+          description: Джоб принят
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: "`job_busy`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/logs:
+    get:
+      tags: [subscription]
+      summary: Лог обновлений подписки
+      description: |
+        Построчный JSON из `/etc/nikki/updates.log` (SPEC §9). Файл обрезается
+        до последних 200 строк. `/var` не годится — tmpfs, история теряется при
+        перезагрузке.
+
+        Порядок в ответе — **новые первыми**, независимо от порядка в файле.
+      parameters:
+        - name: n
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: Строки лога
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogsResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Токен из `/etc/netmoded/token` (0600). Сравнение постоянного времени.
+        Дополнительно: запрос с чужим `Origin` отбивается `403
+        forbidden_origin`; заголовки CORS не отдаются никогда. ADR-0014.
+
+  parameters:
+    NetworkId:
+      name: id
+      in: path
+      required: true
+      description: Имя секции UCI, например `wifinet2`. Индексы не принимаются.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_]+$"
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: |
+        Отпечаток `/etc/config/wireless`, полученный из `ETag` или из поля
+        `fingerprint`. Не совпал — `409 fingerprint_mismatch`, запись не
+        выполняется. Отсутствует — `400 bad_request`. ADR-0011.
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: "`bad_request`"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: "`unauthorized` — нет или неверен Bearer-токен"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: "`not_found`"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    B4Unavailable:
+      description: |
+        `b4_unavailable` — проба `GET /api/version` не прошла;
+        либо `b4_auth_required` — b4 включил аутентификацию, пароль не угадываем.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NikkiUnavailable:
+      description: "`nikki_unavailable` — Clash API недоступен. RQ-01 не отвечён."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    WifiWriteConflict:
+      description: |
+        Один из пяти случаев (`docs/contracts/errors.md`):
+        `ambiguous_selection`, `foreign_staged_changes`, `fingerprint_mismatch`,
+        `enabled_network_readonly`, `job_busy`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+
+    Error:
+      type: object
+      required: [error, message]
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          description: Машинный код. Стабилен, часть контракта.
+          enum:
+            - bad_request
+            - unauthorized
+            - forbidden_origin
+            - not_found
+            - method_not_allowed
+            - job_busy
+            - ambiguous_selection
+            - foreign_staged_changes
+            - fingerprint_mismatch
+            - enabled_network_readonly
+            - ambiguous_set_name
+            - not_implemented
+            - b4_unavailable
+            - b4_auth_required
+            - nikki_unavailable
+            - ifname_unknown
+            - internal
+        message:
+          type: string
+          description: Текст для человека, по-русски. На него не программируют.
+        details:
+          type: object
+          description: Подробности. Ключ отсутствует, если их нет; никогда не `null`.
+          additionalProperties: true
+
+    Status:
+      type: object
+      description: |
+        Порядок полей здесь = порядок полей в Go-структуре = порядок ключей в
+        эталонных фикстурах `docs/api/examples/status-*.json`, с которыми
+        ответы сравниваются байт в байт.
+      required:
+        - generated_at
+        - hostname
+        - mode
+        - selection_state
+        - configured_ssid
+        - associated_ssid
+        - pending_apply
+        - wireless_fingerprint
+        - ap
+        - online
+        - links
+        - job
+        - last_fail
+        - nikki
+        - b4
+        - subscription
+      additionalProperties: false
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+          description: Момент сборки ответа. Позволяет отличить свежие данные от застрявших.
+        hostname:
+          type: string
+          description: "`os.Hostname()`. Панель показывает, какой роутер перед вами."
+        mode:
+          type: string
+          enum: [nikki, b4, off, unknown]
+          description: |
+            Из `netmode.main.mode` — единственное подлинно собственное состояние
+            демона. `unknown` = в файле лежит значение вне набора; **мы его не
+            исправляем** (ADR-0010).
+        selection_state:
+          $ref: "#/components/schemas/SelectionState"
+        configured_ssid:
+          type: [string, "null"]
+          description: |
+            SSID **включённой** секции. Не `null` только при
+            `selection_state: "single"`. См. `docs/contracts/state-machine.md`.
+        associated_ssid:
+          type: [string, "null"]
+          description: |
+            SSID, к которому радио **реально подключено** (`iwinfo info`).
+            С `configured_ssid` не сливается никогда: их расхождение — самый
+            полезный сигнал в панели.
+            NEEDS RECON: имя поля в ответе `iwinfo info`; до ответа `null`.
+        pending_apply:
+          type: boolean
+          description: |
+            `<radio>.pending` из `network.wireless status`: конфигурация
+            изменена, но не применена. В фазе 1 наши записи применения не
+            вызывают, поэтому `true` после нашей записи — штатно (ADR-0009).
+        wireless_fingerprint:
+          type: string
+          description: |
+            `sha256:` + первые 16 hex-символов sha256 от вывода
+            `uci show wireless`. Совпадает с `ETag` в `/api/wifi/networks`.
+            Панель по нему замечает чужую правку без второго запроса.
+          examples: ["sha256:1f0c9a3b7d2e4a58"]
+        ap:
+          $ref: "#/components/schemas/AP"
+        online:
+          $ref: "#/components/schemas/Online"
+        links:
+          $ref: "#/components/schemas/Links"
+        job:
+          oneOf:
+            - $ref: "#/components/schemas/Job"
+            - type: "null"
+          description: |
+            Текущий джоб или `null`. Завершившийся остаётся видимым **30
+            секунд** в состоянии `done`/`failed`, иначе клиент с опросом 1 Гц
+            может не увидеть завершения (ADR-0013).
+        last_fail:
+          oneOf:
+            - $ref: "#/components/schemas/LastFail"
+            - type: "null"
+          description: |
+            Последняя неудачная попытка подключиться к upstream-сети.
+            **В фазе 1 всегда `null`**: мы не переключаем upstream (ADR-0016).
+            Поле существует, чтобы фронтенд не переписывался в фазе 2.
+        nikki:
+          $ref: "#/components/schemas/NikkiStatus"
+        b4:
+          $ref: "#/components/schemas/B4Status"
+        subscription:
+          $ref: "#/components/schemas/SubscriptionStatus"
+
+    SelectionState:
+      type: string
+      enum: [empty, all_disabled, single, ambiguous]
+      description: |
+        `empty` — станционных секций нет (свежая установка, **нормально**, 200).
+        `all_disabled` — есть, все выключены (**нормально**, 200).
+        `single` — ровно одна включена, рабочее состояние.
+        `ambiguous` — включено ≥2 либо `disabled` не распознан: все записи в
+        `wireless` отбиваются `409`, автопочинки нет никогда.
+
+    AP:
+      type: object
+      description: Домашняя точка доступа (`radio1`, `wifinet1`). Мы её не трогаем.
+      required: [ssid, band, clients]
+      additionalProperties: false
+      properties:
+        ssid:
+          type: [string, "null"]
+        band:
+          type: [string, "null"]
+          description: Из `<radio>.config.band`, например `5g`.
+        clients:
+          type: [integer, "null"]
+          description: |
+            Число ассоциированных клиентов. `null` = неизвестно.
+            NEEDS RECON: в `network.wireless status` массив `stations` пуст —
+            неизвестно, наполняется ли он вообще. Проверить:
+            `ubus call iwinfo assoclist '{"device":"<ifname AP>"}'`.
+            До ответа поле всегда `null`.
+
+    Online:
+      type: object
+      required: [ok, checked_at]
+      additionalProperties: false
+      properties:
+        ok:
+          type: boolean
+          description: |
+            **Означает «upstream L3 поднят»**, а не «интернет работает»:
+            интерфейс `wwan` (proto dhcp) активен, имеет адрес и маршрут по
+            умолчанию. Внешних проб мы не делаем — они требуют литерала чужого
+            хоста, которого нет в `evidence.json`.
+        checked_at:
+          type: string
+          format: date-time
+
+    Links:
+      type: object
+      description: |
+        Ссылки на собственные веб-морды сервисов. Хост берётся из `Host`
+        запроса, а не хардкодится, — панель может быть открыта по любому
+        адресу роутера.
+      required: [nikki, b4]
+      additionalProperties: false
+      properties:
+        nikki:
+          type: [string, "null"]
+          description: |
+            `null` до ответа на RQ-01. NEEDS RECON: адрес панели Nikki —
+            `uci show nikki | grep -iE 'port|secret|api|ui'`.
+        b4:
+          type: [string, "null"]
+          description: Порт 7000 подтверждён (`raw/50-b4-api.txt`).
+          examples: ["http://192.168.9.1:7000/"]
+
+    Job:
+      type: object
+      description: |
+        Медленная операция. Одновременно живёт ровно одна; второй запрос —
+        `409 job_busy`, очереди нет (SPEC §6).
+        Поля `finished_at` и `error` добавлены к набору из мокапа: без них
+        упавший джоб при опросе 1 Гц неотличим от успешного.
+      required: [id, kind, label, started_at, finished_at, eta_sec, state, error]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          examples: ["j-7f3a1c"]
+        kind:
+          type: string
+          enum: [mode, subscription]
+          description: "`upstream` появится в фазе 2 (ADR-0016)."
+        label:
+          type: string
+          description: Готовый текст для панели, по-русски.
+          examples: ["Переключение режима на b4"]
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+        eta_sec:
+          type: integer
+          description: Ожидаемая длительность из таблицы SPEC §5. Оценка, не обещание.
+        state:
+          type: string
+          enum: [running, done, failed]
+        error:
+          type: [string, "null"]
+          description: Заполнено только при `failed`. Секретов не содержит.
+
+    LastFail:
+      type: object
+      required: [ssid, reason, at]
+      additionalProperties: false
+      properties:
+        ssid: { type: string }
+        reason:
+          type: string
+          description: Причина, пригодная для показа. Пароль не упоминается.
+        at:
+          type: string
+          format: date-time
+
+    NikkiStatus:
+      type: object
+      required: [available, group, proxy]
+      additionalProperties: false
+      properties:
+        available:
+          type: boolean
+          description: "**В этой поставке всегда `false`** — RQ-01 не отвечён."
+        group:
+          type: [string, "null"]
+          examples: ["PROXY"]
+        proxy:
+          type: [string, "null"]
+          description: Выбранный элемент группы. `AUTO` — состояние по умолчанию.
+
+    B4Status:
+      type: object
+      required: [available, version, set, enabled_count]
+      additionalProperties: false
+      properties:
+        available:
+          type: boolean
+          description: "Проба `GET /api/version` — единственный маршрут b4 вне аутентификации."
+        version:
+          type: [string, "null"]
+          examples: ["1.74.1"]
+        set:
+          type: [string, "null"]
+          description: |
+            Имя сета, если включён ровно один. `null` при нуле и при двух и
+            более — эксклюзивность наша, не b4 (ADR-0008).
+        enabled_count:
+          type: integer
+          minimum: 0
+
+    SubscriptionStatus:
+      type: object
+      required: [last_update, status, nodes, error]
+      additionalProperties: false
+      properties:
+        last_update:
+          type: [string, "null"]
+          format: date-time
+        status:
+          type: [string, "null"]
+          enum: [ok, fail, null]
+        nodes:
+          type: [integer, "null"]
+        error:
+          type: [string, "null"]
+
+    NetworksResponse:
+      type: object
+      required: [fingerprint, selection_state, radio, networks]
+      additionalProperties: false
+      properties:
+        fingerprint:
+          type: string
+          description: То же значение, что в `ETag` и в `status.wireless_fingerprint`.
+        selection_state:
+          $ref: "#/components/schemas/SelectionState"
+        radio:
+          type: object
+          required: [device, band, mode]
+          additionalProperties: false
+          properties:
+            device: { type: string, examples: ["radio0"] }
+            band:   { type: string, examples: ["2g"] }
+            mode:   { type: string, examples: ["sta"] }
+        networks:
+          type: array
+          items: { $ref: "#/components/schemas/Network" }
+
+    Network:
+      type: object
+      required: [id, ssid, encryption, has_key, network, enabled, editable]
+      additionalProperties: false
+      properties:
+        id:
+          type: [string, "null"]
+          description: |
+            Имя секции UCI. `null` — секция безымянная: показываем и учитываем
+            при классификации, но не трогаем (ADR-0005).
+          examples: ["wifinet2"]
+        ssid: { type: string }
+        encryption:
+          type: string
+          examples: ["psk2", "none"]
+        has_key:
+          type: boolean
+          description: |
+            У секции есть непустой `key`. **Самого `key` в ответе нет никогда**
+            — не `null` и не маска, ключа нет в JSON (ADR-0012).
+        network:
+          type: string
+          description: L3-интерфейс, к которому привязана секция.
+          examples: ["wwan"]
+        enabled:
+          type: boolean
+          description: |
+            Выведено из `disabled`: опции нет или `'0'` → `true`. Значение вне
+            набора уводит весь выбор в `ambiguous` (ADR-0004).
+        editable:
+          type: boolean
+          description: |
+            `false`, если правка запрещена: секция включена, безымянная, либо
+            `selection_state == "ambiguous"`. Готовое решение для UI, чтобы
+            панель не повторяла правила ADR-0009 у себя.
+
+    NetworkWrite:
+      type: object
+      required: [ssid, encryption]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: Имя секции. Отсутствует — создание новой.
+        ssid:
+          type: string
+          minLength: 1
+          maxLength: 32
+        encryption:
+          type: string
+          examples: ["psk2", "none"]
+        key:
+          type: string
+          description: |
+            **Отсутствие поля и пустая строка — разные вещи.** Нет поля —
+            пароль не меняется. `""` — записывается пустой (при
+            `encryption: "none"`). В Go — `*string`.
+        network:
+          type: string
+          default: wwan
+          description: L3-интерфейс. По умолчанию `wwan` (`raw/11-uci-show-network.txt`).
+
+    ScanResponse:
+      type: object
+      required: [scanned_at, ifname, band, note, networks]
+      additionalProperties: false
+      properties:
+        scanned_at: { type: string, format: date-time }
+        ifname:
+          type: string
+          description: Выведен из `network.wireless status`, не хардкодится.
+          examples: ["phy0.0-sta0"]
+        band:
+          type: string
+          const: "2g"
+          description: Станция живёт на `radio0`, у которого band равен 2g.
+        note:
+          type: string
+          description: |
+            Готовый текст для панели о том, что 5 ГГц в списке не будет.
+            Поле существует, чтобы это нельзя было забыть показать.
+        networks:
+          type: array
+          items: { $ref: "#/components/schemas/ScanResult" }
+
+    ScanResult:
+      type: object
+      description: |
+        NEEDS RECON: соответствие полям ответа `iwinfo scan` не подтверждено —
+        фикстуры вывода нет. `ubus call iwinfo scan '{"device":"<ifname>"}'`.
+      required: [ssid, bssid, signal_dbm, quality, quality_max, encryption, channel, saved_id]
+      additionalProperties: false
+      properties:
+        ssid:
+          type: string
+          description: Пустая строка = скрытая сеть.
+        bssid: { type: string }
+        signal_dbm: { type: integer }
+        quality: { type: integer }
+        quality_max: { type: integer }
+        encryption:
+          type: string
+          description: Нормализовано к тем же значениям, что в UCI.
+        channel: { type: integer }
+        saved_id:
+          type: [string, "null"]
+          description: |
+            Имя секции сохранённой сети с таким же SSID, если есть. Панель по
+            нему показывает «уже сохранена».
+
+    ProxiesResponse:
+      type: object
+      required: [available, group, selected, tested_at, members]
+      additionalProperties: false
+      properties:
+        available: { type: boolean }
+        group:
+          type: [string, "null"]
+          examples: ["PROXY"]
+        selected:
+          type: [string, "null"]
+        tested_at:
+          type: [string, "null"]
+          format: date-time
+        members:
+          type: array
+          items:
+            type: object
+            required: [name, type, delay_ms, alive]
+            additionalProperties: false
+            properties:
+              name: { type: string }
+              type: { type: string, examples: ["url-test", "vless"] }
+              delay_ms:
+                type: [integer, "null"]
+                description: "`null` — не замерялось или узел не ответил."
+              alive: { type: boolean }
+
+    SetsResponse:
+      type: object
+      required: [available, version, selected, enabled_count, sets]
+      additionalProperties: false
+      properties:
+        available: { type: boolean }
+        version:
+          type: [string, "null"]
+          examples: ["1.74.1"]
+        selected:
+          type: [string, "null"]
+          description: Имя, если включён ровно один. Иначе `null`.
+        enabled_count:
+          type: integer
+          minimum: 0
+        sets:
+          type: array
+          description: Порядок из b4 = приоритет обработки. Не сортировать.
+          items:
+            type: object
+            required: [id, name, enabled]
+            additionalProperties: false
+            properties:
+              id:
+                type: string
+                description: |
+                  UUID от b4. Показан для отладки; **клиент шлёт имя**, потому
+                  что `id` может смениться при пересоздании сета.
+              name:
+                type: string
+                description: Не уникален и ключом не является.
+              enabled: { type: boolean }
+
+    LogsResponse:
+      type: object
+      required: [path, n, lines]
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+          const: /etc/nikki/updates.log
+        n:
+          type: integer
+          description: Сколько строк вернули (не сколько запросили).
+        lines:
+          type: array
+          description: Новые первыми.
+          items:
+            type: object
+            required: [ts, nodes, status, err]
+            additionalProperties: false
+            properties:
+              ts: { type: string, format: date-time }
+              nodes: { type: integer }
+              status: { type: string, enum: [ok, fail] }
+              err: { type: [string, "null"] }
+
+  examples:
+    StatusSingle:
+      summary: Состояние снимка разведки — John24 активна, ATOM сохранена, режим nikki
+      externalValue: examples/status-single.json
+    StatusAmbiguous:
+      summary: Две включённые станционные секции — запись запрещена
+      externalValue: examples/status-ambiguous.json
+    StatusAllDisabled:
+      summary: Сети есть, ни одна не выбрана
+      externalValue: examples/status-all-disabled.json
+    StatusEmpty:
+      summary: Свежая установка — станционных секций нет
+      externalValue: examples/status-empty.json
+    StatusB4Unavailable:
+      summary: b4 не отвечает — статус всё равно 200
+      externalValue: examples/status-b4-unavailable.json
+    StatusJobRunning:
+      summary: Выполняется смена режима
+      externalValue: examples/status-job-running.json

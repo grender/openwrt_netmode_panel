@@ -1,0 +1,12 @@
+# snapshot: grenderRouter, OpenWrt 25.12, 2026-08-02
+# command: ubus -v list iwinfo
+'iwinfo' @701e3b1b
+	"devices":{}
+	"info":{"device":"String"}
+	"scan":{"device":"String"}
+	"assoclist":{"device":"String","mac":"String"}
+	"freqlist":{"device":"String"}
+	"txpowerlist":{"device":"String"}
+	"countrylist":{"device":"String"}
+	"survey":{"device":"String"}
+	"phyname":{"section":"String"}

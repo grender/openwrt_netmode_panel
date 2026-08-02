@@ -1,0 +1,51 @@
+#!/bin/sh /etc/rc.common
+# procd-скрипт демона netmoded.
+#
+# START=95 — после сети (20), firewall (19) и nikki/b4: демон читает их
+# состояние при старте, и подниматься раньше них незачем.
+# STOP=10 — гасим рано, чтобы демон не пытался читать уже разобранную
+# систему и не сыпал ошибками в лог при выключении.
+
+START=95
+STOP=10
+
+USE_PROCD=1
+PROG=/usr/local/bin/netmoded
+NAME=netmoded
+
+start_service() {
+	[ -x "$PROG" ] || {
+		logger -t "$NAME" "нет $PROG — установка не завершена"
+		return 1
+	}
+
+	# Режим применяется ДО старта демона: netmode-apply — единственное
+	# место, где стартуют nikki и b4 (SPEC §4), и после перезагрузки
+	# привести систему к записанному намерению должен именно он.
+	# Демон при старте увидит уже согласованную картину.
+	if [ -x /usr/local/bin/netmode-apply ]; then
+		/usr/local/bin/netmode-apply >/dev/null 2>&1 || \
+			logger -t "$NAME" "netmode-apply при загрузке вернул ошибку"
+	fi
+
+	procd_open_instance
+	procd_set_param command "$PROG"
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	# Перезапуск при падении, но с паузой: демон, который не может
+	# прочитать LAN-адрес, будет падать сразу, и цикл без задержки
+	# забил бы лог за секунды.
+	procd_set_param respawn 3600 10 0
+	procd_close_instance
+}
+
+service_triggers() {
+	# Перечитать конфигурацию при правке своего пакета. Чужие не трогаем:
+	# состояние сетей демон читает заново на каждый запрос и в подписке
+	# на wireless не нуждается (ADR-0002).
+	procd_add_reload_trigger "netmode"
+}
+
+reload_service() {
+	restart
+}

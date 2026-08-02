@@ -1,0 +1,10 @@
+# snapshot: grenderRouter, OpenWrt 25.12, 2026-08-02
+
+$ curl -s http://127.0.0.1:7000/api/auth/check
+{"auth_required":false}
+
+$ curl -s http://127.0.0.1:7000/api/version
+{"version":"1.74.1","commit":"99808ed","build_date":"2026-07-30T22:13:05Z"}
+
+$ netstat -lntp | grep b4
+tcp        0      0 :::7000                 :::*                    LISTEN      5962/b4

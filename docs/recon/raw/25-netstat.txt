@@ -1,0 +1,41 @@
+# snapshot: grenderRouter, 2026-08-02
+# command: netstat -lntp
+#
+# ДВА ВАЖНЫХ ВЫВОДА:
+#
+# 1. Порт 8080 ЗАНЯТ (mihomo). Демону нужен другой — см. docs/recon/README.md.
+# 2. Порта 7000 (b4) в этом выводе НЕТ, хотя раньше он был (raw/50-b4-api.txt),
+#    и три первых curl к /api/sets вернули пустоту, а четвёртый — данные.
+#    Значит b4 в этот момент перезапускался. Наш клиент обязан переживать
+#    такое: 503, а не паника.
+#
+# Занятые порты: 22, 53, 80, 443, 1053, 1080, 7890, 7891, 7892, 8080, 9090, 40253
+# Clash API у mihomo на 9090 — подтверждено.
+
+Active Internet connections (only servers)
+Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name
+tcp        0      0 192.168.9.1:53          0.0.0.0:*               LISTEN      3280/dnsmasq
+tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN      1598/dropbear
+tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN      2037/uhttpd
+tcp        0      0 127.0.0.1:53            0.0.0.0:*               LISTEN      3280/dnsmasq
+tcp        0      0 198.18.0.1:40253        0.0.0.0:*               LISTEN      3055/mihomo
+tcp        0      0 198.18.0.1:53           0.0.0.0:*               LISTEN      3280/dnsmasq
+tcp        0      0 0.0.0.0:443             0.0.0.0:*               LISTEN      2037/uhttpd
+tcp        0      0 192.168.0.234:53        0.0.0.0:*               LISTEN      3280/dnsmasq
+tcp        0      0 fd36:b875:de66::1:53    :::*                    LISTEN      3280/dnsmasq
+tcp        0      0 :::22                   :::*                    LISTEN      1598/dropbear
+tcp        0      0 :::1053                 :::*                    LISTEN      3055/mihomo
+tcp        0      0 fe80::9683:c4ff:fee4:69d7:53 :::*                LISTEN      3280/dnsmasq
+tcp        0      0 ::1:53                  :::*                    LISTEN      3280/dnsmasq
+tcp        0      0 fe80::c7e7:6ef0:e918:930:53 :::*                LISTEN      3280/dnsmasq
+tcp        0      0 :::1080                 :::*                    LISTEN      3055/mihomo
+tcp        0      0 :::80                   :::*                    LISTEN      2037/uhttpd
+tcp        0      0 fdfe:dcba:9876::1:37537 :::*                    LISTEN      3055/mihomo
+tcp        0      0 :::9090                 :::*                    LISTEN      3055/mihomo
+tcp        0      0 :::8080                 :::*                    LISTEN      3055/mihomo
+tcp        0      0 fe80::9683:c4ff:fee4:69d8:53 :::*                LISTEN      3280/dnsmasq
+tcp        0      0 :::443                  :::*                    LISTEN      2037/uhttpd
+tcp        0      0 :::7891                 :::*                    LISTEN      3055/mihomo
+tcp        0      0 :::7890                 :::*                    LISTEN      3055/mihomo
+tcp        0      0 :::7892                 :::*                    LISTEN      3055/mihomo
+tcp        0      0 fdfe:dcba:9876::1:53    :::*                    LISTEN      3280/dnsmasq

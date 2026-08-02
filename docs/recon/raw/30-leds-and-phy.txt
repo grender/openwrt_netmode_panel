@@ -1,0 +1,13 @@
+# snapshot: grenderRouter, OpenWrt 25.12, 2026-08-02
+
+$ ls /sys/class/ieee80211/
+phy0
+
+$ cat /sys/class/leds/blue:status/trigger
+[none] timer heartbeat default-on netdev pattern phy0rx phy0tx phy0assoc phy0radio
+
+$ cat /sys/class/leds/white:status/trigger
+[none] timer heartbeat default-on netdev pattern phy0rx phy0tx phy0assoc phy0radio
+
+$ uci show system | grep -i led
+# (no output — no `config led` sections exist)
