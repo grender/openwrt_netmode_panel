@@ -8,6 +8,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 
@@ -37,10 +38,26 @@ const (
 // записи в него не заглядывает.
 const StatusCacheTTL = 500 * time.Millisecond
 
+// Источники статуса — ключи для журнала деградации.
+//
+// Имена совпадают с тем, что видно в системе (команда или сервис): в syslog
+// роутера строка обязана указывать на то, что чинить, без чтения исходника.
+const (
+	srcWirelessCfg   = "uci show wireless"
+	srcWirelessState = "ubus network.wireless status"
+	srcIwinfo        = "ubus iwinfo info"
+	srcUpstream      = "ubus network.interface." + upstreamIf + " status"
+	srcNikki         = "nikki"
+	srcB4            = "b4"
+	srcMode          = "uci get netmode.main.mode"
+)
+
 // Status — тело ответа GET /api/status.
 //
-// Форма зафиксирована в docs/api/openapi.yaml и проверяется golden-тестами
-// против docs/api/examples/: панель разрабатывается от того же контракта.
+// Форма зафиксирована в docs/api/openapi.yaml, рядом лежат примеры в
+// docs/api/examples/: панель разрабатывается от того же контракта.
+// Механического сторожа у формы нет — правка полей обязана доходить до
+// обоих файлов руками.
 type Status struct {
 	GeneratedAt string `json:"generated_at"`
 	Hostname    string `json:"hostname"`
@@ -71,7 +88,13 @@ type APStatus struct {
 }
 
 type OnlineStatus struct {
-	OK        bool   `json:"ok"`
+	OK bool `json:"ok"`
+	// Checked — удалось ли вообще выяснить состояние канала.
+	//
+	// Без этого признака ok=false означает сразу две разные вещи: «связи
+	// нет» и «спросить не смогли». Первое чинится сетью, второе — демоном,
+	// и панель обязана их различать.
+	Checked   bool   `json:"checked"`
 	CheckedAt string `json:"checked_at"`
 }
 
@@ -115,22 +138,42 @@ type StatusReader struct {
 	jobs  *job.Manager
 	logs  *logs.Log
 	now   func() time.Time
+	logf  func(string, ...any)
 
 	mu     sync.Mutex
 	cached *Status
 	at     time.Time
+	// down — источники, о недоступности которых уже сказано в журнале.
+	// Живёт под тем же mu, что и кэш: пишется только из build.
+	down map[string]bool
 }
 
-func NewStatusReader(ex executor.Executor) *StatusReader {
-	return &StatusReader{ex: ex, b4: b4.New(b4.DefaultBaseURL), now: time.Now}
+func NewStatusReader(ex executor.Executor, logf func(string, ...any)) *StatusReader {
+	return newStatusReader(&StatusReader{ex: ex, b4: b4.New(b4.DefaultBaseURL)}, logf)
 }
 
 // NewStatusReaderWith собирает читателя с готовыми клиентами.
-func NewStatusReaderWith(ex executor.Executor, b4c b4.Client, nk nikki.Client) *StatusReader {
-	return &StatusReader{ex: ex, b4: b4c, nikki: nk, now: time.Now}
+func NewStatusReaderWith(ex executor.Executor, b4c b4.Client, nk nikki.Client, logf func(string, ...any)) *StatusReader {
+	return newStatusReader(&StatusReader{ex: ex, b4: b4c, nikki: nk}, logf)
+}
+
+func newStatusReader(r *StatusReader, logf func(string, ...any)) *StatusReader {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	r.now = time.Now
+	r.logf = logf
+	r.down = map[string]bool{}
+	return r
 }
 
 // Read возвращает статус, не старше StatusCacheTTL.
+//
+// Ошибка всегда nil, и ветку под неё заводить не надо: статус обязан
+// отвечать при любом сбое источников, а сам сбой виден в ответе
+// (online.checked, mode, *.available) и в журнале демона. Второе значение
+// оставлено только потому, что Read — экспортированный контракт; если оно
+// когда-нибудь станет ненулевым, это будет отказ отвечать вообще.
 func (r *StatusReader) Read(ctx context.Context) (*Status, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -145,12 +188,43 @@ func (r *StatusReader) Read(ctx context.Context) (*Status, error) {
 		return &cp, nil
 	}
 
-	s, err := r.build(ctx)
-	if err != nil {
-		return nil, err
-	}
+	s := r.build(ctx)
 	r.cached, r.at = s, r.now()
 	return s, nil
+}
+
+// noteLocked сообщает журналу о СМЕНЕ доступности источника.
+//
+// Дедупликация здесь не украшение. Панель опрашивает /api/status раз в
+// секунду, кэш живёт 500 мс, источников семь: строка на каждое неудачное
+// чтение — это до семи записей в секунду в syslog роутера, который пишет
+// на overlay-флеш. Такой журнал изнашивает флеш и топит в себе всё
+// остальное, то есть сам становится вторым сбоем. Поэтому пишутся только
+// переходы «работало → сломалось» и обратно, а повторы молчат.
+//
+// Отменённый контекст источником сбоя НЕ считается: это наш собственный
+// отказ от чтения (клиент ушёл со страницы, сработал таймаут панели), а не
+// молчание роутера. Без этой проверки каждая отмена писала бы «источник
+// недоступен», а следующее чтение — «снова отвечает», и журнал заполнялся
+// бы парами строк о том, чего не происходило.
+//
+// Вызывается из build, то есть под r.mu.
+func (r *StatusReader) noteLocked(src string, err error) {
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	if err != nil {
+		if r.down[src] {
+			return
+		}
+		r.down[src] = true
+		r.logf("статус: %s недоступен — %v", src, err)
+		return
+	}
+	if r.down[src] {
+		delete(r.down, src)
+		r.logf("статус: %s снова отвечает", src)
+	}
 }
 
 // build читает систему заново.
@@ -158,8 +232,13 @@ func (r *StatusReader) Read(ctx context.Context) (*Status, error) {
 // Ни одно чтение не считается обязательным: недоступность любого источника
 // деградирует соответствующее поле, но не валит весь статус. Панель,
 // которая перестала отвечать целиком из-за упавшего b4, бесполезна ровно
-// тогда, когда нужна.
-func (r *StatusReader) build(ctx context.Context) (*Status, error) {
+// тогда, когда нужна. Отсюда и сигнатура без ошибки: возвращать её было бы
+// нечестно — вызывающему нечего с ней делать, кроме как отдать 500 вместо
+// работающей панели.
+//
+// Молча зануляемое поле — это тоже сбой, просто невидимый, поэтому каждое
+// чтение проходит через noteLocked: сбой обязан быть в журнале.
+func (r *StatusReader) build(ctx context.Context) *Status {
 	now := r.now().UTC().Format(time.RFC3339)
 	s := &Status{
 		GeneratedAt: now,
@@ -170,10 +249,14 @@ func (r *StatusReader) build(ctx context.Context) (*Status, error) {
 	}
 
 	// Конфигурация wireless: выбор, отпечаток.
+	//
+	// Разбор считается частью чтения: неразобранный вывод — такой же слепой
+	// статус, как и не полученный, и в журнале обязан выглядеть так же.
 	rawWireless, err := r.ex.UCIShow(ctx, "wireless")
 	if err == nil {
 		s.Fingerprint = wireless.Fingerprint(rawWireless)
-		if cfg, perr := uci.ParseShow("wireless", rawWireless); perr == nil {
+		var cfg *uci.Config
+		if cfg, err = uci.ParseShow("wireless", rawWireless); err == nil {
 			sel := wireless.Classify(cfg, stationRadio)
 			s.SelectionState = string(sel.State)
 			s.Conflict = sel.Conflict
@@ -188,14 +271,17 @@ func (r *StatusReader) build(ctx context.Context) (*Status, error) {
 			}
 		}
 	}
+	r.noteLocked(srcWirelessCfg, err)
 	if s.SelectionState == "" {
 		s.SelectionState = string(wireless.Empty)
 	}
 
 	// Живое состояние радио: имена интерфейсов и pending.
 	var stationIf, apIf string
-	if b, err := r.ex.UbusCall(ctx, "network.wireless", "status", nil); err == nil {
-		if st, perr := wireless.ParseStatus(b); perr == nil {
+	b, err := r.ex.UbusCall(ctx, "network.wireless", "status", nil)
+	if err == nil {
+		var st map[string]wireless.Radio
+		if st, err = wireless.ParseStatus(b); err == nil {
 			s.PendingApply = wireless.PendingApply(st)
 			stationIf = wireless.IfnameForMode(st, stationRadio, "sta")
 			apIf = wireless.IfnameForMode(st, apRadio, "ap")
@@ -204,29 +290,41 @@ func (r *StatusReader) build(ctx context.Context) (*Status, error) {
 			}
 		}
 	}
+	r.noteLocked(srcWirelessState, err)
 	_ = apIf // RQ-05: число клиентов не подтверждено, поле остаётся null
 
 	// Ассоциация. Имя интерфейса выведено, а не захардкожено.
+	//
+	// Без имени интерфейса спрашивать нечего и жаловаться не на что: это
+	// следствие уже отмеченного сбоя выше, а не отдельный сбой iwinfo.
 	if stationIf != "" {
-		if b, err := r.ex.UbusCall(ctx, "iwinfo", "info",
-			map[string]any{"device": stationIf}); err == nil {
-			if info, perr := wireless.ParseInfo(b); perr == nil && info.Associated {
+		b, err := r.ex.UbusCall(ctx, "iwinfo", "info", map[string]any{"device": stationIf})
+		if err == nil {
+			var info wireless.Info
+			if info, err = wireless.ParseInfo(b); err == nil && info.Associated {
 				v := info.SSID
 				s.AssociatedSSID = &v
 			}
 		}
+		r.noteLocked(srcIwinfo, err)
 	}
 
-	// Внешний канал.
-	if b, err := r.ex.UbusCall(ctx, "network.interface."+upstreamIf, "status", nil); err == nil {
-		if ifs, perr := netif.ParseStatus(b); perr == nil {
+	// Внешний канал. Checked отделяет «проверили, канала нет» от «проверить
+	// не смогли»: без него оба случая выглядят как ok=false.
+	b, err = r.ex.UbusCall(ctx, "network.interface."+upstreamIf, "status", nil)
+	if err == nil {
+		var ifs netif.Status
+		if ifs, err = netif.ParseStatus(b); err == nil {
 			s.Online.OK = ifs.Online()
+			s.Online.Checked = true
 		}
 	}
+	r.noteLocked(srcUpstream, err)
 
 	// Nikki: недоступность гасит список узлов, но не валит статус.
 	if r.nikki != nil {
-		if all, err := r.nikki.Proxies(ctx); err == nil {
+		all, err := r.nikki.Proxies(ctx)
+		if err == nil {
 			s.Nikki.Available = true
 			if g, ok := all["PROXY"]; ok {
 				s.Nikki.Set = g.Now
@@ -236,11 +334,13 @@ func (r *StatusReader) build(ctx context.Context) (*Status, error) {
 				s.Nikki.Version = &v
 			}
 		}
+		r.noteLocked(srcNikki, err)
 	}
 
 	// b4: недоступность гасит чипы сетов, но не валит статус.
 	if r.b4 != nil {
-		if sets, err := r.b4.Sets(ctx); err == nil {
+		sets, err := r.b4.Sets(ctx)
+		if err == nil {
 			s.B4.Available = true
 			s.B4.Set = b4.Selected(sets)
 			s.B4.EnabledCount = b4.EnabledCount(sets)
@@ -248,6 +348,7 @@ func (r *StatusReader) build(ctx context.Context) (*Status, error) {
 				s.B4.Version = &v.Version
 			}
 		}
+		r.noteLocked(srcB4, err)
 	}
 
 	// Текущая операция. Кэш её не задерживает: джоб меняется чаще, чем
@@ -273,7 +374,7 @@ func (r *StatusReader) build(ctx context.Context) (*Status, error) {
 	}
 
 	s.Hostname = r.hostname(ctx)
-	return s, nil
+	return s
 }
 
 // mode читает намерение владельца.
@@ -281,14 +382,29 @@ func (r *StatusReader) build(ctx context.Context) (*Status, error) {
 // Значение вне набора не исправляется: отдаём "unknown" и оставляем файл
 // как есть (ADR-0010). Отсутствие записи — это "off", а не сбой: свежая
 // установка выглядит именно так.
+//
+// Сбой чтения — тоже "unknown", а не "off": выдать "off" означало бы
+// сказать панели «владелец выключил режим», хотя мы просто не спросили.
+// Владелец увидел бы выключенный тумблер при работающем nikki.
 func (r *StatusReader) mode(ctx context.Context) string {
 	v, err := r.ex.UCIGet(ctx, "netmode", "main", "mode")
-	if err != nil {
+	switch {
+	case errors.Is(err, executor.ErrNotFound):
+		r.noteLocked(srcMode, nil)
 		return "off"
+	case err != nil:
+		r.noteLocked(srcMode, err)
+		return "unknown"
 	}
+	r.noteLocked(srcMode, nil)
+
 	switch v {
-	case "nikki", "b4", "off":
+	case "nikki", "b4":
 		return v
+	case "off", "":
+		// Пустое значение неотличимо от свежей установки: запись есть,
+		// намерения в ней нет.
+		return "off"
 	default:
 		return "unknown"
 	}

@@ -627,8 +627,12 @@ components:
           enum: [nikki, b4, off, unknown]
           description: |
             Из `netmode.main.mode` — единственное подлинно собственное состояние
-            демона. `unknown` = в файле лежит значение вне набора; **мы его не
-            исправляем** (ADR-0010).
+            демона. `unknown` = в файле лежит значение вне набора (**мы его не
+            исправляем**, ADR-0010) **либо прочитать UCI не удалось**.
+
+            `off` означает только «владелец выключил» или «записи ещё нет»
+            (свежая установка). Сбой чтения под `off` не маскируется: иначе
+            панель показала бы выключенный тумблер над работающим режимом.
         selection_state:
           $ref: "#/components/schemas/SelectionState"
         configured_ssid:
@@ -717,7 +721,7 @@ components:
 
     Online:
       type: object
-      required: [ok, checked_at]
+      required: [ok, checked, checked_at]
       additionalProperties: false
       properties:
         ok:
@@ -727,6 +731,19 @@ components:
             интерфейс `wwan` (proto dhcp) активен, имеет адрес и маршрут по
             умолчанию. Внешних проб мы не делаем — они требуют литерала чужого
             хоста, которого нет в `evidence.json`.
+
+            При `checked: false` значение всегда `false` и **ничего не
+            означает**: см. ниже.
+        checked:
+          type: boolean
+          description: |
+            Удалось ли вообще выяснить состояние канала: `ubus
+            network.interface.wwan status` ответил **и** ответ разобрался.
+
+            Без этого признака `ok: false` означает сразу две разные вещи —
+            «связи нет» и «спросить не смогли». Первое чинится сетью, второе
+            демоном. Панель обязана показывать их по-разному: при
+            `checked: false` состояние канала неизвестно, а не «оффлайн».
         checked_at:
           type: string
           format: date-time

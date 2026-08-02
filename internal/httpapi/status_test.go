@@ -3,23 +3,61 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"netmoded/internal/executor"
 )
 
+// logSink — журнал демона в тестах.
+//
+// Свой мьютекс обязателен: статус пишет в журнал под своим замком и из
+// своей горутины, а тест читает из другой.
+type logSink struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *logSink) logf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+}
+
+// matching — строки журнала, содержащие подстроку.
+func (l *logSink) matching(sub string) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, s := range l.lines {
+		if strings.Contains(s, sub) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func newReader(t *testing.T) (*StatusReader, *executor.Fake) {
+	t.Helper()
+	r, f, _ := newReaderWithLog(t)
+	return r, f
+}
+
+func newReaderWithLog(t *testing.T) (*StatusReader, *executor.Fake, *logSink) {
 	t.Helper()
 	f := executor.NewFake()
 	f.LoadFixtures(t, filepath.Join("..", "..", "docs", "recon", "raw"))
 	f.UCIValues["netmode.main.mode"] = "nikki"
 	f.UCIValues["system.@system[0].hostname"] = "grenderRouter"
-	r := NewStatusReader(f)
+	sink := &logSink{}
+	r := NewStatusReader(f, sink.logf)
 	r.b4 = newFakeB4Client()
 	r.nikki = newFakeNikkiClient()
-	return r, f
+	return r, f, sink
 }
 
 func TestStatusFromRealFixtures(t *testing.T) {
@@ -164,6 +202,141 @@ func TestStatusDegradesInsteadOfFailing(t *testing.T) {
 			continue
 		}
 		tt.check(t, s)
+	}
+}
+
+// Сбой чтения UCI — это не «владелец выключил режим».
+//
+// Отдать "off" при упавшем uci означало бы показать выключенный тумблер
+// над работающим nikki: владелец нажал бы «включить» и получил бы перезапуск
+// того, что и так работало.
+func TestModeUnknownWhenUCIFails(t *testing.T) {
+	r, f := newReader(t)
+	f.Errors["uci get netmode.main.mode"] = errors.New("uci down")
+
+	s, err := r.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if s.Mode != "unknown" {
+		t.Errorf("mode = %q, при сбое чтения ожидалось unknown", s.Mode)
+	}
+}
+
+// online.checked отличает «проверили, канала нет» от «проверить не смогли».
+func TestOnlineCheckedReportsWhetherWeAsked(t *testing.T) {
+	r, _ := newReader(t)
+	s, err := r.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !s.Online.Checked {
+		t.Error("ubus ответил и разобрался — checked обязан быть true")
+	}
+
+	r, f := newReader(t)
+	f.Errors["ubus network.interface.wwan status"] = errors.New("ubus down")
+	s, err = r.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if s.Online.Checked {
+		t.Error("ubus недоступен — checked обязан быть false")
+	}
+	if s.Online.OK {
+		t.Error("непроверенный канал не может считаться поднятым")
+	}
+
+	// Ответ пришёл, но не разобрался — это тоже «не проверили».
+	r, f = newReader(t)
+	f.Fixtures["ubus network.interface.wwan status"] = []byte("не json")
+	s, err = r.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if s.Online.Checked {
+		t.Error("неразобранный ответ — checked обязан быть false")
+	}
+}
+
+// Повторяющийся сбой не имеет права повторяться в журнале.
+//
+// Панель опрашивает статус раз в секунду; строка на каждое чтение писала бы
+// на overlay-флеш роутера круглые сутки и топила бы в себе всё остальное.
+// Отмена запроса — не сбой источника.
+//
+// b4 и nikki намеренно пропускают context.Canceled наружу без обёртки
+// ErrUnavailable: отменил чтение мы сами, роутер тут ни при чём. Панель
+// отменяет запросы штатно — по уходу со страницы и по таймауту, — поэтому
+// без этой проверки журнал заполнялся бы парами «недоступен»/«снова
+// отвечает» о сбоях, которых не было.
+func TestCancelledReadIsNotASourceFailure(t *testing.T) {
+	r, f, sink := newReaderWithLog(t)
+	base := time.Unix(1700000000, 0)
+	cur := base
+	r.now = func() time.Time { return cur }
+
+	f.Errors["ubus network.interface.wwan status"] = context.Canceled
+	for i := 0; i < 3; i++ {
+		cur = cur.Add(StatusCacheTTL + time.Millisecond)
+		if _, err := r.Read(context.Background()); err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+	}
+	if got := sink.matching("network.interface.wwan"); len(got) != 0 {
+		t.Errorf("отмена дала %d строк журнала, ожидалось ноль: %q", len(got), got)
+	}
+
+	// Настоящий сбой того же источника после отмен обязан быть замечен:
+	// отмены не должны были взвести бит «источник уже лежит».
+	f.Errors["ubus network.interface.wwan status"] = errors.New("ubus down")
+	cur = cur.Add(StatusCacheTTL + time.Millisecond)
+	if _, err := r.Read(context.Background()); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got := sink.matching("network.interface.wwan"); len(got) != 1 {
+		t.Errorf("настоящий сбой после отмен дал %d строк, ожидалась одна: %q", len(got), got)
+	}
+}
+
+func TestSourceFailureLoggedOncePerTransition(t *testing.T) {
+	r, f, sink := newReaderWithLog(t)
+	base := time.Unix(1700000000, 0)
+	cur := base
+	r.now = func() time.Time { return cur }
+
+	// Каждое чтение — за пределами TTL, то есть система реально опрашивается.
+	read := func() {
+		cur = cur.Add(StatusCacheTTL + time.Millisecond)
+		if _, err := r.Read(context.Background()); err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+	}
+
+	f.Errors["ubus network.interface.wwan status"] = errors.New("ubus down")
+	for i := 0; i < 5; i++ {
+		read()
+	}
+	if got := sink.matching("network.interface.wwan"); len(got) != 1 {
+		t.Errorf("пять неудачных чтений дали %d строк журнала, ожидалась одна: %q", len(got), got)
+	}
+
+	// Возврат источника обязан быть виден: иначе единственная строка о сбое
+	// висит в журнале вечно и врёт про текущее состояние.
+	delete(f.Errors, "ubus network.interface.wwan status")
+	read()
+	got := sink.matching("network.interface.wwan")
+	if len(got) != 2 {
+		t.Fatalf("после восстановления ожидались две строки, получено %d: %q", len(got), got)
+	}
+	if !strings.Contains(got[1], "снова") {
+		t.Errorf("вторая строка обязана сообщать о восстановлении, получено %q", got[1])
+	}
+
+	// И снова молчание, пока состояние не менялось.
+	read()
+	if got := sink.matching("network.interface.wwan"); len(got) != 2 {
+		t.Errorf("рабочий источник продолжает писать в журнал: %q", got)
 	}
 }
 

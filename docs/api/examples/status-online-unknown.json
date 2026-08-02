@@ -1,21 +1,21 @@
 {
-  "generated_at": "2026-08-02T10:04:31Z",
+  "generated_at": "2026-08-02T10:18:39Z",
   "hostname": "grenderRouter",
   "mode": "nikki",
-  "selection_state": "ambiguous",
-  "configured_ssid": null,
+  "selection_state": "single",
+  "configured_ssid": "John24",
   "associated_ssid": "John24",
-  "pending_apply": true,
-  "wireless_fingerprint": "sha256:c4b1e07a9d3f2661",
+  "pending_apply": false,
+  "wireless_fingerprint": "sha256:1f0c9a3b7d2e4a58",
   "ap": {
     "ssid": "grenderNet",
     "band": "5g",
     "clients": null
   },
   "online": {
-    "ok": true,
-    "checked": true,
-    "checked_at": "2026-08-02T10:04:31Z"
+    "ok": false,
+    "checked": false,
+    "checked_at": "2026-08-02T10:18:39Z"
   },
   "links": {
     "nikki": null,

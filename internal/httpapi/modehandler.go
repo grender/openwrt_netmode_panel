@@ -94,15 +94,15 @@ func (s *Server) applyMode(ctx context.Context, mode string) error {
 // setLED и flashLED глотают ошибки индикации.
 //
 // Погасший светодиод — неудобство; сорванное переключение режима из-за
-// него — потеря связи (ADR-0013). Ошибка попадает в журнал демона, а
-// признак деградации — в /api/status.
+// него — потеря связи (ADR-0013). И журнал, и признак деградации для
+// /api/status — целиком забота контроллера: он говорит об отказе ОДИН раз,
+// а здесь мы на каждом переключении писали бы одну и ту же строку, в
+// которой утонет что-то важное.
 func (s *Server) setLED(st led.State) {
 	if s.led == nil {
 		return
 	}
-	if err := s.led.Set(st); err != nil {
-		s.logf("led: %v", err)
-	}
+	_ = s.led.Set(st)
 }
 
 func (s *Server) flashLED(mode string) {
