@@ -10,20 +10,50 @@ import { makeT } from './i18n.js';
 
 const POLL_MS = 1000;
 
+// Бюджеты ожидания. Один общий не годится: скан эфира штатно идёт секунды,
+// а опрос статуса обязан уложиться в интервал опроса, иначе запросы копятся.
+const T_STATUS = 4000;
+const T_SIDE = 8000;
+const T_SCAN = 20000;
+const T_MODE = 8000; // 202 приходит сразу, ждать завершения джоба тут нечего
+const T_DEFAULT = 8000;
+
 // ─────────── утилиты ───────────
 
-const api = async (path, opts) => {
-	const r = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
-	const text = await r.text();
-	let body = null;
-	try { body = text ? JSON.parse(text) : null; } catch { /* не-JSON оставляем как null */ }
-	if (!r.ok) {
-		const err = new Error((body && body.error) || r.statusText);
-		err.status = r.status;
-		err.code = body && body.code;
-		throw err;
+// Таймаут обязателен на каждом запросе: зависший (именно зависший, а не
+// отклонённый) fetch навсегда оставил бы busy взведённым, а он блокирует все
+// кнопки панели до перезагрузки страницы.
+//
+// AbortController + setTimeout, а не AbortSignal.timeout(): второй новее и
+// может отсутствовать в браузере владельца, а полифиллов у панели нет по
+// определению — она грузится в браузер как есть, без сборки.
+const api = async (path, opts, timeoutMs = T_DEFAULT) => {
+	const ctl = new AbortController();
+	const timer = setTimeout(() => ctl.abort(), timeoutMs);
+	try {
+		// signal стоит ПОСЛЕ ...opts намеренно: вызывающий со своим signal
+		// иначе перезаписал бы наш, и таймаут молча исчез бы. Таких
+		// вызывающих сейчас нет, но порядок здесь значим.
+		const r = await fetch(path, {
+			headers: { 'Content-Type': 'application/json' },
+			...opts,
+			signal: ctl.signal,
+		});
+		const text = await r.text();
+		let body = null;
+		try { body = text ? JSON.parse(text) : null; } catch { /* не-JSON оставляем как null */ }
+		if (!r.ok) {
+			const err = new Error((body && body.error) || r.statusText);
+			err.status = r.status;
+			err.code = body && body.code;
+			throw err;
+		}
+		return body;
+	} finally {
+		// Снимаем в finally: иначе после быстрого ответа таймер ещё секунды
+		// живёт и дёргает abort уже завершённого запроса.
+		clearTimeout(timer);
 	}
-	return body;
 };
 
 const fmtTime = (iso, lang) => {
@@ -71,7 +101,7 @@ function App() {
 		let alive = true;
 		const tick = async () => {
 			try {
-				const s = await api('/api/status');
+				const s = await api('/api/status', null, T_STATUS);
 				if (!alive) return;
 				setStatus(s); setStale(false);
 			} catch {
@@ -85,7 +115,7 @@ function App() {
 
 	// Побочные данные тянем реже: они меняются от действий, а не сами.
 	const reloadSide = async () => {
-		const grab = (p, set) => api(p).then(set).catch(() => set(null));
+		const grab = (p, set) => api(p, null, T_SIDE).then(set).catch(() => set(null));
 		await Promise.all([
 			grab('/api/nikki/proxies', setNikki),
 			grab('/api/b4/sets', setSets),
@@ -120,7 +150,7 @@ function App() {
 	return html`
 		<${Top} s=${status} t=${t} lang=${lang} setLang=${setLang} />
 		<${Banner} s=${status} t=${t} job=${job} locked=${locked}
-			onMode=${(m) => act('mode', () => api('/api/mode', { method: 'POST', body: JSON.stringify({ mode: m }) }))} />
+			onMode=${(m) => act('mode', () => api('/api/mode', { method: 'POST', body: JSON.stringify({ mode: m }) }, T_MODE))} />
 
 		${toast && html`<div class="wrap"><div class="note ${toast.kind}"><p>${toast.msg}</p></div></div>`}
 
@@ -141,7 +171,7 @@ function App() {
 					<p class="hint">${t('sub.off')}</p></div>`}
 
 			<${WifiCard} nets=${nets} scan=${scan} t=${t} busy=${busy} status=${status}
-				onScan=${() => act('scan', async () => setScan(await api('/api/wifi/scan')))}
+				onScan=${() => act('scan', async () => setScan(await api('/api/wifi/scan', null, T_SCAN)))}
 				onOpenSheet=${(s) => setSheet(s)}
 				onDelete=${(n) => {
 					if (!confirm(t('wifi.confirm.delete', { ssid: n.ssid }))) return;
@@ -188,15 +218,54 @@ function App() {
 	`;
 }
 
+// Машинный код ошибки → ключ словаря.
+//
+// Разбор идёт по коду, а не по статусу: под 503 ходят и подвисший ubus, и
+// нехватка Clash API, и незаданный планировщик, и объяснять их одним текстом
+// про Clash — врать владельцу ровно там, где он ищет причину.
+const ERR_KEY = {
+	ambiguous_selection: 'sel.ambiguous.title',
+	enabled_network_readonly: 'wifi.locked',
+	job_busy: 'err.busy',
+	// Сообщение демона русское (оно же уходит в syslog), поэтому даже там,
+	// где текст совпадает по смыслу, панель берёт свой перевод.
+	nikki_unavailable: 'srv.down',
+	b4_unavailable: 'sets.down',
+	b4_partial: 'err.b4.partial',
+	ubus_unavailable: 'err.ubus',
+	uci_unavailable: 'err.uci',
+	scan_failed: 'err.scan',
+	ifname_unknown: 'err.ifname',
+	radio_unknown: 'err.radio',
+	unavailable: 'err.sched',
+};
+
 // Сообщение об ошибке объясняет причину, а не показывает код: коды 409
 // в этой панели означают три разные вещи, и «409» пользователю не говорит
 // ничего.
 function describe(e, t) {
-	if (e.code === 'ambiguous_selection') return t('sel.ambiguous.title');
-	if (e.code === 'enabled_network_readonly') return t('wifi.locked');
+	// Прерванный по таймауту запрос даёт DOMException с name AbortError и
+	// сообщением от браузера («The user aborted a request») — оно и неверно
+	// по сути, и не переводится.
+	if (e.name === 'AbortError') return t('err.timeout');
+	// typeof, а не просто истинность: код приходит с сервера, и попадание
+	// вроде 'constructor' достало бы из прототипа функцию вместо ключа.
+	const key = e.code && ERR_KEY[e.code];
+	if (typeof key === 'string') return t(key);
 	if (e.status === 501) return t('wifi.switch.soon');
-	if (e.status === 503) return t('srv.down');
-	return e.message || 'Ошибка';
+	// Запасной вариант для 503 с незнакомым кодом — нейтральный: конкретика
+	// здесь была бы догадкой.
+	if (e.status === 503) return t('err.unavailable');
+	return e.message || t('err.generic');
+}
+
+// Метка операции строится на клиенте по kind и arg. Поле label с демона
+// русское намеренно (syslog и диагностика по ssh), и в английском
+// интерфейсе оно читалось бы как утечка бэкенда.
+function jobText(job, t) {
+	if (job.kind === 'mode' && ['nikki', 'b4', 'off'].includes(job.arg)) return t('job.mode.' + job.arg);
+	if (job.kind === 'subscription') return t('job.subscription');
+	return t('job.working');
 }
 
 // ─────────── шапка ───────────
@@ -241,6 +310,15 @@ function Banner({ s, t, job, locked, onMode }) {
 		sub = !s.b4?.available ? t('sub.b4.down') : t('sub.b4', { set: s.b4.set || '—' });
 	} else sub = t('sub.' + m);
 
+	// Текущий режим не нажимается: повторное нажатие запускает полный джоб со
+	// стопом-стартом служб и рестартом firewall — реальный разрыв связи на
+	// 5–15 секунд без всякого результата.
+	//
+	// Сравнение идёт с сырым s.mode, а не с нормализованным m: при 'unknown'
+	// оно не совпадает ни с одной кнопкой, и все три остаются живыми — из
+	// нераспознанного состояния владелец обязан иметь выход в любой режим.
+	const current = (id) => s.mode === id;
+
 	const online = s.online?.ok;
 	const netTip = ssid
 		? (online ? t('net.tip.online', { ssid }) : t('net.tip.offline', { ssid }))
@@ -269,7 +347,7 @@ function Banner({ s, t, job, locked, onMode }) {
 			<div class="side">
 				<div class="modes">
 					${['nikki', 'b4', 'off'].map((id) => html`
-						<button class="m-${id}" aria-pressed=${s.mode === id} disabled=${locked}
+						<button class="m-${id}" aria-pressed=${s.mode === id} disabled=${locked || current(id)}
 							onClick=${() => onMode(id)}>${t('mode.' + id)}</button>`)}
 				</div>
 				${!job && html`<div class="hint" style="opacity:.8">${locked ? t('mode.hint.busy') : t('mode.hint')}</div>`}
@@ -277,7 +355,7 @@ function Banner({ s, t, job, locked, onMode }) {
 			${job && html`
 				<div class="job">
 					<div class="job-row">
-						<span class="blink">${job.label}</span>
+						<span class="blink">${jobText(job, t)}</span>
 						<span style="font-family:var(--mono);opacity:.8">
 							${left != null ? t('job.left', { sec: left }) : t('job.blocked')}</span>
 					</div>

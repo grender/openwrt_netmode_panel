@@ -134,6 +134,11 @@ button:disabled { cursor: not-allowed; }
 }
 .modes button[aria-pressed="true"].m-off   { background: var(--off); color: var(--fg); }
 .modes button:disabled { opacity: .45; }
+/* Кнопка текущего режима теперь disabled всегда, а не только на время
+   операции: нажимать её незачем. Приглушать её как недоступную нельзя —
+   это выбранное состояние, и именно оно отвечает на вопрос «какой режим
+   включён», ради которого панель и открывают. */
+.modes button[aria-pressed="true"]:disabled { opacity: 1; cursor: default; }
 
 /* ─────────── джоб ─────────── */
 

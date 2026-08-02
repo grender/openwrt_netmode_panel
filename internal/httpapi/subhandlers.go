@@ -22,7 +22,8 @@ func (s *Server) handleSubscriptionUpdate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	j, err := s.jobs.Start("subscription", "Обновление подписки", 10,
+	// Arg пустой: обновление подписки одно, уточнять в нём нечего.
+	j, err := s.jobs.Start("subscription", "", "Обновление подписки", 10,
 		func(ctx context.Context) error {
 			_, err := s.sched.RunOnce(ctx)
 			return err

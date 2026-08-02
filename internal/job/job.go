@@ -30,9 +30,18 @@ const (
 )
 
 // Job — снимок операции для /api/status.
+//
+// Kind и Arg — машинное описание операции, по нему панель строит подпись на
+// своём языке. Label — та же операция человеческими словами по-русски: он
+// уходит в журнал и в диагностику по ssh, где русский уместен, и панелью не
+// показывается. Словарь на роутере был бы копией web/i18n.js — вторым местом,
+// где строки разъезжаются.
 type Job struct {
-	ID         string  `json:"id"`
-	Kind       string  `json:"kind"`
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+	// Arg — уточнение вида операции: для kind="mode" это nikki|b4|off,
+	// для kind="subscription" уточнять нечего и поле пустое.
+	Arg        string  `json:"arg"`
 	Label      string  `json:"label"`
 	StartedAt  string  `json:"started_at"`
 	FinishedAt *string `json:"finished_at"`
@@ -76,7 +85,7 @@ func NewManager() *Manager {
 // контекст, живущий дольше HTTP-запроса: клиент может уйти, а смена режима
 // обязана довестись до конца — брошенная на середине, она оставила бы
 // висячие цепочки в nftables.
-func (m *Manager) Start(kind, label string, etaSec int, fn func(context.Context) error) (Job, error) {
+func (m *Manager) Start(kind, arg, label string, etaSec int, fn func(context.Context) error) (Job, error) {
 	m.mu.Lock()
 	if m.current != nil && m.current.State == Running {
 		m.mu.Unlock()
@@ -87,6 +96,7 @@ func (m *Manager) Start(kind, label string, etaSec int, fn func(context.Context)
 	j := &Job{
 		ID:        m.nextID(),
 		Kind:      kind,
+		Arg:       arg,
 		Label:     label,
 		StartedAt: now.UTC().Format(time.RFC3339),
 		ETASec:    etaSec,

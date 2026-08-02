@@ -2,6 +2,7 @@ package job
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -15,7 +16,7 @@ func TestSecondJobIsRefusedNotQueued(t *testing.T) {
 	m := NewManager()
 	release := make(chan struct{})
 
-	first, err := m.Start("mode", "Переключение на b4", 8, func(context.Context) error {
+	first, err := m.Start("mode", "b4", "Переключение на b4", 8, func(context.Context) error {
 		<-release
 		return nil
 	})
@@ -23,7 +24,7 @@ func TestSecondJobIsRefusedNotQueued(t *testing.T) {
 		t.Fatalf("первый джоб: %v", err)
 	}
 
-	second, err := m.Start("subscription", "Обновление подписки", 4, func(context.Context) error {
+	second, err := m.Start("subscription", "", "Обновление подписки", 4, func(context.Context) error {
 		t.Error("второй джоб не должен был запуститься")
 		return nil
 	})
@@ -40,7 +41,7 @@ func TestSecondJobIsRefusedNotQueued(t *testing.T) {
 	}
 
 	// После завершения новый запускается.
-	if _, err := m.Start("mode", "снова", 1, func(context.Context) error { return nil }); err != nil {
+	if _, err := m.Start("mode", "off", "снова", 1, func(context.Context) error { return nil }); err != nil {
 		t.Errorf("после завершения: %v", err)
 	}
 	_ = first
@@ -60,7 +61,7 @@ func TestConcurrentStartsOnlyOneWins(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := m.Start("mode", "гонка", 1, func(context.Context) error {
+			_, err := m.Start("mode", "nikki", "гонка", 1, func(context.Context) error {
 				<-release
 				return nil
 			})
@@ -89,7 +90,7 @@ func TestFailedJobKeepsError(t *testing.T) {
 	m := NewManager()
 	boom := errors.New("netmode-apply вернул 1")
 
-	if _, err := m.Start("mode", "Переключение", 8, func(context.Context) error {
+	if _, err := m.Start("mode", "b4", "Переключение", 8, func(context.Context) error {
 		return boom
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -122,7 +123,7 @@ func TestFinishedJobLingersThenDisappears(t *testing.T) {
 	cur := base
 	m.now = func() time.Time { return cur }
 
-	if _, err := m.Start("subscription", "Обновление", 4, func(context.Context) error {
+	if _, err := m.Start("subscription", "", "Обновление", 4, func(context.Context) error {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -147,7 +148,7 @@ func TestJobSurvivesCallerGoingAway(t *testing.T) {
 	m := NewManager()
 	finished := make(chan struct{})
 
-	if _, err := m.Start("mode", "долгая", 8, func(ctx context.Context) error {
+	if _, err := m.Start("mode", "nikki", "долгая", 8, func(ctx context.Context) error {
 		select {
 		case <-time.After(50 * time.Millisecond):
 			close(finished)
@@ -174,7 +175,7 @@ func TestBusyReflectsRunningOnly(t *testing.T) {
 	}
 
 	release := make(chan struct{})
-	_, _ = m.Start("mode", "x", 1, func(context.Context) error { <-release; return nil })
+	_, _ = m.Start("mode", "nikki", "x", 1, func(context.Context) error { <-release; return nil })
 	if !m.Busy() {
 		t.Error("во время операции Busy должен быть true")
 	}
@@ -190,6 +191,78 @@ func TestBusyReflectsRunningOnly(t *testing.T) {
 	}
 }
 
+// Панель строит подпись операции из kind и arg на своём языке, поэтому оба
+// поля обязаны дожить до JSON. Пропади arg — подпись «Переключаю на b4»
+// выродилась бы в безликое «Идёт операция».
+func TestKindAndArgSurviveToJSON(t *testing.T) {
+	m := NewManager()
+
+	snapshot, err := m.Start("mode", "b4", "Переключение режима на b4", 8,
+		func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if snapshot.Arg != "b4" {
+		t.Errorf("снимок при старте: arg %q, ожидалось b4", snapshot.Arg)
+	}
+	if !m.Wait(time.Second) {
+		t.Fatal("джоб не завершился")
+	}
+
+	cur := m.Current()
+	if cur == nil {
+		t.Fatal("завершённый джоб пропал сразу")
+	}
+	if cur.Kind != "mode" || cur.Arg != "b4" {
+		t.Errorf("kind=%q arg=%q, ожидалось mode/b4", cur.Kind, cur.Arg)
+	}
+
+	b, err := json.Marshal(cur)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(b, &wire); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if wire["arg"] != "b4" {
+		t.Errorf("в JSON arg=%v, ожидалось b4 (поле %s)", wire["arg"], b)
+	}
+	// Label по-прежнему едет: его читают в syslog и в диагностике по ssh.
+	if wire["label"] != "Переключение режима на b4" {
+		t.Errorf("label потерялся: %v", wire["label"])
+	}
+}
+
+// Уточнять в обновлении подписки нечего, но ключ arg обязан присутствовать:
+// панель разбирает ответ без проверок на отсутствие поля.
+func TestSubscriptionJobHasEmptyArg(t *testing.T) {
+	m := NewManager()
+	if _, err := m.Start("subscription", "", "Обновление подписки", 4,
+		func(context.Context) error { return nil }); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !m.Wait(time.Second) {
+		t.Fatal("джоб не завершился")
+	}
+
+	b, err := json.Marshal(m.Current())
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(b, &wire); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	v, ok := wire["arg"]
+	if !ok {
+		t.Fatalf("ключа arg нет вовсе: %s", b)
+	}
+	if v != "" {
+		t.Errorf("arg=%v, ожидалась пустая строка", v)
+	}
+}
+
 func TestNilWhenNothingHappened(t *testing.T) {
 	if j := NewManager().Current(); j != nil {
 		t.Errorf("на старте джоба быть не должно: %+v", j)
@@ -200,7 +273,7 @@ func TestIDsAreUnique(t *testing.T) {
 	m := NewManager()
 	seen := map[string]bool{}
 	for i := 0; i < 50; i++ {
-		j, err := m.Start("x", "y", 1, func(context.Context) error { return nil })
+		j, err := m.Start("x", "", "y", 1, func(context.Context) error { return nil })
 		if err != nil {
 			t.Fatalf("итерация %d: %v", i, err)
 		}

@@ -37,6 +37,29 @@ export const DICT = {
 		'job.left': 'осталось ~{sec} с',
 		'job.blocked': 'кнопки заблокированы',
 
+		// Метка операции переводится здесь, а не приходит с демона: на роутере
+		// словарь означал бы вторую копию этого файла и второе место, где
+		// строки разъезжаются. С демона приходят только kind и arg.
+		'job.mode.nikki': 'Переключаю на Nikki',
+		'job.mode.b4': 'Переключаю на b4',
+		'job.mode.off': 'Выключаю обход',
+		'job.subscription': 'Обновляю подписку',
+		'job.working': 'Идёт операция',
+
+		// Тексты ошибок по машинному коду от демона. Сообщение самого демона
+		// в панель не попадает: оно русское и уходит в syslog.
+		'err.generic': 'Ошибка',
+		'err.busy': 'Уже идёт другая операция. Дождитесь её завершения.',
+		'err.timeout': 'Демон не ответил вовремя. Повторите — панель не знает, дошёл ли запрос.',
+		'err.unavailable': 'Служба сейчас недоступна. Повторите через несколько секунд.',
+		'err.ubus': 'ubus не отвечает — состояние беспроводной части не прочитать.',
+		'err.uci': 'UCI не отвечает — конфигурацию не прочитать и не записать.',
+		'err.scan': 'Сканирование эфира не удалось. Радио могло быть занято — повторите.',
+		'err.ifname': 'Не удалось определить интерфейс станции — сканировать нечем.',
+		'err.radio': 'Не удалось определить, какое радио работает станцией.',
+		'err.sched': 'Планировщик обновлений не настроен — подписку не обновить.',
+		'err.b4.partial': 'b4 погасил прочие сеты, но целевой не включил: обход DPI сейчас выключен целиком. Нажмите ещё раз.',
+
 		'sel.empty.title': 'Сохранённых сетей нет',
 		'sel.empty.text': 'Свежая установка выглядит именно так. Добавьте сеть — она сохранится выключенной.',
 		'sel.alldisabled.title': 'Внешняя сеть не выбрана',
@@ -146,6 +169,24 @@ export const DICT = {
 
 		'job.left': '~{sec}s left',
 		'job.blocked': 'buttons locked',
+
+		'job.mode.nikki': 'Switching to Nikki',
+		'job.mode.b4': 'Switching to b4',
+		'job.mode.off': 'Turning the bypass off',
+		'job.subscription': 'Updating the subscription',
+		'job.working': 'Operation in progress',
+
+		'err.generic': 'Error',
+		'err.busy': 'Another operation is already running. Wait for it to finish.',
+		'err.timeout': 'The daemon did not answer in time. Try again — the panel cannot tell whether the request got through.',
+		'err.unavailable': 'The service is unavailable right now. Try again in a few seconds.',
+		'err.ubus': 'ubus does not respond — the wireless state cannot be read.',
+		'err.uci': 'UCI does not respond — the configuration cannot be read or written.',
+		'err.scan': 'The scan failed. The radio may have been busy — try again.',
+		'err.ifname': 'The station interface could not be determined — there is nothing to scan with.',
+		'err.radio': 'Could not tell which radio runs as the station.',
+		'err.sched': 'The update scheduler is not configured — the subscription cannot be updated.',
+		'err.b4.partial': 'b4 disabled the other sets but did not enable the target one: DPI bypass is fully off now. Press again.',
 
 		'sel.empty.title': 'No saved networks',
 		'sel.empty.text': 'A fresh install looks exactly like this. Add a network — it is saved disabled.',

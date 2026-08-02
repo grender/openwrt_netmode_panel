@@ -34,12 +34,14 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mode := in.Mode
+	// Label остаётся русским: он читается в syslog и в диагностике по ssh.
+	// Панель его не показывает — она строит подпись из kind и arg сама.
 	label := "Переключение режима на " + mode
 	if mode == "off" {
 		label = "Выключение обхода"
 	}
 
-	j, err := s.jobs.Start("mode", label, modeETASec, func(ctx context.Context) error {
+	j, err := s.jobs.Start("mode", mode, label, modeETASec, func(ctx context.Context) error {
 		return s.applyMode(ctx, mode)
 	})
 	if errors.Is(err, job.ErrBusy) {

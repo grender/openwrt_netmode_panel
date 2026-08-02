@@ -73,10 +73,14 @@ const readBody = (req) => new Promise((resolve) => {
 
 // Медленная операция: мок держит джоб те же секунды, что и роутер, иначе
 // состояние «идёт применение» невозможно посмотреть.
-const startJob = (kind, label, sec) => {
+// arg — машинное уточнение вида операции (для mode это nikki|b4|off).
+// Панель подписывает джоб сама по kind и arg, а label читает только человек
+// в syslog, поэтому мок обязан отдавать оба поля, иначе подпись в панели
+// проверить нечем.
+const startJob = (kind, arg, label, sec) => {
 	state.job = {
 		id: 'j-' + Math.random().toString(16).slice(2, 8),
-		kind, label,
+		kind, arg, label,
 		started_at: new Date().toISOString(),
 		finished_at: null,
 		eta_sec: sec,
@@ -109,7 +113,7 @@ async function handleAPI(req, res, u) {
 		if (!['nikki', 'b4', 'off'].includes(mode)) {
 			return fail(res, 400, 'bad_request', 'Неизвестный режим');
 		}
-		startJob('mode', `Переключение режима на ${mode}`, 8);
+		startJob('mode', mode, mode === 'off' ? 'Выключение обхода' : `Переключение режима на ${mode}`, 8);
 		state.overlay.mode = mode;
 		return send(res, 202, { job: state.job });
 	}
@@ -198,7 +202,7 @@ async function handleAPI(req, res, u) {
 	// --- подписка и логи ---
 	if (p === '/api/subscription/update' && method === 'POST') {
 		if (state.job) return fail(res, 409, 'job_busy', 'Уже идёт другая операция');
-		startJob('subscription', 'Обновление подписки', 4);
+		startJob('subscription', '', 'Обновление подписки', 4);
 		return send(res, 202, { job: state.job });
 	}
 	if (p === '/api/logs' && method === 'GET') {

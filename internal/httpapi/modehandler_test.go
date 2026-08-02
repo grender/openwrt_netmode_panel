@@ -98,6 +98,42 @@ func TestModeWritesIntentBeforeApplying(t *testing.T) {
 	}
 }
 
+// Панель подписывает операцию сама, по kind и arg: label с демона русский и
+// живёт ради syslog. Без arg английский интерфейс либо показал бы русскую
+// строку, либо потерял бы, на какой режим идёт переключение.
+func TestModeJobCarriesMachineReadableArg(t *testing.T) {
+	for _, mode := range []string{"nikki", "b4", "off"} {
+		t.Run(mode, func(t *testing.T) {
+			s, _, _ := serverWithLED(t)
+
+			rec := post(t, s, "/api/mode", `{"mode":"`+mode+`"}`, "")
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("код %d: %s", rec.Code, rec.Body.String())
+			}
+			var got struct {
+				Job struct {
+					Kind  string `json:"kind"`
+					Arg   string `json:"arg"`
+					Label string `json:"label"`
+				} `json:"job"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("разбор ответа: %v", err)
+			}
+			if got.Job.Kind != "mode" {
+				t.Errorf("kind=%q, ожидалось mode", got.Job.Kind)
+			}
+			if got.Job.Arg != mode {
+				t.Errorf("arg=%q, ожидалось %q", got.Job.Arg, mode)
+			}
+			if got.Job.Label == "" {
+				t.Error("label пуст: его читают в syslog и в диагностике по ssh")
+			}
+			s.jobs.Wait(3 * time.Second)
+		})
+	}
+}
+
 // Индикация показывает ЦЕЛЬ во время переключения и ФАКТ после.
 func TestModeLEDShowsTargetThenResult(t *testing.T) {
 	s, _, root := serverWithLED(t)
@@ -188,7 +224,7 @@ func TestModeSecondRequestIs409(t *testing.T) {
 	s, _, _ := serverWithLED(t)
 
 	block := make(chan struct{})
-	if _, err := s.jobs.Start("mode", "занято", 8, func(ctx context.Context) error {
+	if _, err := s.jobs.Start("mode", "b4", "занято", 8, func(ctx context.Context) error {
 		select {
 		case <-block:
 		case <-ctx.Done():

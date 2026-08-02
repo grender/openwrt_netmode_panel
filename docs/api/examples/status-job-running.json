@@ -24,6 +24,7 @@
   "job": {
     "id": "j-7f3a1c",
     "kind": "mode",
+    "arg": "b4",
     "label": "Переключение режима на b4",
     "started_at": "2026-08-02T10:15:03Z",
     "finished_at": null,
@@ -34,8 +35,9 @@
   "last_fail": null,
   "nikki": {
     "available": false,
-    "group": null,
-    "proxy": null
+    "version": null,
+    "set": "",
+    "enabled_count": 0
   },
   "b4": {
     "available": true,

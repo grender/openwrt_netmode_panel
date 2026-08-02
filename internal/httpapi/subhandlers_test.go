@@ -42,6 +42,7 @@ func TestSubscriptionUpdateStartsJob(t *testing.T) {
 		Job struct {
 			ID    string `json:"id"`
 			Kind  string `json:"kind"`
+			Arg   string `json:"arg"`
 			State string `json:"state"`
 		} `json:"job"`
 	}
@@ -50,6 +51,11 @@ func TestSubscriptionUpdateStartsJob(t *testing.T) {
 	}
 	if got.Job.ID == "" || got.Job.Kind != "subscription" {
 		t.Errorf("джоб: %+v", got.Job)
+	}
+	// Уточнять в обновлении подписки нечего: панель подписывает такой джоб
+	// по одному kind.
+	if got.Job.Arg != "" {
+		t.Errorf("arg=%q, ожидалась пустая строка", got.Job.Arg)
 	}
 	s.jobs.Wait(2 * time.Second)
 }
@@ -62,7 +68,7 @@ func TestSecondJobIs409(t *testing.T) {
 
 	// Занимаем менеджер долгой операцией.
 	block := make(chan struct{})
-	if _, err := s.jobs.Start("mode", "занято", 8, func(ctx context.Context) error {
+	if _, err := s.jobs.Start("mode", "b4", "занято", 8, func(ctx context.Context) error {
 		select {
 		case <-block:
 		case <-ctx.Done():
@@ -143,7 +149,7 @@ func TestJobVisibleEvenWhileStatusCached(t *testing.T) {
 	_ = do(t, s, "GET", "/api/status", true) // заполнили кэш: джоба нет
 
 	block := make(chan struct{})
-	if _, err := s.jobs.Start("mode", "Переключение", 8, func(ctx context.Context) error {
+	if _, err := s.jobs.Start("mode", "b4", "Переключение", 8, func(ctx context.Context) error {
 		<-block
 		return nil
 	}); err != nil {
