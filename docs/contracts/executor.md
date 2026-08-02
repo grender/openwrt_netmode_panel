@@ -6,6 +6,10 @@
 
 Обоснование формы — [ADR-0015](../adr/0015-executor-shape.md).
 Отличия от SPEC §10 — [ADR-0018](../adr/0018-spec-superseded.md).
+Коды возврата `netmode-apply` — [ADR-0020](../adr/0020-netmode-apply-exit-codes.md).
+
+> Блок ниже приведён **без `ctx context.Context`** — в коде он первый аргумент
+> у каждого метода. Опущен для читаемости; на состав интерфейса это не влияет.
 
 ## Интерфейс
 
@@ -20,7 +24,7 @@ package executor
 // ErrNotFound возвращается UCIGet, когда опции или секции не существует.
 // Отличать её от ошибки выполнения обязательно: отсутствие опции `disabled`
 // означает «сеть включена» (ADR-0004), а не сбой.
-var ErrNotFound = errors.New("uci: entry not found")
+var ErrNotFound = errors.New("uci: записи нет")
 
 type Executor interface {
 	// --- UCI: чтение ---
@@ -177,37 +181,41 @@ type Executor interface {
 | `uci.ParseShow([]byte) (Config, error)` | `uci show <pkg>` | `raw/10-uci-show-wireless.txt`, `raw/11-uci-show-network.txt` |
 | `uci.HasStagedChanges([]byte) bool` | `uci changes <pkg>` | — (пусто/непусто) |
 | `wireless.Fingerprint([]byte) string` | `uci show wireless` | `raw/10-…txt` |
-| `wireless.Classify(Config) Selection` | результат `ParseShow` | `raw/10-…txt` |
+| `wireless.Classify(Config, radio) Selection` | результат `ParseShow` + станционное радио | `raw/10-…txt` |
+| `wireless.ResolveRadios(map[string]Radio, *Config) Radios` | `network.wireless status` + `uci show wireless` | `raw/21-…json`, `raw/10-…txt` |
 | `wireless.ParseStatus([]byte) (map[string]Radio, error)` | `network.wireless status` | `raw/21-…json` |
-| `wireless.ParseScan([]byte) ([]ScanResult, error)` | `iwinfo scan` | **нет, см. ниже** |
-| `wireless.ParseInfo([]byte) (Info, error)` | `iwinfo info` | **нет, см. ниже** |
-| `netif.ParseInterface([]byte) (IfStatus, error)` | `network.interface.wwan status` | **нет, см. ниже** |
+| `wireless.ParseScan([]byte) ([]ScanResult, error)` | `iwinfo scan` | `raw/23-ubus-iwinfo-scan.json` |
+| `wireless.ParseInfo([]byte) (Info, error)` | `iwinfo info` | `raw/24-ubus-iwinfo-info.json` |
+| `netif.ParseStatus([]byte) (Status, error)` | `network.interface.wwan status` | `raw/26-ubus-network-interface-wwan.json` |
+
+`Classify` принимает радио вторым аргументом, а не берёт его из константы:
+какое радио станционное — выводится из системы
+([ADR-0019](../adr/0019-radio-role-derived.md)).
 
 Особая ценность `raw/10-uci-show-wireless.txt` — строка 41:
 `wireless.wifinet2.key='REDACTED_PSK!!SPECIAL@@'`. Плейсхолдер сохраняет форму
 значения со спецсимволами и проверяет экранирование в парсере `uci show`.
 Рукописный мок такой ошибки не поймает, потому что повторяет нашу же догадку.
 
-> **NEEDS RECON — три фикстуры отсутствуют.** Известны только сигнатуры
-> вызовов (`raw/22-ubus-v-list-iwinfo.txt`, `raw/20-ubus-list.txt`), но не
-> имена полей ответов. `ParseScan`, `ParseInfo` и `ParseInterface` писать
-> нельзя до получения вывода. Разрешается тремя чтениями:
+> **Все три фикстуры сняты** — `raw/23`, `raw/24`, `raw/26`. Парсеры написаны
+> и тестируются на них без моков. Единственное, что осталось неснятым в этой
+> области, — `ubus call iwinfo assoclist` для числа клиентов домашней точки
+> (RQ-05), из-за чего `ap.clients` отдаётся как `null`.
 >
-> ```
-> ubus call iwinfo scan '{"device":"phy0.0-sta0"}'
-> ubus call iwinfo info '{"device":"phy0.0-sta0"}'
-> ubus call network.interface.wwan status
-> ```
->
-> Имя устройства подставить то, что вернул `network.wireless status`, а не
-> литерал (`scripts/check-no-hardcoded-if.sh`).
+> Имя устройства в этих вызовах подставляется то, что вернул
+> `network.wireless status`, а не литерал
+> (`scripts/check-no-hardcoded-if.sh`).
 
 ## Правила вызова
 
-1. **Имя интерфейса не хардкодится.** `phy0.0-sta0` берётся из
-   `network.wireless status` → `radio0.interfaces[].ifname`, где в том же
+1. **Ни имя интерфейса, ни имя радио не хардкодятся.** `phy0.0-sta0` берётся
+   из `network.wireless status` → `<radio>.interfaces[].ifname`, где в том же
    объекте лежит `section`. Связь секция↔интерфейс дана напрямую
-   (`raw/21-ubus-network-wireless-status.json`).
+   (`raw/21-ubus-network-wireless-status.json`). Какое радио станционное —
+   выводится из `interfaces[].config.mode == "sta"`, при выключенном радио —
+   из секции `wifi-iface` с `mode=sta` в UCI; не вывелось — `503
+   radio_unknown` ([ADR-0019](../adr/0019-radio-role-derived.md)). Оба класса
+   литералов стережёт `scripts/check-no-hardcoded-if.sh`.
 2. **Запись в `wireless` идёт одной последовательностью без внешних вызовов
    между шагами:** `UCIChanges` (пусто) → `UCIAddNamed`/`UCISet`/`UCIDelete` →
    `UCICommit` → `UCIShow` (новый отпечаток).

@@ -10,7 +10,7 @@
 
 ```
 config main 'main'
-	option mode 'nikki'
+	option mode 'off'
 	option listen '192.168.9.1'
 	option port '8088'
 	option token_file '/etc/netmoded/token'
@@ -110,7 +110,7 @@ config main 'main'
 | `option upstream` | выбор выводится из `disabled`, не хранится ([ADR-0004](../adr/0004-selection-derived.md)) |
 | `option token` | секрет — в сайдкаре 0600 ([ADR-0014](../adr/0014-lan-bind-and-token.md)) |
 | адрес и порт b4 | `127.0.0.1:7000` — факт разведки, зафиксирован в `evidence.json`; конфигурируемость дала бы способ увести вызовы на чужой хост |
-| адрес Clash API | то же; будет зафиксирован после RQ-01 |
+| адрес Clash API | **не наш**: читается из `nikki.mixin.api_listen`, секрет — из `nikki.mixin.api_secret`, при старте демона. Дублировать его у себя значило бы завести второй источник правды ([ADR-0002](../adr/0002-source-of-truth.md)) и разъехаться с mihomo при первой же ротации секрета. RQ-01 закрыт |
 | расписание обновления подписки | пока константа в коде. Появится опцией, когда понадобится менять её без пересборки (SPEC §9) |
 | `option poll_interval`, таймауты, размер кэша | не настраивается: значения выведены из SPEC §7 (1 Гц, кэш 500 мс) и менять их без изменения контракта нельзя |
 
@@ -147,7 +147,7 @@ config main 'main'
 ## Пример: тот же файл после `POST /api/mode {"mode":"b4"}`
 
 ```
-config main
+config main 'main'
 	option mode 'b4'
 	option listen '192.168.9.1'
 	option port '8088'

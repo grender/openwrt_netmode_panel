@@ -14,10 +14,10 @@
 |---|---|
 | Отступ — 2 пробела | `json.MarshalIndent(v, "", "  ")` |
 | Файл заканчивается `\n` | иначе `diff` ругается на каждую строку |
-| Порядок ключей = порядок полей Go-структуры | `encoding/json` сохраняет его для структур (и сортирует для `map` — поэтому в ответах не должно быть `map` там, где порядок важен) |
+| Порядок ключей = порядок полей Go-структуры | `encoding/json` сохраняет его для структур. Это касается **только `status-*.json`**: остальные ответы собираются из `map[string]any`, и `encoding/json` сортирует их ключи по алфавиту. Порядок в этих файлах читаемый, а не байт-в-байт — на него нельзя программировать, и в контракте он ничего не значит |
 | Порядок полей в структуре = порядок в `openapi.yaml` | одно место правды на порядок |
 | Времена — RFC 3339, UTC, суффикс `Z` | сравнимость и отсутствие вопроса о часовом поясе роутера |
-| `null` пишется явно, ключ не опускается | `omitempty` есть только у `details` в `Error` и у `pinned` в `nikki`/`b4`. Всё остальное присутствует всегда — включая `"set": ""` и `"enabled_count": 0`: ноль это факт, а не отсутствие данных |
+| `null` пишется явно, ключ не опускается | `omitempty` стоит ровно в четырёх местах: `status.conflict` (только при `ambiguous`), `pinned` в `nikki`/`b4`, а в `nikki-proxies.json` — `alive`, `members`, `now`, `fixed` у участника. Всё остальное присутствует всегда, включая `"set": ""` и `"enabled_count": 0`: ноль это факт, а не отсутствие данных |
 
 ## Редактирование секретов
 
@@ -42,16 +42,16 @@
 |---|---|---|
 | `b4-sets.json` | имена и UUID сетов | тела `GET /api/sets` мы не снимали; форма выведена из исходников b4 с цитатами (`b4-api.md`). **NEEDS RECON:** `curl -s http://127.0.0.1:7000/api/sets` |
 | `status-*.json` | `b4.set`, `subscription.*`, отпечатки, времена | то же |
-| `nikki-proxies.json` | **весь файл** | RQ-01 не отвечён: порт, секрет и раскладка групп Clash API не проверялись. В этой поставке эндпоинт отвечает `503`; фикстура фиксирует форму на фазу 4 |
-| `wifi-scan.json` | результаты скана | фикстуры вывода `iwinfo scan` нет, известна только сигнатура вызова. **NEEDS RECON:** `ubus call iwinfo scan '{"device":"phy0.0-sta0"}'` |
+| `nikki-proxies.json` | имена и задержки узлов | RQ-01 **закрыт**: порт 9090, секрет и раскладка групп сняты (`raw/60`, `raw/61`, `nikki.md`), клиент реализован. Синтетичны только сами узлы — их имена в снимке отредактированы |
+| `wifi-scan.json` | BSSID и набор сетей | форма подтверждена фикстурой `raw/23-ubus-iwinfo-scan.json`; BSSID заменены плейсхолдерами |
 | `status-*.json` → `ap.clients` | всегда `null` | неизвестно, наполняется ли `stations` в `network.wireless status`. **NEEDS RECON:** `ubus call iwinfo assoclist '{"device":"<ifname AP>"}'` |
-| `status-*.json` → `associated_ssid` | значение есть | имя поля с SSID в `iwinfo info` не подтверждено. **NEEDS RECON:** `ubus call iwinfo info '{"device":"<ifname станции>"}'` |
+| `status-*.json` → `associated_ssid` | нет, значение подтверждено | `raw/24-ubus-iwinfo-info.json` → `ssid: "John24"`, разбирается `wireless.ParseInfo` |
 | `logs.json` | строки лога | формат задан SPEC §9 (`ts`, `nodes`, `status`, `err`) |
 
 Что **не** синтетическое и должно совпадать с разведкой дословно:
 `hostname: "grenderRouter"`, `ap.ssid: "grenderNet"`, `ap.band: "5g"`,
 `configured_ssid: "John24"`, `wifinet0` / `wifinet2`, `b4.version: "1.74.1"`,
-порт `7000`, адрес `192.168.9.1`, `network: "wwan"`, `radio.band: "2g"`.
+`network: "wwan"`, `radio.band: "2g"`.
 
 ## Файлы
 
@@ -65,11 +65,25 @@
 | `status-job-running.json` | `GET /api/status` | выполняется смена режима на b4 |
 | `status-online-unknown.json` | `GET /api/status` | `ubus network.interface.wwan status` не ответил: `online.checked: false` — состояние канала **неизвестно**, а не «оффлайн» |
 | `wifi-networks.json` | `GET /api/wifi/networks` | список из разведки; у активной `editable: false` |
-| `wifi-scan.json` | `GET /api/wifi/scan` | только 2.4 ГГц, с `note` для панели |
+| `wifi-scan.json` | `GET /api/wifi/scan` | станция снимка на 2.4 ГГц, поэтому в списке только он; `band` и `note` выведены, а не зашиты (ADR-0019) |
 | `b4-sets.json` | `GET /api/b4/sets` | включён ровно один — наша эксклюзивность соблюдена |
-| `nikki-proxies.json` | `GET /api/nikki/proxies` | форма на фазу 4; `AUTO` первым |
+| `nikki-proxies.json` | `GET /api/nikki/proxies` | группа `URLTest` в автовыборе: `fixed: ""`, `pinned: false`; у мёртвого узла ключа `alive` нет вовсе |
 | `logs.json` | `GET /api/logs` | новые строки первыми, среди них одна `fail` |
 
 Ошибочные ответы фикстурами не покрыты: их форма мала и полностью задана
 схемой `Error` в `openapi.yaml`, а список кодов — в
-[`../../contracts/errors.md`](../../contracts/errors.md).
+[`../../contracts/errors.md`](../../contracts/errors.md). Схема описывает то,
+что демон отдаёт на самом деле (`{code, error}`), и это **не** та форма,
+которую описывает `errors.md` (`{error, message, details}`) — расхождение
+известно и помечено в обоих файлах.
+
+## Чего в этих файлах нет, хотя контракт это описывает
+
+Не «забыли обновить», а известное расхождение кода с контрактом. Примеры
+показывают ответ демона, поэтому этих полей в них нет:
+
+| Где | Что | Почему нет |
+|---|---|---|
+| `status-*.json` → `links` | оба значения `null` | `StatusReader.build` поле `Links` не заполняет вовсе. Заполненный `b4`-адрес в контракте — форма на будущее |
+| `wifi-scan.json` → `saved_id` | ключа нет | поля нет в `wireless.ScanResult`; сопоставление со сохранёнными сетями не реализовано |
+| любой ответ с ошибкой | `details` | поля нет в `apiError`; ни один путь его не отдаёт |

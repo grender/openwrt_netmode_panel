@@ -10,12 +10,23 @@
 условия:
 
 ```
-device = radio0   и   mode = sta
+device = <станционное радио>   и   mode = sta
 ```
 
-Всё прочее вне модели: `wifinet1` (`grenderNet`, `mode=ap`, `radio1`) —
-домашняя точка доступа, мы её не показываем и не трогаем
-(`raw/10-uci-show-wireless.txt`).
+**`<станционное радио>` — не литерал.** Какое радио работает станцией,
+выводится из системы за каждую единицу работы (`wireless.ResolveRadios`,
+[ADR-0019](../adr/0019-radio-role-derived.md)); `wireless.Classify` принимает
+его вторым аргументом. Не вывелось — пути записи отказывают
+`503 radio_unknown`, а `/api/status` гасит поля и остаётся `200`.
+
+На снимке разведки станция — `radio0`, домашняя точка — `radio1`
+(`raw/10-uci-show-wireless.txt`). Это **факт снимка**: `radio0` и `radio1` —
+два диапазона одной `phy0`, и их индексы задаёт порядок регистрации
+драйвером. Литерал `radio0` в `internal/` и `cmd/` валит сборку
+(`scripts/check-no-hardcoded-if.sh`).
+
+Всё прочее вне модели: `wifinet1` (`grenderNet`, `mode=ap`) — домашняя точка
+доступа, мы её не показываем и не трогаем.
 
 ## Признак включённости
 
@@ -33,28 +44,35 @@ device = radio0   и   mode = sta
 ## Сумма состояний
 
 ```go
-type SelectionState string
+// internal/wireless
+type State string
 
 const (
-	SelEmpty       SelectionState = "empty"        // наших секций нет вовсе
-	SelAllDisabled SelectionState = "all_disabled" // есть, все выключены
-	SelSingle      SelectionState = "single"       // ровно одна включена
-	SelAmbiguous   SelectionState = "ambiguous"    // ≥2 включены ИЛИ нераспознанный disabled
+	Empty       State = "empty"        // наших секций нет вовсе
+	AllDisabled State = "all_disabled" // есть, все выключены
+	Single      State = "single"       // ровно одна включена
+	Ambiguous   State = "ambiguous"    // ≥2 включены ИЛИ нераспознанный disabled
 )
 
 type Selection struct {
-	State    SelectionState
+	State    State
 	Active   string   // id секции при Single, иначе ""
 	Sections []string // id всех наших секций, в порядке файла
 	Conflict []string // при Ambiguous — id, вызвавшие конфликт
+	Reason   string   // почему Ambiguous; наружу не отдаётся
 }
 ```
+
+Наружу из этой структуры уходят `State` (как `selection_state`), `Active`
+(как `configured_ssid` после разыменования секции) и `Conflict` (как
+`conflict` в `/api/status`, только при `Ambiguous`). `Reason` остаётся
+внутренним.
 
 ### `Empty` — станционных секций нет
 
 | | |
 |---|---|
-| Когда | ни одной `wifi-iface` с `device=radio0`, `mode=sta` |
+| Когда | ни одной `wifi-iface` с `device=<станционное радио>`, `mode=sta` |
 | HTTP `/api/status` | **200** |
 | `selection_state` | `"empty"` |
 | `configured_ssid` | `null` |
@@ -151,10 +169,11 @@ type Selection struct {
 вызывают ([ADR-0009](../adr/0009-phase1-write-invariant.md)), поэтому
 `pending_apply: true` после нашей записи — ожидаемое, штатное состояние.
 
-> **NEEDS RECON** — имя поля с SSID в ответе `iwinfo info`. Известна только
-> сигнатура вызова (`raw/22-ubus-v-list-iwinfo.txt`). До ответа
-> `associated_ssid` отдаётся как `null`. Разрешается:
-> `ubus call iwinfo info '{"device":"phy0.0-sta0"}'`
+`associated_ssid` берётся из `iwinfo info` → `ssid` и заполняется только при
+`associated`. Форма подтверждена фикстурой `raw/24-ubus-iwinfo-info.json`
+(`ssid: "John24"` совпадает с включённой секцией `wifinet0`), разбирается
+`wireless.ParseInfo`. `null` означает «ассоциации нет» либо «имя станционного
+интерфейса не выведено», а не «не реализовано».
 
 ## Переходы
 
@@ -180,6 +199,7 @@ Ambiguous ──выключить лишнюю (LuCI/ssh)──────► 
 
 - секция с `disabled='maybe'` → `ambiguous`, а не «выключена»;
 - секция без `disabled` → включена (регрессия на главный факт разведки);
-- `mode=ap` на `radio0` — не наша, в классификации не участвует;
+- `mode=ap` на станционном радио — не наша, в классификации не участвует;
+- радио переставлены местами в фикстуре — код идёт за `mode=sta`, а не за индексом;
 - безымянная секция → участвует в классификации, `id: null`, `editable: false`;
 - `Ambiguous` + `POST /api/wifi/networks` → `409`, файл не изменён.

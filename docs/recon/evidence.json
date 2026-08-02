@@ -347,7 +347,7 @@
       "id": "RQ-01",
       "text": "Nikki: секрет Clash API и текущая раскладка групп (PROXY должна стать selector с вложенной AUTO)",
       "blocks": [],
-      "answer": "ЗАКРЫТ. Порт 9090, секрет в nikki.mixin.api_secret, аутентификация Bearer. Раскладка групп: PROXY=URLTest (не selector), BYPASS=Fallback[PROXY,REJECT], GLOBAL=Selector. Ручной выбор узла невозможен без правки профиля — см. docs/recon/nikki.md."
+      "answer": "ЗАКРЫТ. Порт 9090, секрет в nikki.mixin.api_secret, аутентификация Bearer. Раскладка групп: PROXY=URLTest (не selector), BYPASS=Fallback[PROXY,REJECT], GLOBAL=Selector. Ручной выбор узла ВОЗМОЖЕН и на группе типа URLTest без правки профиля: mihomo проверяет интерфейс SelectAble, закрепление хранится в поле selected, возврат к автовыбору — DELETE /proxies/{group}. Внешний контракт SPEC \u00a77 ({\"name\":\"AUTO\"}) сохранён — см. docs/recon/nikki.md и nikki.spec_divergence выше."
     },
     {
       "id": "RQ-02",

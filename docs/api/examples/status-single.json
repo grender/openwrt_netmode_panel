@@ -19,9 +19,15 @@
   },
   "links": {
     "nikki": null,
-    "b4": "http://192.168.9.1:7000/"
+    "b4": null
   },
   "job": null,
+  "subscription": {
+    "last_update": "2026-08-02T06:00:12Z",
+    "status": "ok",
+    "nodes": 42,
+    "error": null
+  },
   "last_fail": null,
   "nikki": {
     "available": false,
@@ -34,11 +40,5 @@
     "version": "1.74.1",
     "set": "general",
     "enabled_count": 1
-  },
-  "subscription": {
-    "last_update": "2026-08-02T06:00:12Z",
-    "status": "ok",
-    "nodes": 42,
-    "error": null
   }
 }

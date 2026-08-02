@@ -79,7 +79,7 @@ curl -s 'http://localhost:8088/__scenario?name=ambiguous'
 
 ## Бюджет
 
-≤60 КБ gzip суммарно, сейчас **21.5 КБ**. Считается gzip, потому что демон
+≤60 КБ gzip суммарно, сейчас **24,9 КБ** (предупреждение с 48 КБ). Считается gzip, потому что демон
 отдаёт статику с `Content-Encoding: gzip` — это заодно экономит CPU роутера.
 Проверяет `scripts/check-web-size.sh` в `make verify`; `mock-server.mjs`
 в бюджет не входит, он не попадает в бинарь.

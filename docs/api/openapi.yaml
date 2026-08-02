@@ -38,18 +38,31 @@ info:
     `POST /api/upstream` документирован и всегда отвечает `501` с объясняющим
     телом — ADR-0016. Блокеры: RQ-03, RQ-04.
 
-    ## Не подтверждено разведкой
+    ## Состояние разведки
 
-    Clash API у Nikki не проверялся (`evidence.json` → `nikki.status:
-    "unknown"`, RQ-01). Эндпоинты `/api/nikki/*` заморожены по форме, но до
-    ответа на RQ-01 отвечают `503 nikki_unavailable`. Порт, наличие секрета и
-    раскладку групп подтверждает фаза 4.
+    Clash API у Nikki **проверен** (`evidence.json` → `nikki.status:
+    "verified"`): порт 9090, адрес из `nikki.mixin.api_listen`, секрет из
+    `nikki.mixin.api_secret`, аутентификация `Authorization: Bearer`.
+    **RQ-01 закрыт**, и `/api/nikki/*` больше не отвечают `503` безусловно —
+    они ходят в живой Clash API и отдают `503` только когда он молчит.
+
+    Остаются открытыми RQ-02, RQ-03, RQ-05 и RQ-06; что именно каждый из них
+    блокирует, помечено на месте.
+
+    ## Расхождения кода и контракта в этой поставке
+
+    Ниже описан контракт. Там, где демон его сейчас **не** исполняет, стоит
+    пометка `НЕ РЕАЛИЗОВАНО` прямо в соответствующем месте. Механического
+    сторожа формы JSON в проекте нет (`check-routes.sh` видит только пути),
+    поэтому такие расхождения ловятся чтением и обязаны быть выписаны, а не
+    подразумеваться.
 
 servers:
-  - url: http://192.168.9.1:8080
+  - url: http://192.168.9.1:8088
     description: |
-      LAN-адрес роутера. Порт из netmode.main.port.
-      NEEDS RECON: свободен ли 8080 — `netstat -lntp`.
+      LAN-адрес роутера. Адрес и порт — из `netmode.main.listen` и
+      `netmode.main.port`. Порт 8088, а не 8080: 8080 занят mihomo
+      (`docs/recon/raw/25-netstat.txt`).
 
 security:
   - bearerAuth: []
@@ -123,7 +136,7 @@ paths:
           description: Джоб принят
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Job" }
+              schema: { $ref: "#/components/schemas/JobEnvelope" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409":
@@ -166,13 +179,12 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
               example:
-                error: not_implemented
-                message: >-
-                  Смена upstream отложена до фазы 2: нет автоматического отката
-                  (ADR-0006), не отвечены RQ-03 и RQ-04. Переключите сеть в LuCI.
-                details:
-                  adr: "0016"
-                  blocked_by: [RQ-03, RQ-04]
+                code: not_implemented
+                error: >-
+                  Переключение внешней сети появится во второй фазе: сначала
+                  надо выяснить, можно ли применить изменение только к
+                  станционному радио, не уронив домашнюю сеть — оба радио делят
+                  одну phy0 (RQ-03).
 
   /api/wifi/scan:
     get:
@@ -194,10 +206,10 @@ paths:
         Синхронный, без джоба, хотя и медленный: ничего не меняет, результат
         нужен целиком (ADR-0013).
 
-        **NEEDS RECON:** имена полей ответа `iwinfo scan` не подтверждены —
-        фикстуры вывода нет. Разрешается:
-        `ubus call iwinfo scan '{"device":"phy0.0-sta0"}'`.
-        Отдельно RQ-04: не рвёт ли скан активную ассоциацию.
+        Фикстура ответа снята — `docs/recon/raw/23-ubus-iwinfo-scan.json`,
+        разбор проверяется на ней в `wireless.ParseScan`. RQ-04 (рвёт ли скан
+        активную ассоциацию) закрыт **косвенно**: скан выполнялся при живой
+        ассоциации, и она пережила его. Прямой проверки не было.
       responses:
         "200":
           description: Результат скана
@@ -348,9 +360,14 @@ paths:
       tags: [nikki]
       summary: Узлы группы PROXY с задержками
       description: |
-        **RQ-01 не отвечён** — в этой поставке всегда `503 nikki_unavailable`.
-        Форма ответа заморожена, реализация после подтверждения порта, секрета
-        и раскладки групп.
+        **RQ-01 закрыт**, эндпоинт реализован и ходит в живой Clash API
+        (порт 9090, секрет из `nikki.mixin.api_secret`, `Authorization:
+        Bearer`). `503 nikki_unavailable` означает ровно то, что написано:
+        Clash API не ответил — а не «не реализовано».
+
+        `503 group_missing` — Clash API ответил, но группы `PROXY` в профиле
+        нет. Отдельный код, потому что чинится это правкой профиля, а не
+        ожиданием.
 
         По SPEC §7 группа `PROXY` должна быть `selector`, а не `url-test`, и
         обязана содержать пункт `AUTO` (вложенный `url-test`) — он же
@@ -364,6 +381,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ProxiesResponse" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "502": { $ref: "#/components/responses/NikkiError" }
         "503": { $ref: "#/components/responses/NikkiUnavailable" }
 
   /api/nikki/proxy:
@@ -397,12 +415,32 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            `group_not_selectable` — группа не принимает ручной выбор. Это
+            `409`, а не `501`: конфликт с текущим профилем mihomo, а не
+            отсутствующая в демоне возможность. Чинится правкой профиля.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502": { $ref: "#/components/responses/NikkiError" }
         "503": { $ref: "#/components/responses/NikkiUnavailable" }
 
   /api/nikki/test:
     post:
       tags: [nikki]
-      summary: Замерить задержки всех узлов
+      summary: Замерить задержки всех узлов — НЕ РЕАЛИЗОВАНО
+      description: |
+        **НЕ РЕАЛИЗОВАНО в этой поставке.** Маршрут не зарегистрирован в
+        `Server.routes()`, поэтому запрос получает `405` от `http.ServeMux`,
+        а не тело ниже. Панель кнопку показывает и в неё упирается.
+
+        Блокер — RQ-06: форма ответа `GET /proxies/{name}/delay` у mihomo не
+        снята, а замер без неё пришлось бы писать по догадке. Разрешается
+        одним чтением, записанным в `evidence.json` → `open_questions`.
+
+        Форма ответа заморожена здесь, чтобы панель не переписывалась, когда
+        замер появится.
       responses:
         "200":
           description: Замерено. Тело — как у `GET /api/nikki/proxies`.
@@ -410,6 +448,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ProxiesResponse" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "502": { $ref: "#/components/responses/NikkiError" }
         "503": { $ref: "#/components/responses/NikkiUnavailable" }
 
   /api/b4/sets:
@@ -438,6 +477,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/SetsResponse" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "502": { $ref: "#/components/responses/B4Error" }
         "503": { $ref: "#/components/responses/B4Unavailable" }
 
   /api/b4/set:
@@ -450,6 +490,11 @@ paths:
         вызовами остаёмся без обработки (заметно и безопасно), а не с двумя
         включёнными (тихое изменение приоритетов).
 
+        Клиент шлёт **`id`**, а не имя: `name` в b4 не уникален и ключом не
+        является (`docs/recon/b4-api.md`). Отсюда же следует, что кода
+        `ambiguous_set_name` на этом пути не бывает — угадывать нечего, адрес
+        точный.
+
         `updated: 0` от b4 — **не ошибка**: значение уже стояло.
 
         Применяется горячо, рестарт b4 не нужен, выбор переживает рестарт
@@ -461,13 +506,15 @@ paths:
           application/json:
             schema:
               type: object
-              required: [set]
+              required: [id]
               additionalProperties: false
               properties:
-                set:
+                id:
                   type: string
-                  description: Имя сета. `name` не уникален — при совпадении `409`.
-                  examples: ["general"]
+                  description: >-
+                    UUID сета из `GET /api/b4/sets`. Именно `id`, а не `name`:
+                    имя не уникально и ключом не является.
+                  examples: ["4d1f9a2e-7c30-4b58-9a61-0e2f8b7c1d34"]
       responses:
         "200":
           description: Переключено. Тело — как у `GET /api/b4/sets`.
@@ -479,8 +526,6 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: |
-            `ambiguous_set_name` — имя встретилось дважды, угадывать не будем.
-
             `b4_partial` — прочие сеты погашены, целевой включить не удалось:
             обход DPI сейчас выключен целиком. Это 409, а не 503, потому что
             b4 отвечает, состояние изменено — но не то, о котором просили, и
@@ -490,6 +535,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "502": { $ref: "#/components/responses/B4Error" }
         "503": { $ref: "#/components/responses/B4Unavailable" }
 
   /api/subscription/update:
@@ -508,10 +554,23 @@ paths:
           description: Джоб принят
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Job" }
+              schema: { $ref: "#/components/schemas/JobEnvelope" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409":
           description: "`job_busy`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: "`internal` — джоб не удалось завести."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: |
+            `unavailable` — планировщик не настроен. В штатной сборке
+            недостижимо (`NewServer` заводит его всегда); ветка существует
+            для конфигураций без планировщика.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -539,6 +598,11 @@ paths:
               schema: { $ref: "#/components/schemas/LogsResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "500":
+          description: "`read_failed` — журнал не прочитался."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
 components:
 
@@ -548,8 +612,19 @@ components:
       scheme: bearer
       description: |
         Токен из `/etc/netmoded/token` (0600). Сравнение постоянного времени.
-        Дополнительно: запрос с чужим `Origin` отбивается `403
-        forbidden_origin`; заголовки CORS не отдаются никогда. ADR-0014.
+        Заголовки CORS не отдаются никогда.
+
+        Токен принимается тремя способами (`Server.tokenOK`): заголовком
+        `Authorization: Bearer`, параметром `?token=` в адресе и кукой
+        `netmode_token`. Кука ставится сервером, когда токен пришёл ссылкой:
+        за `<script src>` браузер не отправляет ни заголовок, ни query, и без
+        куки панель грузилась бы с `200` на главной и `401` на всех запросах.
+        Статика тоже под токеном — она раскрывает имена сетей.
+
+        **Проверки `Origin` нет.** ADR-0014 описывает `403 forbidden_origin`
+        как существующий второй механизм защиты от CSRF; в коде его нет
+        (`grep Origin internal/` пуст). Единственная защита — `SameSite=Strict`
+        у куки. Это известное и не закрытое расхождение.
 
   parameters:
     NetworkId:
@@ -567,7 +642,12 @@ components:
       description: |
         Отпечаток `/etc/config/wireless`, полученный из `ETag` или из поля
         `fingerprint`. Не совпал — `409 fingerprint_mismatch`, запись не
-        выполняется. Отсутствует — `400 bad_request`. ADR-0011.
+        выполняется. Отсутствует — `409 fingerprint_required`.
+
+        Оба случая `409`, а не `400`: заголовка нет не потому, что запрос
+        кривой, а потому, что клиент не доказал знание текущего состояния —
+        это конфликт представлений, и чинится он перечитыванием списка.
+        ADR-0011 называет здесь `400`; побеждает код.
       schema: { type: string }
 
   responses:
@@ -588,21 +668,49 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     B4Unavailable:
       description: |
-        `b4_unavailable` — проба `GET /api/version` не прошла;
-        либо `b4_auth_required` — b4 включил аутентификацию, пароль не угадываем.
+        `b4_unavailable` — b4 не ответил, ответил не `200` либо клиент не
+        настроен.
+
+        `b4_auth_required` **зарезервирован и не отдаётся**: на этом роутере
+        `auth_check` вернул `auth_required: false`, и ветка подбора пароля не
+        написана — включённая аутентификация деградирует в `b4_unavailable`
+        (`internal/b4/b4.go`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    B4Error:
+      description: |
+        `b4_error` — b4 ответил, но не так, как мы понимаем: неразобранное
+        тело, отказ на конкретный запрос (`b4.ErrRejected`), непредвиденный
+        код. Отличается от `503` тем, что ждать бесполезно — сервис жив.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NikkiError:
+      description: |
+        `nikki_error` — Clash API ответил, но не так, как мы понимаем
+        (`nikki.StatusError` с непредвиденным кодом, неразобранное тело).
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     NikkiUnavailable:
-      description: "`nikki_unavailable` — Clash API недоступен. RQ-01 не отвечён."
+      description: |
+        `nikki_unavailable` — Clash API не ответил.
+        `group_missing` — ответил, но группы `PROXY` в профиле нет.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     WifiWriteConflict:
       description: |
-        Один из пяти случаев (`docs/contracts/errors.md`):
-        `ambiguous_selection`, `foreign_staged_changes`, `fingerprint_mismatch`,
-        `enabled_network_readonly`, `job_busy`.
+        Один из случаев, перечисленных в `docs/contracts/errors.md`:
+        `foreign_staged_changes`, `fingerprint_required`,
+        `fingerprint_mismatch`, `ambiguous_selection`,
+        `enabled_network_readonly`.
+
+        Фактический порядок проверок в `openWrite`: чужой стейджинг →
+        разрешение станционного радио (`503 radio_unknown`) → отпечаток →
+        неоднозначность выбора; затем, уже в `target`, — сама секция
+        (`404 not_found`, `409 enabled_network_readonly`).
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -611,40 +719,101 @@ components:
 
     Error:
       type: object
-      required: [error, message]
+      description: |
+        Одна форма тела на все коды ответа. Описана здесь **так, как её
+        действительно отдаёт демон** (`writeErr` → `apiError` в
+        `internal/httpapi/server.go`), а не так, как её задумывал
+        `docs/contracts/errors.md`.
+
+        **Расхождение с `errors.md`, известное и не закрытое.** Контракт
+        ошибок описывает тело `{error: <машинный код>, message: <текст>,
+        details: {…}}`. Демон отдаёт `{code: <машинный код>, error: <текст>}`
+        и **никогда не отдаёт `details`** — поля нет в структуре. Панель
+        разбирает ответ по `e.code` (`web/app.js`, таблица `ERR_KEY`), то есть
+        живёт по этой схеме, а не по `errors.md`.
+
+        Сводить их должен владелец, и решение это не документное: либо демон
+        переименовывает поля и заводит `details`, либо `errors.md` признаёт
+        текущие имена. До тех пор здесь описан провод, потому что по контракту
+        пишут клиентов, а клиент разбирает то, что пришло.
+      required: [code, error]
       additionalProperties: false
       properties:
-        error:
+        code:
           type: string
-          description: Машинный код. Стабилен, часть контракта.
+          description: |
+            Машинный код. Стабилен, часть контракта, единственное, на что
+            клиенту разрешено программировать. Переименование = смена версии
+            API.
           enum:
+            # --- запрос ---
             - bad_request
+            - unsupported_field
             - unauthorized
-            - forbidden_origin
             - not_found
-            - method_not_allowed
+            # --- состояние системы (409) ---
             - job_busy
             - ambiguous_selection
             - foreign_staged_changes
+            - fingerprint_required
             - fingerprint_mismatch
             - enabled_network_readonly
-            - unsupported_field
-            - ambiguous_set_name
-            - not_implemented
             - b4_partial
+            - group_not_selectable
+            # --- не реализовано ---
+            - not_implemented
+            # --- внешняя зависимость (503) ---
             - b4_unavailable
-            - b4_auth_required
             - nikki_unavailable
+            - group_missing
+            - ubus_unavailable
+            - uci_unavailable
+            - scan_failed
             - radio_unknown
             - ifname_unknown
+            - unavailable
+            # --- чужой сервис ответил не так (502) ---
+            - b4_error
+            - nikki_error
+            # --- наша ошибка (500) ---
             - internal
-        message:
+            - parse_failed
+            - write_failed
+            - commit_failed
+            - read_failed
+            # --- ЗАРЕЗЕРВИРОВАНЫ: описаны контрактом, но демон их не
+            #     отдаёт ни на одном пути. Оставлены в наборе, чтобы имена
+            #     не были заняты под другой смысл, когда механизм появится.
+            #
+            #     forbidden_origin  — проверки Origin нет (ADR-0014 её
+            #                         описывает как существующую).
+            #     method_not_allowed— 405 отдаёт http.ServeMux своим текстом
+            #                         мимо writeErr, то есть НЕ этой формой.
+            #     ambiguous_set_name— выбор сета адресуется по id, имя ключом
+            #                         не является; угадывать нечего.
+            #     b4_auth_required  — на этом роутере auth_check вернул
+            #                         auth_required:false, ветка не написана.
+            - forbidden_origin
+            - method_not_allowed
+            - ambiguous_set_name
+            - b4_auth_required
+        error:
           type: string
-          description: Текст для человека, по-русски. На него не программируют.
-        details:
-          type: object
-          description: Подробности. Ключ отсутствует, если их нет; никогда не `null`.
-          additionalProperties: true
+          description: |
+            Текст для человека, по-русски. Меняется свободно — на него не
+            программируют. Секретов не содержит: ни `key`, ни токена, ни
+            значений опций (ADR-0012).
+
+    JobEnvelope:
+      type: object
+      description: |
+        Обёртка вокруг джоба в ответах `202`. Джоб лежит под ключом `job`, а не
+        в корне: `POST /api/mode` и `POST /api/subscription/update` отдают
+        `{"job": {…}}` (`writeJSON(w, 202, map[string]any{"job": j})`).
+      required: [job]
+      additionalProperties: false
+      properties:
+        job: { $ref: "#/components/schemas/Job" }
 
     Status:
       type: object
@@ -668,10 +837,10 @@ components:
         - online
         - links
         - job
+        - subscription
         - last_fail
         - nikki
         - b4
-        - subscription
       additionalProperties: false
       properties:
         generated_at:
@@ -705,7 +874,18 @@ components:
             SSID, к которому радио **реально подключено** (`iwinfo info`).
             С `configured_ssid` не сливается никогда: их расхождение — самый
             полезный сигнал в панели.
-            NEEDS RECON: имя поля в ответе `iwinfo info`; до ответа `null`.
+        conflict:
+          type: array
+          items: { type: string }
+          description: |
+            Секции, из-за которых выбор оказался неоднозначным: либо несколько
+            включённых станционных, либо нераспознанное значение `disabled`.
+
+            **Ключ присутствует только при `selection_state: "ambiguous"`** —
+            единственное поле статуса с `omitempty` вне `nikki`/`b4`. Пустой
+            массив здесь означал бы «конфликт есть, участники неизвестны», а
+            такого состояния не бывает: конфликт и определяется списком
+            участников.
         pending_apply:
           type: boolean
           description: |
@@ -730,9 +910,11 @@ components:
             - $ref: "#/components/schemas/Job"
             - type: "null"
           description: |
-            Текущий джоб или `null`. Завершившийся остаётся видимым **30
-            секунд** в состоянии `done`/`failed`, иначе клиент с опросом 1 Гц
-            может не увидеть завершения (ADR-0013).
+            Текущий джоб или `null`. Завершившийся остаётся видимым **5
+            секунд** в состоянии `done`/`failed` (`job.keepFinished`), иначе
+            клиент с опросом 1 Гц может не увидеть завершения (ADR-0013).
+        subscription:
+          $ref: "#/components/schemas/SubscriptionStatus"
         last_fail:
           oneOf:
             - $ref: "#/components/schemas/LastFail"
@@ -765,10 +947,15 @@ components:
       additionalProperties: false
       properties:
         ssid:
-          type: [string, "null"]
+          type: string
+          description: >-
+            `""`, если секция домашней точки не нашлась или её радио не
+            выяснено. Не `null`: поле всегда строка.
         band:
-          type: [string, "null"]
-          description: Из `<radio>.config.band`, например `5g`.
+          type: string
+          description: >-
+            Из `<radio>.config.band` того радио, у которого нашёлся интерфейс
+            с `mode=ap` (ADR-0019), например `5g`. `""` — не выяснено.
         clients:
           type: [integer, "null"]
           description: |
@@ -810,20 +997,28 @@ components:
     Links:
       type: object
       description: |
-        Ссылки на собственные веб-морды сервисов. Хост берётся из `Host`
-        запроса, а не хардкодится, — панель может быть открыта по любому
-        адресу роутера.
+        Ссылки на собственные веб-морды сервисов. Замысел: хост берётся из
+        `Host` запроса, а не хардкодится, — панель может быть открыта по
+        любому адресу роутера.
+
+        **НЕ РЕАЛИЗОВАНО.** `StatusReader.build` поле `Links` не заполняет
+        вовсе, поэтому в каждом ответе приходит `{"nikki": null, "b4": null}`.
+        Панель рисует обе ссылки неактивными (`web/app.js`, `top-links`).
+        Примеры в `examples/status-*.json` показывают заполненный `b4` —
+        это форма на будущее, а не текущее поведение.
       required: [nikki, b4]
       additionalProperties: false
       properties:
         nikki:
           type: [string, "null"]
-          description: |
-            `null` до ответа на RQ-01. NEEDS RECON: адрес панели Nikki —
-            `uci show nikki | grep -iE 'port|secret|api|ui'`.
+          description: >-
+            Адрес веб-морды Nikki. Сейчас всегда `null`. Порт Clash API — 9090
+            (`evidence.json` → `nikki.clash_api_port`), но адрес именно
+            **панели** отдельным чтением не снят.
         b4:
           type: [string, "null"]
-          description: Порт 7000 подтверждён (`raw/50-b4-api.txt`).
+          description: >-
+            Порт 7000 подтверждён (`raw/50-b4-api.txt`). Сейчас всегда `null`.
           examples: ["http://192.168.9.1:7000/"]
 
     Job:
@@ -897,7 +1092,9 @@ components:
       properties:
         available:
           type: boolean
-          description: "**В этой поставке всегда `false`** — RQ-01 не отвечён."
+          description: >-
+            Ответил ли Clash API на запрос списка узлов. RQ-01 закрыт, так что
+            `false` означает молчание движка, а не отсутствие реализации.
         version:
           type: [string, "null"]
           description: "`null`, пока движок не ответил."
@@ -958,19 +1155,33 @@ components:
 
     SubscriptionStatus:
       type: object
+      description: |
+        Последняя строка `/etc/nikki/updates.log`. Восстанавливается из файла,
+        а не из памяти: после перезапуска демона картина обязана сходиться
+        (SPEC §12).
       required: [last_update, status, nodes, error]
       additionalProperties: false
       properties:
         last_update:
           type: [string, "null"]
           format: date-time
+          description: "`null` — обновлений ещё не было."
         status:
-          type: [string, "null"]
-          enum: [ok, fail, null]
+          type: string
+          enum: [ok, fail, never]
+          description: |
+            `never` — журнал пуст или нечитаем: подписка ни разу не
+            обновлялась в этой установке. Это **не** `null`: поле всегда
+            строка, и отсутствие истории — такой же факт, как её наличие.
         nodes:
-          type: [integer, "null"]
+          type: integer
+          minimum: 0
+          description: >-
+            Сколько узлов разобрал конвертер в последний раз. `0` при
+            `status: "never"` и при `status: "fail"` — не `null`.
         error:
           type: [string, "null"]
+          description: "`null`, если ошибки не было."
 
     NetworksResponse:
       type: object
@@ -1114,55 +1325,139 @@ components:
     ScanResult:
       type: object
       description: |
-        NEEDS RECON: соответствие полям ответа `iwinfo scan` не подтверждено —
-        фикстуры вывода нет. `ubus call iwinfo scan '{"device":"<ifname>"}'`.
-      required: [ssid, bssid, signal_dbm, quality, quality_max, encryption, channel, saved_id]
+        Одна сеть из `ubus call iwinfo scan`. Разбирается `wireless.ParseScan`
+        на записанном выводе роутера — `raw/23-ubus-iwinfo-scan.json`.
+
+        Порядок полей повторяет структуру `wireless.ScanResult`: `channel`
+        стоит **перед** `encryption`.
+      required: [ssid, bssid, hidden, signal_dbm, quality, quality_max, channel, encryption]
       additionalProperties: false
       properties:
         ssid:
           type: string
           description: Пустая строка = скрытая сеть.
         bssid: { type: string }
+        hidden:
+          type: boolean
+          description: >-
+            Сеть не сообщает SSID. Отдельный флаг, потому что пустой `ssid`
+            иначе неотличим от сети, у которой имя не разобралось.
         signal_dbm: { type: integer }
         quality: { type: integer }
         quality_max: { type: integer }
+        channel: { type: integer }
         encryption:
           type: string
           description: Нормализовано к тем же значениям, что в UCI.
-        channel: { type: integer }
         saved_id:
           type: [string, "null"]
           description: |
             Имя секции сохранённой сети с таким же SSID, если есть. Панель по
-            нему показывает «уже сохранена».
+            нему показала бы «уже сохранена».
+
+            **НЕ РЕАЛИЗОВАНО.** Поля нет в `wireless.ScanResult`, и демон его
+            не отдаёт ни разу. Поэтому оно не в `required`: пример с `saved_id`
+            описывает намерение, а не ответ. Сопоставление требует читать
+            `wireless` на пути скана, чего сейчас не делается.
 
     ProxiesResponse:
       type: object
-      required: [available, group, selected, tested_at, members]
+      description: |
+        Группа `PROXY` и её участники. Тело собирается из `map`, поэтому
+        порядок ключей — алфавитный, а не как здесь; порядок в `members`
+        значим и повторяет порядок группы в mihomo.
+      required: [available, version, group, type, selected, fixed, pinned, selectable, members]
       additionalProperties: false
       properties:
-        available: { type: boolean }
+        available:
+          type: boolean
+          description: >-
+            `true`, если Clash API ответил. Ветки `false` в теле `200` нет:
+            недоступность отдаётся кодом `503 nikki_unavailable`.
+        version:
+          type: string
+          description: >-
+            Версия mihomo. `""` — список получен, а проба версии не прошла:
+            терять список из-за украшения не станем.
+          examples: ["v1.19.27"]
         group:
-          type: [string, "null"]
-          examples: ["PROXY"]
+          type: string
+          const: PROXY
+          description: >-
+            Имя фиксировано профилем (SPEC §2) и не настраивается: опция дала
+            бы способ выбрать чужую группу и сломать fail-closed незаметно.
+        type:
+          type: string
+          description: >-
+            Тип группы в mihomo. На этом роутере `URLTest`
+            (`evidence.json` → RQ-01), не `Selector`, как предполагала SPEC §7.
+          examples: ["URLTest", "Selector"]
         selected:
-          type: [string, "null"]
-        tested_at:
-          type: [string, "null"]
-          format: date-time
+          type: string
+          description: >-
+            Участник, через который группа работает **сейчас** (`now` в
+            mihomo). `""` — группа ничего не выбрала.
+        fixed:
+          type: string
+          description: >-
+            Участник, закреплённый вручную (`selected` в mihomo). `""` —
+            автовыбор. Отличает «выбрано руками» от «движок так решил»:
+            по одному `selected` это неразличимо.
+        pinned:
+          type: boolean
+          description: Закреплён ли выбор вручную. То же различие, одним флагом.
+        selectable:
+          type: boolean
+          description: >-
+            Принимает ли группа ручной выбор. Отказ приходит как
+            `409 group_not_selectable`, а не `501`: это конфликт с текущим
+            профилем, а не отсутствующая возможность.
         members:
           type: array
-          items:
-            type: object
-            required: [name, type, delay_ms, alive]
-            additionalProperties: false
-            properties:
-              name: { type: string }
-              type: { type: string, examples: ["url-test", "vless"] }
-              delay_ms:
-                type: [integer, "null"]
-                description: "`null` — не замерялось или узел не ответил."
-              alive: { type: boolean }
+          items: { $ref: "#/components/schemas/Proxy" }
+
+    Proxy:
+      type: object
+      description: |
+        Узел или вложенная группа. Форма общая: в Go это одна структура
+        `nikki.Proxy`, и расходиться они не могут.
+      required: [name, type, delay_ms, pinned, selectable]
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        type: { type: string, examples: ["URLTest", "Vless"] }
+        alive:
+          type: boolean
+          description: |
+            Последняя **успешная** проба, а не последняя вообще.
+            **Ключ отсутствует при `false`** (`omitempty`).
+        delay_ms:
+          type: [integer, "null"]
+          description: |
+            Задержка последней пробы. `null` — пробы не было.
+
+            Именно `null`, а не `0`: mihomo пишет `delay: 0` при
+            несостоявшейся пробе (`raw/60-clash-proxies.json`), и превратить
+            это в «ноль миллисекунд» значило бы показать мёртвый узел самым
+            быстрым.
+        members:
+          type: array
+          items: { type: string }
+          description: >-
+            Имена участников. Заполнено только у групп; **ключ отсутствует**
+            у обычного узла (`omitempty`).
+        now:
+          type: string
+          description: >-
+            Участник, через который группа работает сейчас. **Ключ
+            отсутствует**, если пусто (`omitempty`).
+        fixed:
+          type: string
+          description: >-
+            Закреплённый вручную участник. **Ключ отсутствует**, если пусто
+            (`omitempty`) — то есть при автовыборе.
+        pinned: { type: boolean }
+        selectable: { type: boolean }
 
     SetsResponse:
       type: object
