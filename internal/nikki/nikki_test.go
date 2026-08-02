@@ -14,13 +14,14 @@ import (
 
 // fakeClash отвечает формой, снятой с живого роутера.
 type fakeClash struct {
-	body       string
-	status     int
-	putStatus  int
-	wantSecret string
-	lastPUT    string
-	lastDELETE string
-	lastBody   string
+	body         string
+	status       int
+	putStatus    int
+	deleteStatus int
+	wantSecret   string
+	lastPUT      string
+	lastDELETE   string
+	lastBody     string
 }
 
 func (f *fakeClash) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -51,6 +52,10 @@ func (f *fakeClash) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodDelete {
 		f.lastDELETE = r.URL.Path
+		if f.deleteStatus != 0 {
+			w.WriteHeader(f.deleteStatus)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -330,6 +335,61 @@ func TestMustBeSelectorMapsToNotSelectable(t *testing.T) {
 	err := New(srv.URL, "").Select(context.Background(), "Г", "a")
 	if !errors.Is(err, ErrNotSelectable) {
 		t.Errorf("400 от движка → %v, ожидалась ErrNotSelectable", err)
+	}
+}
+
+// Тот же 400, но у DELETE: у обычного Selector автовыбора нет, снимать нечего.
+func TestUnfixOnSelectorIsNotSelectable(t *testing.T) {
+	f, c, done := newClient(t, "118296")
+	defer done()
+	f.deleteStatus = http.StatusBadRequest
+
+	if err := c.Unfix(context.Background(), "GLOBAL"); !errors.Is(err, ErrNotSelectable) {
+		t.Errorf("400 на DELETE → %v, ожидалась ErrNotSelectable", err)
+	}
+}
+
+// Регрессия: раньше ErrNotSelectable определялась поиском подстроки «код 400»
+// в тексте ошибки, который собирается в do(). Теперь решение принимает тип,
+// а не формулировка — и переписать текст StatusError можно, не сломав тихо
+// HTTP-код панели.
+//
+// Проверяется на 400 с ДРУГОГО маршрута: текст ошибки тот же самый, но
+// «Must be a Selector» здесь ни при чём, и подменять её нечем.
+func TestStatusErrorCarriesCodeNotText(t *testing.T) {
+	f := &fakeClash{status: http.StatusBadRequest}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+
+	_, err := New(srv.URL, "").Version(context.Background())
+
+	var se *StatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("400 → %v, ожидалась *StatusError", err)
+	}
+	if se.Code != http.StatusBadRequest || se.Path != "/version" {
+		t.Errorf("StatusError = %+v", se)
+	}
+	if errors.Is(err, ErrNotSelectable) {
+		t.Error("400 с /version принят за «группа не допускает выбор»")
+	}
+}
+
+// 4xx, который смысла для нас не имеет, остаётся собой: не ErrNotSelectable,
+// не ErrUnavailable — иначе панель показала бы «движок недоступен» на ровном
+// месте, а он ответил.
+func TestOtherClientErrorStaysStatusError(t *testing.T) {
+	f, c, done := newClient(t, "118296")
+	defer done()
+	f.putStatus = http.StatusConflict
+
+	err := c.Select(context.Background(), "GLOBAL", "PROXY")
+	var se *StatusError
+	if !errors.As(err, &se) || se.Code != http.StatusConflict {
+		t.Fatalf("409 → %v, ожидалась *StatusError с кодом 409", err)
+	}
+	if errors.Is(err, ErrNotSelectable) || errors.Is(err, ErrUnavailable) {
+		t.Errorf("409 подменён другой ошибкой: %v", err)
 	}
 }
 

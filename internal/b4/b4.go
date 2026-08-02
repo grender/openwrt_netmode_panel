@@ -72,6 +72,22 @@ var ErrUnavailable = errors.New("b4: API не отвечает")
 // ErrNotFound — сет с таким id не существует.
 var ErrNotFound = errors.New("b4: сет не найден")
 
+// ErrRejected — b4 ответил 200, но сообщил, что запрос не выполнил.
+//
+// Отдельно от ErrUnavailable: сервис жив и ответил по делу, повторять вызов
+// вслепую бессмысленно — сначала надо перечитать список сетов.
+var ErrRejected = errors.New("b4: запрос отклонён")
+
+// ErrPartial — переключение оборвалось между двумя вызовами.
+//
+// Прочие сеты уже погашены, целевой включить не удалось: b4 сейчас не
+// обрабатывает трафик ни одним сетом. Отката нет и не будет (ADR-0006), демон
+// не чинит состояние сам (ADR-0010) — а компенсирующий вызов и не помог бы:
+// если b4 не ответил на включение, он с той же вероятностью не ответит и на
+// компенсацию, и поверх одного непредсказуемого результата ляжет второй.
+// Поэтому состояние называется вслух, а разбирается оно повтором нажатия.
+var ErrPartial = errors.New("b4: прочие сеты выключены, целевой не включён")
+
 // HTTP — реальный клиент.
 type HTTP struct {
 	BaseURL string
@@ -128,12 +144,29 @@ func (c *HTTP) do(ctx context.Context, method, path string, body any, out any, t
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		// Отказ соединения, таймаут, DNS — всё это «b4 сейчас нет».
-		var nerr net.Error
-		if errors.As(err, &nerr) || errors.Is(err, context.DeadlineExceeded) {
+		// Порядок проверок обязателен. client.Do заворачивает ЛЮБУЮ ошибку
+		// в *url.Error, а тот реализует net.Error, — спроси мы про net.Error
+		// первым, отменённый нами же контекст стал бы «b4 не отвечает».
+		switch {
+		case errors.Is(err, context.Canceled):
+			// Это НАШ отказ, а не недоступность b4: панель ушла со страницы
+			// и закрыла запрос. Обёртка в ErrUnavailable погасила бы чипы
+			// сетов в статусе на ровном месте.
+			return err
+		case errors.Is(err, context.DeadlineExceeded):
+			// b4 не успел за отведённый нами таймаут — для панели это то же
+			// самое, что «не отвечает».
 			return fmt.Errorf("%w: %v", ErrUnavailable, err)
 		}
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		var nerr net.Error
+		if errors.As(err, &nerr) {
+			// Отказ соединения, обрыв, DNS — b4 сейчас нет.
+			return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
+		// Не сеть и не отмена — скорее наш баг конструирования запроса.
+		// Маскировать его под «сервис недоступен» вредно: панель покажет
+		// «b4 перезапускается», и причину никто не пойдёт искать.
+		return fmt.Errorf("b4: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -184,10 +217,24 @@ type batchRequest struct {
 	Enabled bool     `json:"enabled"`
 }
 
+// batchResponse — ответ batch-set-enabled: {"success": true, "updated": <n>}.
+//
+// Success — указатель НАМЕРЕННО. Форма ответа известна по исходникам b4
+// (sets.go:634-698, docs/recon/b4-api.md), но самого тела с живого роутера
+// в docs/recon/raw/ нет, а на роутере стоит 1.74.1 против 1.74.2 в разборе.
+// Проверка по значению означала бы: сборка, которая поля не шлёт, декодируется
+// в false — и ЛЮБОЕ переключение сета начинает падать. Отсутствие поля
+// считаем успехом, ошибку возвращаем только на явном false.
 type batchResponse struct {
-	Success bool `json:"success"`
-	Updated int  `json:"updated"`
+	Success *bool `json:"success"`
+	// Updated разбираем, но с числом отправленных id НЕ сверяем: updated:0
+	// означает «запрошенное значение уже стояло» и остаётся успехом
+	// (sets.go:679-683, ADR-0008).
+	Updated int `json:"updated"`
 }
+
+// rejected — b4 явно сказал, что не выполнил запрос.
+func (r batchResponse) rejected() bool { return r.Success != nil && !*r.Success }
 
 // SelectOnly включает указанный сет и гасит все остальные.
 //
@@ -220,6 +267,10 @@ func (c *HTTP) SelectOnly(ctx context.Context, id string) error {
 		return ErrNotFound
 	}
 
+	// Гашение УДАЛОСЬ — значит система уже не в исходном состоянии, и провал
+	// второго шага надо называть иначе, чем провал первого.
+	disabled := false
+
 	if len(others) > 0 {
 		var resp batchResponse
 		err := c.do(ctx, http.MethodPost, "/api/sets/batch-set-enabled",
@@ -227,14 +278,29 @@ func (c *HTTP) SelectOnly(ctx context.Context, id string) error {
 		if err != nil {
 			return fmt.Errorf("гашение прочих сетов: %w", err)
 		}
+		if resp.rejected() {
+			return fmt.Errorf("%w: гашение прочих сетов", ErrRejected)
+		}
+		disabled = true
 	}
 
 	if !target.Enabled {
 		var resp batchResponse
 		err := c.do(ctx, http.MethodPost, "/api/sets/batch-set-enabled",
 			batchRequest{IDs: []string{id}, Enabled: true}, &resp, switchTimeout)
-		if err != nil {
+		switch {
+		case err != nil && disabled:
+			// ErrUnavailable здесь была бы враньём: вызывающий не отличил бы
+			// «ничего не начали» от «всё погасили». Внутренняя причина идёт
+			// через %v, а не %w, чтобы errors.Is(ErrUnavailable) не увёл
+			// обработчик в 503 «b4 не отвечает» мимо этого состояния.
+			return fmt.Errorf("%w: %v", ErrPartial, err)
+		case err != nil:
 			return fmt.Errorf("включение сета: %w", err)
+		case resp.rejected() && disabled:
+			return fmt.Errorf("%w: b4 отклонил включение", ErrPartial)
+		case resp.rejected():
+			return fmt.Errorf("%w: включение сета", ErrRejected)
 		}
 	}
 	return nil

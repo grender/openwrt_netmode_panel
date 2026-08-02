@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -36,6 +35,22 @@ var ErrNotSelectable = errors.New("nikki: группа не допускает �
 
 // ErrNotFound — группы или узла нет.
 var ErrNotFound = errors.New("nikki: не найдено")
+
+// StatusError — движок ответил кодом, который разбирается по смыслу вызова.
+//
+// Тип, а не форматированная строка: смысл 400 у mihomo зависит от маршрута
+// («Must be a Selector» у PUT, «нечего снимать» у DELETE), и определять его
+// поиском подстроки в тексте ошибки значит поставить HTTP-код панели
+// в зависимость от формулировки сообщения — она тихо разъедется при первой же
+// правке текста.
+type StatusError struct {
+	Code int
+	Path string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("nikki: %s: код %d", e.Path, e.Code)
+}
 
 // Proxy — узел или группа.
 type Proxy struct {
@@ -149,7 +164,7 @@ func (c *HTTP) do(ctx context.Context, method, path string, body, out any, timeo
 	case resp.StatusCode >= 500:
 		return fmt.Errorf("%w: код %d", ErrUnavailable, resp.StatusCode)
 	case resp.StatusCode >= 400:
-		return fmt.Errorf("nikki: код %d", resp.StatusCode)
+		return &StatusError{Code: resp.StatusCode, Path: path}
 	}
 
 	if out == nil {
@@ -274,7 +289,8 @@ func (c *HTTP) Select(ctx context.Context, group, member string) error {
 
 	body := map[string]string{"name": member}
 	err = c.do(ctx, http.MethodPut, "/proxies/"+url.PathEscape(group), body, nil, callTimeout)
-	if err != nil && strings.Contains(err.Error(), "код 400") {
+	var se *StatusError
+	if errors.As(err, &se) && se.Code == http.StatusBadRequest {
 		// mihomo отвечает 400 «Must be a Selector», когда цель не
 		// реализует SelectAble (hub/route/proxies.go).
 		return fmt.Errorf("%w: %q имеет тип %s", ErrNotSelectable, group, g.Type)
@@ -305,7 +321,8 @@ func (c *HTTP) Unfix(ctx context.Context, group string) error {
 	}
 
 	err = c.do(ctx, http.MethodDelete, "/proxies/"+url.PathEscape(group), nil, nil, callTimeout)
-	if err != nil && strings.Contains(err.Error(), "код 400") {
+	var se *StatusError
+	if errors.As(err, &se) && se.Code == http.StatusBadRequest {
 		return fmt.Errorf("%w: у группы %q типа %s автовыбора нет",
 			ErrNotSelectable, group, g.Type)
 	}

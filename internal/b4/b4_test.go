@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeB4 повторяет поведение настоящего b4 в той части, что нас касается.
@@ -22,7 +23,19 @@ type fakeB4 struct {
 	down    bool
 	status  int
 	garbage bool
+
+	// batchStatus — код, которым отвечает batch-set-enabled начиная
+	// с batchFailFrom-го вызова (нумерация с 1). Так проверяется провал
+	// именно ВТОРОГО шага переключения, когда первый уже прошёл.
+	batchStatus   int
+	batchFailFrom int
+	batchCalls    int
+	// batchSuccess подменяет поле success в ответе. Пусто — поля нет вовсе:
+	// сборка b4, которая его не шлёт, обязана считаться успешной.
+	batchSuccess *bool
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 func newFakeB4(t *testing.T) (*fakeB4, *HTTP, func()) {
 	t.Helper()
@@ -79,6 +92,11 @@ func (f *fakeB4) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+		f.batchCalls++
+		if f.batchStatus != 0 && f.batchCalls >= f.batchFailFrom {
+			w.WriteHeader(f.batchStatus)
+			return
+		}
 		var req batchRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -93,7 +111,14 @@ func (f *fakeB4) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		_ = json.NewEncoder(w).Encode(batchResponse{Success: true, Updated: n})
+		// Тело собирается картой, а не нашей структурой: так тест видит
+		// ту форму, что описана в docs/recon/b4-api.md, и умеет поле
+		// success не отправлять вовсе.
+		out := map[string]any{"updated": n}
+		if f.batchSuccess != nil {
+			out["success"] = *f.batchSuccess
+		}
+		_ = json.NewEncoder(w).Encode(out)
 
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -251,6 +276,131 @@ func TestSelectOnlyUnknownID(t *testing.T) {
 	}
 }
 
+// Провал ВТОРОГО вызова оставляет систему в состоянии, которого никто не
+// просил: прочие погашены, целевой не включён — обход DPI выключен целиком.
+// Отката нет (ADR-0006) и демон не чинит состояние сам (ADR-0010), поэтому
+// единственное, что можно сделать честно, — назвать состояние отдельной
+// ошибкой, а не выдать его за обычную недоступность.
+func TestEnableStepFailureIsPartial(t *testing.T) {
+	f, c, done := newFakeB4(t)
+	defer done()
+
+	sets, _ := c.Sets(context.Background())
+	workki := sets[0].ID // выключен; HomeSet включён, его надо погасить
+
+	f.mu.Lock()
+	f.batchStatus, f.batchFailFrom = http.StatusInternalServerError, 2
+	f.mu.Unlock()
+
+	err := c.SelectOnly(context.Background(), workki)
+	if !errors.Is(err, ErrPartial) {
+		t.Fatalf("провал включения → %v, ожидалась ErrPartial", err)
+	}
+	// ErrUnavailable внутри быть не должно: иначе обработчик уедет в 503
+	// «b4 не отвечает» и промежуточное состояние останется неназванным.
+	if errors.Is(err, ErrUnavailable) {
+		t.Errorf("ErrPartial маскируется под недоступность: %v", err)
+	}
+	// Состояние именно то, о котором говорит ошибка, — и мы его не чиним.
+	if got := f.enabled(); len(got) != 0 {
+		t.Errorf("включено %v, ожидалась пустота", got)
+	}
+}
+
+// Провал ПЕРВОГО вызова — обычная ошибка: ещё ничего не сделано, состояние
+// нетронуто, и называть его промежуточным было бы враньём.
+func TestDisableStepFailureIsNotPartial(t *testing.T) {
+	f, c, done := newFakeB4(t)
+	defer done()
+
+	sets, _ := c.Sets(context.Background())
+	workki := sets[0].ID
+
+	f.mu.Lock()
+	f.batchStatus, f.batchFailFrom = http.StatusInternalServerError, 1
+	f.mu.Unlock()
+
+	err := c.SelectOnly(context.Background(), workki)
+	if errors.Is(err, ErrPartial) {
+		t.Errorf("провал гашения объявлен промежуточным состоянием: %v", err)
+	}
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("500 от b4 → %v, ожидалась ErrUnavailable", err)
+	}
+	if got := f.enabled(); len(got) != 1 || got[0] != "HomeSet" {
+		t.Errorf("состояние изменилось: %v", got)
+	}
+}
+
+// 200 с телом {"success": false} — не успех. До этой проверки b4 мог
+// отказаться выполнять запрос, а панель показывала бы выбор состоявшимся.
+func TestExplicitSuccessFalseIsRejected(t *testing.T) {
+	f, c, done := newFakeB4(t)
+	defer done()
+
+	sets, _ := c.Sets(context.Background())
+
+	f.mu.Lock()
+	f.batchSuccess = boolPtr(false)
+	f.mu.Unlock()
+
+	err := c.SelectOnly(context.Background(), sets[0].ID)
+	if !errors.Is(err, ErrRejected) {
+		t.Errorf("success:false → %v, ожидалась ErrRejected", err)
+	}
+}
+
+// Обратная сторона той же проверки: тела с полем success в разведке нет —
+// оно известно только по исходникам b4. Сборка, которая поля не шлёт, обязана
+// считаться успешной, иначе наивная проверка сломает КАЖДОЕ переключение.
+func TestMissingSuccessFieldIsSuccess(t *testing.T) {
+	f, c, done := newFakeB4(t)
+	defer done()
+
+	sets, _ := c.Sets(context.Background())
+	if err := c.SelectOnly(context.Background(), sets[0].ID); err != nil {
+		t.Fatalf("ответ без поля success принят за отказ: %v", err)
+	}
+	if got := f.enabled(); len(got) != 1 || got[0] != "workki" {
+		t.Errorf("включено %v", got)
+	}
+}
+
+func TestExplicitSuccessTrueIsSuccess(t *testing.T) {
+	f, c, done := newFakeB4(t)
+	defer done()
+
+	sets, _ := c.Sets(context.Background())
+
+	f.mu.Lock()
+	f.batchSuccess = boolPtr(true)
+	f.mu.Unlock()
+
+	if err := c.SelectOnly(context.Background(), sets[0].ID); err != nil {
+		t.Fatalf("SelectOnly: %v", err)
+	}
+}
+
+// updated:0 — НЕ ошибка (sets.go:679-683, ADR-0008): значит запрошенное
+// значение уже стояло. Сверять его с числом отправленных id нельзя.
+func TestUpdatedZeroIsNotAnError(t *testing.T) {
+	sets := fixtureSets(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/sets" {
+			_ = json.NewEncoder(w).Encode(sets)
+			return
+		}
+		// b4 пропускает запись, если значение уже стоит, и отвечает успехом
+		// с нулём обновлённых.
+		_, _ = w.Write([]byte(`{"success":true,"updated":0}`))
+	}))
+	defer srv.Close()
+
+	if err := New(srv.URL).SelectOnly(context.Background(), sets[0].ID); err != nil {
+		t.Errorf("updated:0 принят за ошибку: %v", err)
+	}
+}
+
 // ─────────── недоступность ───────────
 
 // b4 перезапускается сам — в снимке разведки он как раз лежал
@@ -305,14 +455,36 @@ func TestGarbageResponseIsError(t *testing.T) {
 	}
 }
 
+// Отмена контекста — НАШ отказ, а не недоступность b4: панель ушла со
+// страницы и закрыла запрос. Превратив это в ErrUnavailable, статус погасил
+// бы чипы сетов на ровном месте.
 func TestContextCancellation(t *testing.T) {
 	_, c, done := newFakeB4(t)
 	defer done()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := c.Sets(ctx); err == nil {
-		t.Error("отменённый контекст не прервал вызов")
+	_, err := c.Sets(ctx)
+	if err == nil {
+		t.Fatal("отменённый контекст не прервал вызов")
+	}
+	if errors.Is(err, ErrUnavailable) {
+		t.Errorf("отмена выдана за недоступность b4: %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("причина отмены потеряна: %v", err)
+	}
+}
+
+// Истёкший дедлайн — наоборот, недоступность: b4 не успел ответить.
+func TestDeadlineIsUnavailable(t *testing.T) {
+	_, c, done := newFakeB4(t)
+	defer done()
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if _, err := c.Sets(ctx); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("истёкший дедлайн → %v, ожидалась ErrUnavailable", err)
 	}
 }
 
