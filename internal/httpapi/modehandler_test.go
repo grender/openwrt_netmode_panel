@@ -186,6 +186,99 @@ func TestModeApplyFailureIsReported(t *testing.T) {
 	}
 }
 
+// «Занято» — не поломка. Скрипт держит flock, потому что переключение уже
+// идёт в другом процессе (человек из ssh, применение при загрузке): система
+// не тронута, и мигать ошибкой не на что — мигание означает «переключение
+// провалилось».
+func TestModeApplyBusyDoesNotFlashError(t *testing.T) {
+	s, f, root := serverWithLED(t)
+	f.ApplyExitCodes["nikki"] = 3 // занято: flock держит другой процесс
+
+	if rec := post(t, s, "/api/mode", `{"mode":"nikki"}`, ""); rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d", rec.Code)
+	}
+	if !s.jobs.Wait(3 * time.Second) {
+		t.Fatal("джоб не завершился")
+	}
+
+	cur := s.jobs.Current()
+	if cur == nil || cur.State != "failed" {
+		t.Fatalf("джоб: %+v", cur)
+	}
+	if cur.Error == nil || !strings.Contains(*cur.Error, "не начиналось") {
+		t.Errorf("исход «занято» не отличим по тексту: %v", cur.Error)
+	}
+
+	// Индикации ошибки нет: быстрого мигания (100 мс) не случилось.
+	if got := ledAttr(t, root, led.Blue, "delay_on"); got == "100" {
+		t.Error("на «занято» мигнули ошибкой — это сообщение о провале, которого не было")
+	}
+	// Но и мигающего «применяю» не осталось: светодиод уведён к ЗАПИСАННОМУ
+	// режиму, как и во всех прочих исходах.
+	if got := ledAttr(t, root, led.Blue, "trigger"); got != "none" {
+		t.Errorf("синий остался мигать (trigger=%q) целью, которой никто не добивается", got)
+	}
+	if got := ledAttr(t, root, led.Blue, "brightness"); got != "255" {
+		t.Errorf("синий brightness=%q, ожидался записанный режим nikki (255)", got)
+	}
+}
+
+// Остальные исходы владельцу надо УВИДЕТЬ: они означают, что режим не
+// применён либо применён не тот. Различаются и текстом (он уходит в
+// job.error и показывается в панели), и индикацией ошибки.
+func TestModeApplyOutcomesAreDistinguished(t *testing.T) {
+	tests := []struct {
+		name string
+		code int
+		want string
+	}{
+		// firewall не перезапустился: обхода нет вовсе, туннель намеренно
+		// не поднимали поверх возможных чужих цепочек.
+		{"firewall", 4, "напрямую"},
+		// сервис не поднялся (или не дался его автозапуск).
+		{"start", 5, "не поднялся"},
+		// система пришла не туда, куда просили.
+		{"verify", 6, "не в запрошенном состоянии"},
+		// нет flock — чинится доставкой пакета, а не повтором.
+		{"prereq", 7, "предусловия"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, f, root := serverWithLED(t)
+			f.ApplyExitCodes["nikki"] = tt.code
+
+			if rec := post(t, s, "/api/mode", `{"mode":"nikki"}`, ""); rec.Code != http.StatusAccepted {
+				t.Fatalf("код %d", rec.Code)
+			}
+			if !s.jobs.Wait(3 * time.Second) {
+				t.Fatal("джоб не завершился")
+			}
+
+			cur := s.jobs.Current()
+			if cur == nil || cur.State != "failed" {
+				t.Fatalf("джоб: %+v", cur)
+			}
+			if cur.Error == nil || !strings.Contains(*cur.Error, tt.want) {
+				t.Errorf("исход %d не различим: %v", tt.code, cur.Error)
+			}
+			// Индикация ошибки: оба мигают быстро.
+			if got := ledAttr(t, root, led.Blue, "delay_on"); got != "100" {
+				t.Errorf("синий delay_on=%q, ожидалось 100 — отказ обязан быть виден", got)
+			}
+			// Намерение записано в любом случае: повтор возможен, и
+			// netmode-apply при следующей загрузке доведёт дело сам.
+			if !strings.Contains(strings.Join(f.Calls, "\n"), "set netmode.main.mode=nikki") {
+				t.Error("намерение не записано — повторить будет нечего")
+			}
+			// Демон не чинит состояние сам (ADR-0010): попытка ровно одна,
+			// повтор firewall живёт внутри скрипта.
+			if n := len(f.CallsContaining("apply-mode nikki")); n != 1 {
+				t.Errorf("вызовов netmode-apply %d, ожидался 1: демон не повторяет за скриптом", n)
+			}
+		})
+	}
+}
+
 // Индикация — best-effort: её отказ НИКОГДА не валит переключение.
 func TestModeSucceedsWhenLEDIsBroken(t *testing.T) {
 	s, f, _ := serverWithLED(t)

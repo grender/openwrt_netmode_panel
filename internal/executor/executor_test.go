@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -477,6 +478,127 @@ func TestExecScanGetsLongerTimeout(t *testing.T) {
 	}
 	if deadlines[0] <= deadlines[1] {
 		t.Errorf("скан получил таймаут %v, статус %v — скан должен быть больше", deadlines[0], deadlines[1])
+	}
+}
+
+// applyStub подменяет netmode-apply скриптом, который пишет сообщение
+// в stderr и завершается заданным кодом.
+//
+// Настоящий процесс, а не подставной commandRunner: проверяется весь путь
+// целиком — exec.ExitError → код возврата → исход. Подмена runner'а обошла
+// бы ровно то место, где ошибиться легче всего.
+func applyStub(t *testing.T, code int, stderrText string) *Exec {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "netmode-apply")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' '%s' >&2\nexit %d\n", stderrText, code)
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := New()
+	e.applyBin = path
+	return e
+}
+
+// Демон обязан отличать «занято, повторите» от «переключение провалилось»
+// и от «состояние не сошлось»: реакция на них разная вплоть до индикации.
+// Раньше все причины сводились к exit 1, и различать их пришлось бы
+// разбором текста — а текст скрипта меняется свободно.
+func TestApplyModeExitCodeBecomesOutcome(t *testing.T) {
+	tests := []struct {
+		code int
+		want error
+	}{
+		{3, ErrApplyBusy},
+		{4, ErrApplyFirewall},
+		{5, ErrApplyStart},
+		{6, ErrApplyVerify},
+		{7, ErrApplyPrereq},
+	}
+	for _, tt := range tests {
+		const detail = "ОШИБКА: подробность из stderr"
+		e := applyStub(t, tt.code, detail)
+
+		err := e.ApplyMode(context.Background(), "nikki")
+		if !errors.Is(err, tt.want) {
+			t.Errorf("код %d → %v, ожидался исход %v", tt.code, err, tt.want)
+			continue
+		}
+		// Аварийные сообщения скрипта уходят в stderr именно ради этого:
+		// cmd.Output() кладёт stdout в результат, а в текст ошибки отдаёт
+		// только stderr. Пиши die_code в stdout — здесь была бы пустота.
+		if !strings.Contains(err.Error(), detail) {
+			t.Errorf("код %d: stderr скрипта не дошёл до текста ошибки: %v", tt.code, err)
+		}
+		// Исходы не должны склеиваться между собой.
+		for _, other := range tests {
+			if other.want != tt.want && errors.Is(err, other.want) {
+				t.Errorf("код %d опознан и как %v", tt.code, other.want)
+			}
+		}
+	}
+}
+
+func TestApplyModeSuccessAndUnknownExitCodes(t *testing.T) {
+	sentinels := []error{ErrApplyBusy, ErrApplyFirewall, ErrApplyStart, ErrApplyVerify, ErrApplyPrereq}
+
+	// Ноль — успех, никаких исходов.
+	if err := applyStub(t, 0, "применён").ApplyMode(context.Background(), "off"); err != nil {
+		t.Errorf("успешный скрипт вернул ошибку: %v", err)
+	}
+
+	// Код вне контракта смыслом не наделяется: «неизвестный отказ» честнее,
+	// чем отнесённый не к тому классу. Но ошибкой он остаётся.
+	err := applyStub(t, 9, "что-то новое").ApplyMode(context.Background(), "nikki")
+	if err == nil {
+		t.Fatal("код 9 проглочен, ожидалась ошибка")
+	}
+	for _, s := range sentinels {
+		if errors.Is(err, s) {
+			t.Errorf("коду 9 приписан исход %v", s)
+		}
+	}
+
+	// Скрипта нет вовсе: кода возврата не существует, классифицировать
+	// нечего — но и молчать нельзя.
+	e := New()
+	e.applyBin = filepath.Join(t.TempDir(), "нет-такого")
+	err = e.ApplyMode(context.Background(), "b4")
+	if err == nil {
+		t.Fatal("отсутствие скрипта проглочено")
+	}
+	for _, s := range sentinels {
+		if errors.Is(err, s) {
+			t.Errorf("отсутствию скрипта приписан исход %v", s)
+		}
+	}
+}
+
+// Фейк обязан отдавать те же исходы, что и роутер: тест, различающий
+// поведение демона, иначе проверял бы выдуманную ошибку вместо кода.
+func TestFakeApplyModeExitCodes(t *testing.T) {
+	for code, want := range map[int]error{
+		3: ErrApplyBusy,
+		4: ErrApplyFirewall,
+		5: ErrApplyStart,
+		6: ErrApplyVerify,
+		7: ErrApplyPrereq,
+	} {
+		f := NewFake()
+		f.ApplyExitCodes["nikki"] = code
+
+		err := f.ApplyMode(context.Background(), "nikki")
+		if !errors.Is(err, want) {
+			t.Errorf("фейк: код %d → %v, ожидался исход %v", code, err, want)
+		}
+		// Попытка всё равно была: на роутере скрипт запускается и падает
+		// уже внутри, а не «не вызывался».
+		if len(f.CallsContaining("apply-mode nikki")) != 1 {
+			t.Errorf("фейк: код %d не записал попытку: %v", code, f.Calls)
+		}
+		// Другой режим отказом не задет.
+		if err := f.ApplyMode(context.Background(), "off"); err != nil {
+			t.Errorf("фейк: отказ nikki задел режим off: %v", err)
+		}
 	}
 }
 

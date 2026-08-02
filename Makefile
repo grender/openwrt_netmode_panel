@@ -48,6 +48,7 @@ checks:
 	@scripts/check-disabled-write.sh
 	@scripts/check-routes.sh
 	@scripts/check-netmode-seed.sh
+	@scripts/check-netmode-apply.sh
 	@scripts/check-web-size.sh
 
 clean:

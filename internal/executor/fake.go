@@ -38,6 +38,16 @@ type Fake struct {
 	// Без этого нельзя проверить деградацию, которой требует SPEC §10.
 	Errors map[string]error
 
+	// ApplyExitCodes — код возврата netmode-apply по режиму ("nikki",
+	// "b4", "off"). Отсутствие ключа или 0 — успех.
+	//
+	// Внедряется именно КОД, а не готовая ошибка: демон различает исходы
+	// переключения по коду возврата скрипта, и тест, подсовывающий свою
+	// errors.New, проверял бы не тот путь, по которому пойдёт живая
+	// система. Код проходит через ту же таблицу applySentinels, что и на
+	// роутере, — второй копии соответствия «код → исход» нет.
+	ApplyExitCodes map[string]int
+
 	// Calls — журнал изменяющих вызовов в порядке поступления.
 	Calls []string
 
@@ -50,10 +60,11 @@ type Fake struct {
 // NewFake возвращает пустой фейк.
 func NewFake() *Fake {
 	return &Fake{
-		Fixtures:  map[string][]byte{},
-		UCIValues: map[string]string{},
-		Staged:    map[string]string{},
-		Errors:    map[string]error{},
+		Fixtures:       map[string][]byte{},
+		UCIValues:      map[string]string{},
+		Staged:         map[string]string{},
+		Errors:         map[string]error{},
+		ApplyExitCodes: map[string]int{},
 	}
 }
 
@@ -287,7 +298,21 @@ func (f *Fake) ApplyMode(ctx context.Context, mode string) error {
 	if !validModes[mode] {
 		return fmt.Errorf("неизвестный режим %q (допустимы nikki, b4, off)", mode)
 	}
-	return f.record("apply-mode " + mode)
+	// Вызов журналируется до отказа: на роутере скрипт тоже запускается,
+	// и тест обязан видеть попытку, а не только её результат.
+	if err := f.record("apply-mode " + mode); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	code := f.ApplyExitCodes[mode]
+	f.mu.Unlock()
+	if code == 0 {
+		return nil
+	}
+	// Текст повторяет форму того, что соберёт реальная реализация:
+	// имя скрипта, аргумент, код возврата.
+	cause := fmt.Errorf("netmode-apply %s: exit status %d", mode, code)
+	return applyErrorForCode(code, cause)
 }
 
 func (f *Fake) UpdateSubscription(ctx context.Context) ([]byte, error) {
