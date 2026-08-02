@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"netmoded/internal/logs"
+	"netmoded/internal/safe"
 )
 
 // DefaultInterval — как часто обновлять подписку.
@@ -85,7 +86,7 @@ func New(up Updater, log *logs.Log, interval time.Duration, logf func(string, ..
 func (s *Scheduler) Run(ctx context.Context) {
 	// Первое срабатывание — одноразовый таймер: его задержка зависит от
 	// журнала и почти никогда не равна интервалу. Дальше обычный тикер.
-	first := time.NewTimer(s.firstDelay())
+	first := time.NewTimer(s.firstDelaySafe())
 	defer first.Stop()
 
 	select {
@@ -94,7 +95,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	case <-s.stop:
 		return
 	case <-first.C:
-		_, _ = s.RunOnce(ctx)
+		s.runOnceSafely(ctx)
 	}
 
 	t := time.NewTicker(s.interval)
@@ -107,9 +108,50 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-s.stop:
 			return
 		case <-t.C:
-			_, _ = s.RunOnce(ctx)
+			s.runOnceSafely(ctx)
 		}
 	}
+}
+
+// runOnceSafely выполняет одно срабатывание так, чтобы паника стоила одного
+// срабатывания, а не всего расписания.
+//
+// Цикл живёт в горутине, заведённой в main, и работает месяцами: паника
+// здесь может выстрелить через полсуток после старта, без всякой связи с
+// действиями владельца — просто в какой-то момент роутер перестаёт
+// управляться. Ловим тут, а не в вызывающем: горутину завёл main, а recover
+// действует только в той горутине, где случилась паника.
+//
+// Из цикла после перехвата НЕ выходим. Расписание, молча переставшее
+// существовать после одной неудачи, — та же потеря функции, только
+// замеченная неделями позже, по протухшей подписке. Записали стек — ждём
+// следующего тика.
+//
+// Ошибка наружу не отдаётся, потому что отдавать её некому: исход
+// обновления RunOnce уже положил в журнал подписки, а причину со стеком
+// safe.Do — в лог демона.
+func (s *Scheduler) runOnceSafely(ctx context.Context) {
+	_ = safe.Do(s.logf, "обновление подписки по расписанию", func() error {
+		_, err := s.RunOnce(ctx)
+		return err
+	})
+}
+
+// firstDelaySafe — задержка первого срабатывания, посчитанная так, чтобы
+// паника не убила демона ещё до первого тика.
+//
+// firstDelay читает журнал обновлений, то есть файл, который демон не
+// единственный правит. Паника здесь пришлась бы на самый старт: procd
+// поднял бы демона заново, тот упал бы на том же файле — вместо потерянного
+// расписания владелец получил бы перезапуск по кругу и никакого API. Не
+// посчиталось — берём обычный интервал, ровно как при нечитаемом журнале.
+func (s *Scheduler) firstDelaySafe() time.Duration {
+	d := s.interval
+	_ = safe.Do(s.logf, "расчёт задержки первого обновления", func() error {
+		d = s.firstDelay()
+		return nil
+	})
+	return d
 }
 
 // firstDelay — сколько ждать до первого обновления после старта.

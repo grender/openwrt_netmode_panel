@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -70,6 +72,31 @@ func (r *recorder) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.msgs)
+}
+
+// has — есть ли в журнале строка с подстрокой.
+func (r *recorder) has(sub string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, m := range r.msgs {
+		if strings.Contains(m, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// waitFor крутится до выполнения условия или до истечения срока.
+// Нужен, потому что расписание работает в своей горутине.
+func waitFor(cond func() bool, limit time.Duration) bool {
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return cond()
 }
 
 // brokenLogPath возвращает путь, по которому запись журнала гарантированно
@@ -399,6 +426,85 @@ func TestContextCancelDuringFirstWait(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("Run не завершился после отмены контекста")
+	}
+}
+
+// Паника внутри одного срабатывания не должна уносить ни процесс, ни
+// расписание.
+//
+// Цикл живёт месяцами: без перехвата первая же паника убила бы демона
+// через полсуток после старта, без всякой связи с действиями владельца.
+// Выход из цикла после перехвата тише, но не лучше: расписание молча
+// перестало бы существовать, и это заметили бы неделями позже — по
+// протухшей подписке.
+func TestPanicInTickDoesNotEndSchedule(t *testing.T) {
+	rec := &recorder{}
+	up := &fakeUpdater{out: []byte("41 nodes")}
+	var fired atomic.Bool
+	// Паникуем ровно на первом вызове: второй обязан состояться, иначе
+	// тест не отличает «цикл выжил» от «цикл тихо кончился».
+	up.onCall = func() {
+		if !fired.Swap(true) {
+			panic("подложенный сбой конвертера")
+		}
+	}
+
+	l := logs.New(filepath.Join(t.TempDir(), "updates.log"))
+	s := New(up, l, 20*time.Millisecond, rec.logf)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx)
+	defer s.Stop()
+
+	if !waitFor(func() bool { return up.count() >= 2 }, 3*time.Second) {
+		t.Fatalf("после паники расписание сделало %d вызовов, ожидалось не меньше двух", up.count())
+	}
+	if !rec.has("паника") {
+		t.Error("паника не попала в журнал демона: чинить будет нечего")
+	}
+	// Стек нужен целиком и в той же записи: без него известно только,
+	// что где-то рвануло.
+	if !rec.has("sched.go") {
+		t.Error("в журнале нет стека — по такой записи не найти место паники")
+	}
+}
+
+// Паника при расчёте первой задержки приходится на самый старт: без
+// перехвата procd поднимал бы демона по кругу, и владелец остался бы вообще
+// без API. Не посчиталось — берём обычный интервал.
+func TestPanicInFirstDelayFallsBackToInterval(t *testing.T) {
+	rec := &recorder{}
+	up := &fakeUpdater{out: []byte("41 nodes")}
+
+	// Журнал говорит «обновлялись час назад»: без паники firstDelay вернул
+	// бы catchUpDelay, то есть минуту, и обновления в этом тесте не было бы
+	// вовсе. Значит, быстрый вызов конвертера доказывает именно откат на
+	// интервал, а не случайное совпадение.
+	l := logs.New(filepath.Join(t.TempDir(), "updates.log"))
+	if err := l.Append(logs.Entry{TS: time.Now().Add(-time.Hour), Nodes: 41, Status: logs.StatusOK}); err != nil {
+		t.Fatalf("подготовка журнала: %v", err)
+	}
+
+	s := New(up, l, 20*time.Millisecond, rec.logf)
+	var fired atomic.Bool
+	s.now = func() time.Time {
+		if !fired.Swap(true) {
+			panic("часы не отдали время")
+		}
+		return time.Now()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx)
+	defer s.Stop()
+
+	if !waitFor(func() bool { return up.count() >= 1 }, 3*time.Second) {
+		t.Fatal("после паники в расчёте задержки расписание не запустилось")
+	}
+	if !rec.has("паника") {
+		t.Error("паника не попала в журнал демона")
 	}
 }
 

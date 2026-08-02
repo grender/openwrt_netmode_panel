@@ -2,9 +2,11 @@ package led
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -252,6 +254,99 @@ func TestUnknownStateDoesNotDegrade(t *testing.T) {
 	if got := read(t, c.root, Blue, "brightness"); got != "255" {
 		t.Errorf("синий brightness=%q — контроллер замолчал после чужого бага", got)
 	}
+}
+
+// panicOnceLog — журнал, который паникует на первом обращении и записывает
+// все следующие.
+//
+// Это единственный способ устроить панику именно ВНУТРИ отложенного
+// возврата: контроллер там не делает ничего, кроме записи в sysfs, а
+// неудачная запись доходит до logf через noteLocked. Второе обращение
+// обязано пройти — иначе перехватчику некуда было бы положить стек, и тест
+// проверял бы не то.
+//
+// Свой мьютекс обязателен: пишет горутина таймера, читает горутина теста.
+type panicOnceLog struct {
+	mu    sync.Mutex
+	fired bool
+	lines []string
+}
+
+func (p *panicOnceLog) logf(format string, args ...any) {
+	p.mu.Lock()
+	first := !p.fired
+	p.fired = true
+	p.mu.Unlock()
+
+	if first {
+		panic("подложенный сбой журнала")
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.lines = append(p.lines, fmt.Sprintf(format, args...))
+}
+
+func (p *panicOnceLog) has(sub string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, l := range p.lines {
+		if strings.Contains(l, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// Отложенный возврат исполняется в горутине, порождённой рантаймом таймера,
+// через три секунды после Flash — вне всякого запроса. Паника там без
+// перехвата унесла бы весь демон; перехват, оставивший мьютекс удержанным,
+// был бы не лучше: индикация замерла бы навсегда, и следующий Set повис бы
+// вместе с переключением режима.
+func TestPanicInPendingRevertKeepsControllerUsable(t *testing.T) {
+	root := fakeSysfs(t)
+	rec := &panicOnceLog{}
+	c := New(root, rec.logf)
+	// Close здесь намеренно НЕ откладывается: он берёт тот же мьютекс, и
+	// при регрессии тест повис бы в уборке вместо того, чтобы объяснить
+	// причину. Таймер к этому моменту уже отработал, останавливать нечего.
+
+	c.Flash(B4)
+
+	// Ломаем sysfs после Flash: сама вспышка обязана удаться (иначе logf
+	// паникнул бы в вызывающей горутине, а проверяем мы не её), а вот
+	// отложенный возврат — упасть и дойти до logf.
+	for _, name := range []string{Blue, White} {
+		if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
+			t.Fatalf("подготовка: %v", err)
+		}
+	}
+
+	deadline := time.Now().Add(errorHold + 3*time.Second)
+	for time.Now().Before(deadline) && !rec.has("паника") {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !rec.has("паника") {
+		t.Fatal("паника отложенного возврата не попала в журнал")
+	}
+	if !rec.has("led.go") {
+		t.Error("в журнале нет стека — по такой записи не найти место паники")
+	}
+
+	// Мьютекс не остался удержанным. Проверяем через таймаут, а не прямым
+	// вызовом: при регрессии Set просто не вернётся, и тест обязан сказать
+	// об этом словами, а не десятиминутным зависанием.
+	done := make(chan struct{})
+	go func() {
+		_ = c.Set(Off)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Set не вернулся: отложенный возврат оставил мьютекс удержанным")
+	}
+	c.Close()
 }
 
 func TestMaxBrightnessFallback(t *testing.T) {
