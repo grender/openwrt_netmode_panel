@@ -250,6 +250,7 @@ internal/led          индикация
 internal/sched        расписание подписки
 internal/logs         журнал обновлений
 internal/httpapi      HTTP-слой и панель через go:embed
+internal/safe         перехват паники на границе фоновых горутин
 web/                  панель: Preact + htm, без сборки
 docs/recon/           что ответил живой роутер
 docs/adr/             принятые решения и их цена

@@ -111,6 +111,21 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 	s.sched = sched.New(ex, s.logs, cfg.SubInterval, s.logf)
 	s.status.jobs = s.jobs
 	s.status.logs = s.logs
+	// Клиент Nikki отдаётся читателю статуса явно.
+	//
+	// NewStatusReader заводит своего клиента b4, но не Nikki: адрес и секрет
+	// Clash API известны только из конфигурации, до которой у него доступа
+	// нет. Без этой строки поле остаётся nil, весь блок чтения Nikki в build
+	// молча пропускается, и /api/status вечно докладывает «недоступен» —
+	// в то время как GET /api/nikki/proxies, ходящий через s.nikki, отвечает
+	// списком узлов. Панель показывала бы владельцу два взаимоисключающих
+	// утверждения сразу.
+	//
+	// Ошибку не поймали тесты, потому что и SetNikkiClient, и тестовые
+	// помощники подставляют клиента принудительно: тестовая проводка
+	// отличалась от боевой ровно в сломанном месте. Отсюда TestNewServerWires
+	// ниже — он идёт боевым путём NewServer, а не через подмену.
+	s.status.nikki = s.nikki
 	s.routes()
 	return s, nil
 }

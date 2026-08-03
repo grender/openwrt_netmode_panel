@@ -15,6 +15,42 @@ import (
 
 const testToken = "dGVzdC10b2tlbi1iYXNlNjR1cmwtMzJieXRlcw"
 
+// NewServer обязан выдать читателю статуса те же клиенты, что и себе.
+//
+// Проверка идёт боевым путём — через NewServer, БЕЗ SetB4Client и
+// SetNikkiClient. Именно подмена клиентов в помощниках прятала настоящий
+// дефект: поле nikki у читателя не заполнялось нигде, кроме подменялки, и в
+// бою /api/status вечно докладывал «Clash API недоступен», пока
+// GET /api/nikki/proxies рядом отвечал списком узлов. Тест, который сначала
+// всё подставит, такую дыру увидеть не может по построению.
+func TestNewServerWiresClientsIntoStatus(t *testing.T) {
+	f := executor.NewFake()
+	f.LoadFixtures(t, filepath.Join("..", "..", "docs", "recon", "raw"))
+
+	s, err := NewServer(Config{
+		Listen:  "192.168.9.1",
+		Port:    8088,
+		Token:   testToken,
+		LogPath: filepath.Join(t.TempDir(), "updates.log"),
+	}, f)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	if s.status.nikki == nil {
+		t.Error("читателю статуса не отдан клиент Nikki: блок чтения будет пропущен, статус соврёт «недоступен»")
+	}
+	if s.status.nikki != s.nikki {
+		t.Error("читатель статуса и обработчики ходят к разным клиентам Nikki")
+	}
+	if s.status.b4 == nil {
+		t.Error("читателю статуса не отдан клиент b4")
+	}
+	if s.status.jobs == nil || s.status.logs == nil {
+		t.Error("читателю статуса не отданы джобы или журнал")
+	}
+}
+
 func newServer(t *testing.T) (*Server, *executor.Fake) {
 	t.Helper()
 	f := executor.NewFake()

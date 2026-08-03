@@ -7,6 +7,7 @@
 Обоснование формы — [ADR-0015](../adr/0015-executor-shape.md).
 Отличия от SPEC §10 — [ADR-0018](../adr/0018-spec-superseded.md).
 Коды возврата `netmode-apply` — [ADR-0020](../adr/0020-netmode-apply-exit-codes.md).
+Лимиты на вывод — [ADR-0022](../adr/0022-external-output-limits.md).
 
 > Блок ниже приведён **без `ctx context.Context`** — в коде он первый аргумент
 > у каждого метода. Опущен для читаемости; на состав интерфейса это не влияет.
@@ -25,6 +26,11 @@ package executor
 // Отличать её от ошибки выполнения обязательно: отсутствие опции `disabled`
 // означает «сеть включена» (ADR-0004), а не сбой.
 var ErrNotFound = errors.New("uci: записи нет")
+
+// ErrOutputTooLarge — команда вылила в stdout больше отведённого лимита.
+// Процесс снят, вывод неполон и наверх не отдаётся: разбирать нечего
+// (ADR-0022). Может прийти от ЛЮБОГО метода — см. «Лимиты на вывод».
+var ErrOutputTooLarge = errors.New("вывод команды превысил лимит")
 
 type Executor interface {
 	// --- UCI: чтение ---
@@ -84,8 +90,8 @@ type Executor interface {
 }
 ```
 
-Десять методов. Реализация — `execCmd` поверх `os/exec`; фейк —
-`map[string][]byte`, заполненная фикстурами из `docs/recon/raw/`.
+Десять методов. Реализация — `Exec` поверх `os/exec`; фейк — `Fake`, чьи
+`Fixtures` заполняются записанным выводом из `docs/recon/raw/`.
 
 ## Почему каждый метод здесь
 
