@@ -27,6 +27,7 @@
     {
       "name": "DE-01",
       "type": "Vless",
+      "alive": false,
       "delay_ms": null,
       "pinned": false,
       "selectable": false

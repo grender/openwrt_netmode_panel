@@ -927,8 +927,6 @@ components:
           $ref: "#/components/schemas/NikkiStatus"
         b4:
           $ref: "#/components/schemas/B4Status"
-        subscription:
-          $ref: "#/components/schemas/SubscriptionStatus"
 
     SelectionState:
       type: string
@@ -1421,7 +1419,7 @@ components:
       description: |
         Узел или вложенная группа. Форма общая: в Go это одна структура
         `nikki.Proxy`, и расходиться они не могут.
-      required: [name, type, delay_ms, pinned, selectable]
+      required: [name, type, alive, delay_ms, pinned, selectable]
       additionalProperties: false
       properties:
         name: { type: string }
@@ -1430,7 +1428,12 @@ components:
           type: boolean
           description: |
             Последняя **успешная** проба, а не последняя вообще.
-            **Ключ отсутствует при `false`** (`omitempty`).
+
+            Ключ присутствует всегда, включая `false`: у `nikki.Proxy.Alive`
+            нет `omitempty`, в отличие от соседних `members`, `now` и `fixed`.
+            Прежняя редакция обещала обратное, и по ней из примера убрали
+            `"alive": false` — клиент, читавший отсутствие ключа как сигнал,
+            получил бы от демона совсем другое.
         delay_ms:
           type: [integer, "null"]
           description: |

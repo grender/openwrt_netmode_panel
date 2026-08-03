@@ -117,9 +117,14 @@ check»); второй — `GET /api/auth/check`, которым и снят с�
 не применяются.
 
 Отправить `{"enabled": true}` этим методом — **стереть всю стратегию сета**.
-Механически запрет держат `scripts/check-b4json.sh` и `scripts/check-routes.sh`:
-клиент b4 знает только `GET /api/version`, `GET /api/sets` и
+Поэтому клиент b4 знает только `GET /api/version`, `GET /api/sets` и
 `POST /api/sets/batch-set-enabled`.
+
+**Механического запрета на этот метод нет.** `check-b4json.sh` грепает
+единственный литерал `b4.json`, а `check-routes.sh` вообще не заглядывает
+в `internal/b4` — он сверяет пути `openapi.yaml`, `internal/httpapi` и
+`web/app.js`. Дописать `PUT /api/sets/{id}` в клиент — и `make verify`
+пройдёт зелёным. Держится это ревью и тестом `TestNeverUsesPutSets`.
 
 Раньше этот метод был нужен как запасной путь для сборок старее 1.64.0, где
 `batch-set-enabled` ещё не существовал. На роутере 1.74.1, поэтому запасной
