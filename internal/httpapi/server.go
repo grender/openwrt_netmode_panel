@@ -295,7 +295,80 @@ func (s *Server) Scheduler() *sched.Scheduler { return s.sched }
 // mode, available) и попадает в журнал демона.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	st, _ := s.status.Read(r.Context())
+
+	// Ссылки собираются на КАЖДЫЙ запрос и именно здесь: у build нет доступа
+	// к r.Host, а его результат кэшируется на 500 мс и уходит разным клиентам
+	// (см. Links и Read в status.go).
+	//
+	// К available ссылки НЕ привязаны намеренно: ссылка — это адрес, а не
+	// проба живости. Владелец скорее полезет в морду b4 именно тогда, когда
+	// b4 нам не отвечает.
+	if host, ok := panelHost(r.Host); ok {
+		if u, ok := b4.PanelURL(host); ok {
+			st.Links.B4 = &u
+		}
+	}
+	// links.nikki остаётся null: адрес Clash API берётся из конфигурации
+	// nikki, а не из нашего Host, и это отдельный пакет работ. Выдуманное
+	// значение здесь было бы кнопкой в никуда.
+
 	writeJSON(w, http.StatusOK, st)
+}
+
+// panelHost выделяет из заголовка Host имя, пригодное для ссылки в браузере.
+//
+// Второе значение — «годится ли». Отказ означает «ссылки не будет»: панель
+// покажет на одну кнопку меньше, и это честнее, чем кнопка, ведущая не туда.
+func panelHost(hostHeader string) (string, bool) {
+	h := hostHeader
+	if h == "" {
+		// HTTP/1.0 без заголовка. Собирать ссылку не из чего.
+		return "", false
+	}
+
+	// Порт отрезаем, свой подставим позже. Ошибка SplitHostPort здесь —
+	// ШТАТНЫЙ случай, а не сбой: `Host: router.lan` приходит без порта, когда
+	// панель открыта на 80-м, и такой заголовок вполне рабочий.
+	if h2, _, err := net.SplitHostPort(h); err == nil {
+		h = h2
+	}
+	// IPv6 без порта SplitHostPort не разбирает, скобки остаются на месте:
+	// `Host: [fd00::1]`. Снимаем сами — обратно их поставит JoinHostPort.
+	if len(h) > 1 && h[0] == '[' && h[len(h)-1] == ']' {
+		h = h[1 : len(h)-1]
+	}
+	if h == "" {
+		return "", false
+	}
+
+	// Фильтр символов. Заголовок Host приходит от клиента, а результат
+	// уезжает в href в браузере владельца: проверка дублирует разбор выше
+	// намеренно — это последний рубеж перед подстановкой в чужую страницу.
+	for i := 0; i < len(h); i++ {
+		c := h[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '.', c == '-', c == '_', c == ':':
+		default:
+			return "", false
+		}
+	}
+
+	// Петля — отказ. Демон слушает LAN, но панель могли открыть через
+	// ssh-туннель (`http://localhost:8088/`), и тогда `localhost` в ссылке
+	// указывает на ноутбук владельца, а не на роутер: там на 7000-м либо
+	// ничего нет, либо чужой сервис. Различить туннель и прямое обращение
+	// демон не может, а угадывать он не будет — тот же принцип, что
+	// `503 radio_unknown` в ADR-0019: не вывелось — отказ, а не догадка.
+	if ip := net.ParseIP(h); ip != nil && ip.IsLoopback() {
+		return "", false
+	}
+	lower := strings.ToLower(h)
+	if lower == "localhost" || strings.HasSuffix(lower, ".localhost") {
+		return "", false
+	}
+
+	return h, true
 }
 
 func (s *Server) handleWifiNetworks(w http.ResponseWriter, r *http.Request) {

@@ -64,12 +64,23 @@ button:disabled { cursor: not-allowed; }
 .host { font: 600 15px var(--mono); letter-spacing: .02em; }
 .ap-meta { font: 12.5px var(--mono); color: var(--muted-2); }
 .top-links { display: flex; gap: 8px; flex: none; align-items: center; }
-.top-links a {
+/* Один класс на <a> и на <button>: когда адрес неизвестен, элемент меняется
+   на кнопку, и соседство двух разных на вид сущностей читалось бы как сбой
+   вёрстки, а не как разница состояний. Приём тот же, что у .linkbtn, —
+   нативная кнопка разбирается до вида ссылки. */
+.toplink {
+	display: inline-flex; align-items: center; gap: 5px;
 	font: 12px var(--mono); padding: 7px 11px; border-radius: 8px;
-	border: 1px solid #262b30; color: var(--fg-2); text-decoration: none;
+	border: 1px solid #262b30; background: none; color: var(--fg-2);
+	text-decoration: none;
 }
-.top-links a:hover { border-color: var(--link); color: var(--link); }
-.top-links a[aria-disabled="true"] { opacity: .4; pointer-events: none; }
+.toplink:hover { border-color: var(--link); color: var(--link); }
+/* Адрес неизвестен. Приглушение .45 — то же, что у недоступных кнопок
+   (.mini, .sets, .modes), но disabled здесь нет и pointer-events не гасятся:
+   кнопка обязана оставаться нажимаемой, иначе объяснить причину нечем.
+   Курсор help, как у .mark, — она не ведёт наружу, а отвечает на вопрос. */
+.toplink.off { opacity: .45; cursor: help; }
+.toplink.off:hover { border-color: #262b30; color: var(--fg-2); }
 
 .lang { display: flex; gap: 2px; background: #14181c; border-radius: 8px; padding: 2px; }
 .lang button {
@@ -151,6 +162,13 @@ button:disabled { cursor: not-allowed; }
 .bar > i { display: block; height: 100%; background: currentColor; transition: width .3s linear; }
 
 /* ─────────── уведомления ─────────── */
+
+/* Живая область (role="status") висит в разметке постоянно — иначе браузер
+   не успевает показать её скринридеру до появления текста. Место она при
+   этом занимать не должна, поэтому пустой контейнер теряет отступы.
+   display:none тут был бы ошибкой: скрытая область выпадает из дерева
+   доступности, и объяснение снова стало бы беззвучным. */
+.wrap.toasts:empty { padding: 0; }
 
 .note { border-radius: var(--r-lg); padding: 14px 16px; border: 1px solid; }
 .note h3 { margin: 0 0 6px; font: 600 15px/1.35 var(--sans); }

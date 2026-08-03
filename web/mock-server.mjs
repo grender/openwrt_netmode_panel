@@ -56,6 +56,24 @@ const readJSON = async (name) => JSON.parse(await fs.readFile(path.join(EX, name
 // и /api/status, и согласованность побочных списков.
 const currentStatus = () => readJSON(SCENARIOS[state.scenario] || SCENARIOS.single);
 
+// Ссылки на веб-морды строятся от заголовка Host — тем же правилом, что и на
+// роутере. Фикстуры отдают links как есть, а мок открывают на localhost:
+// без пересборки обе ссылки были бы мертвы всегда, и три состояния шапки
+// в разработке посмотреть было бы нечем.
+const LOCAL = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+const linksFor = (req) => {
+	// Порт срезаем регуляркой, а не split(':'): у IPv6 хост сам полон
+	// двоеточий и приходит как [::1]:8088.
+	const host = String(req.headers.host || '').replace(/:\d+$/, '');
+	// Из localhost адрес роутера не выводится: панель открыта через
+	// ssh-туннель, и :7000 на этой машине — не b4. Пустой ответ здесь и
+	// есть правильный: это состояние «адрес неизвестен».
+	if (!host || LOCAL.has(host)) return { nikki: null, b4: null };
+	// nikki остаётся null: адрес его веб-морды с роутера не снят (openapi →
+	// Links.nikki). Порт b4 — 7000 (raw/50-b4-api.txt).
+	return { nikki: null, b4: `http://${host}:7000/` };
+};
+
 const send = (res, code, body, type = MIME['.json']) => {
 	const b = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body, null, 2);
 	res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' });
@@ -100,7 +118,7 @@ async function handleAPI(req, res, u) {
 	// --- статус ---
 	if (p === '/api/status' && method === 'GET') {
 		const base = await currentStatus();
-		const s = { ...base, ...state.overlay, generated_at: new Date().toISOString() };
+		const s = { ...base, ...state.overlay, links: linksFor(req), generated_at: new Date().toISOString() };
 		if (state.job) s.job = state.job;
 		if (s.online) s.online = { ...s.online, checked_at: s.generated_at };
 		return send(res, 200, s);

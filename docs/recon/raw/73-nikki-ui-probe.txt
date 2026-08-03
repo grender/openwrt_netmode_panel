@@ -1,0 +1,33 @@
+# snapshot: grenderRouter, OpenWrt 25.12, 2026-08-03
+#
+# Главный вопрос: отдаётся ли статика веб-панели БЕЗ заголовка Authorization.
+# Если бы требовала — ссылка из браузера владельца была бы невозможна в
+# принципе, потому что <a href> заголовков не носит.
+#
+# Ответ: отдаётся. 200 OK, text/html, без единого заголовка авторизации.
+# Это не противоречит docs/recon/nikki.md («?secret= не работает»): там секрет
+# отдавали САМОМУ Clash API, а здесь он уходит статике дашборда, которая уже
+# сама кладёт его в заголовок при обращении к API.
+
+$ curl -s -D- -o /dev/null http://127.0.0.1:9090/ui/ | head -5
+HTTP/1.1 200 OK
+Accept-Ranges: bytes
+Content-Length: 1494
+Content-Type: text/html; charset=utf-8
+Last-Modified: Sat, 01 Aug 2026 21:59:43 GMT
+
+# Рабочая конфигурация mihomo. Секрет затёрт.
+$ grep -n -iE 'external|secret|^ *ui' /etc/nikki/run/config.yaml | sed 's/\(secret:\).*/\1 <REDACTED>/'
+6:external-controller: '[::]:9090'
+97:external-ui: ui
+98:external-ui-url: https://github.com/Zephyruso/zashboard/releases/latest/download/dist-cdn-fonts.zip
+99:secret: <REDACTED>
+
+# Отсюда:
+#   - дашборд — zashboard (external-ui-url);
+#   - панель лежит на ТОМ ЖЕ порту, что и Clash API: отдельного нет
+#     (external-controller '[::]:9090' — единственный слушатель);
+#   - external-ui: ui → путь /ui/.
+#
+# allow_lan='1' в uci show nikki — mihomo принимает соединения из LAN,
+# то есть :::9090 достижим с устройства владельца, а не только по петле.

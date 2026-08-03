@@ -19,7 +19,7 @@
   },
   "links": {
     "nikki": null,
-    "b4": null
+    "b4": "http://192.168.9.1:7000/"
   },
   "job": {
     "id": "j-7f3a1c",

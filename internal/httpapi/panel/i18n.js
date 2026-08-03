@@ -131,6 +131,26 @@ export const DICT = {
 		'sub.updating': 'Обновляю…',
 		'sub.emptylog': 'Обновлений ещё не было',
 
+		// Ссылки на веб-морды в шапке. Видимая подпись остаётся короткой
+		// («Nikki ↗»), полное имя уходит в aria-label и title: голое «Nikki»
+		// в списке ссылок не говорит, что это, ни скринридеру, ни владельцу.
+		'links.nikki': 'Панель Nikki',
+		'links.b4': 'Панель b4',
+		// Причина, по которой адреса может не быть. Демон отдаёт links двумя
+		// полями без кода причины, поэтому текст выбирает панель.
+		//
+		// В разметку подключён пока только why.host — остальное ждёт своего
+		// пакета на сервере. Заведены заранее намеренно: наборы ключей ru и en
+		// обязаны совпадать, и дописывать их по одному в двух местах — верный
+		// способ развести словари.
+		'links.why.host': 'Адрес роутера не выводится из адреса, по которому открыта панель, — так бывает при доступе через ssh-туннель по localhost. Откройте панель по адресу роутера в LAN, и ссылка появится.',
+		'links.why.unconfigured': 'Nikki на роутере не настроен — открывать нечего.',
+		'links.why.nopanel': 'У Nikki на этом роутере нет веб-морды: доступен только Clash API.',
+		'links.err': 'Адрес панели определить не удалось.',
+		'links.blocked': 'Браузер не дал открыть новую вкладку — похоже, всплывающие окна заблокированы.',
+		'links.blocked.cta': 'Открыть в этой вкладке',
+		'links.opening': 'Открываю…',
+
 		'ap.broadcasts': 'вещает {ssid}',
 		'ap.clients': '{n} устройств',
 		'foot.updated': 'обновлено {when}',
@@ -258,6 +278,16 @@ export const DICT = {
 		'sub.update': 'Update now',
 		'sub.updating': 'Updating…',
 		'sub.emptylog': 'No updates yet',
+
+		'links.nikki': 'Nikki panel',
+		'links.b4': 'b4 panel',
+		'links.why.host': 'The router address does not follow from the address this panel is open at — that happens over an ssh tunnel through localhost. Open the panel at the router address on your LAN and the link will appear.',
+		'links.why.unconfigured': 'Nikki is not configured on the router — there is nothing to open.',
+		'links.why.nopanel': 'Nikki on this router has no web panel: only the Clash API is available.',
+		'links.err': 'The panel address could not be determined.',
+		'links.blocked': 'The browser refused to open a new tab — pop-ups look blocked.',
+		'links.blocked.cta': 'Open in this tab',
+		'links.opening': 'Opening…',
 
 		'ap.broadcasts': 'broadcasting {ssid}',
 		'ap.clients': '{n} devices',

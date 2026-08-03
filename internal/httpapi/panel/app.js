@@ -148,11 +148,12 @@ function App() {
 	const locked = !!job || !!busy;
 
 	return html`
-		<${Top} s=${status} t=${t} lang=${lang} setLang=${setLang} />
+		<${Top} s=${status} t=${t} lang=${lang} setLang=${setLang}
+			onWhy=${(key) => flash(t(key), 'warn')} />
 		<${Banner} s=${status} t=${t} job=${job} locked=${locked}
 			onMode=${(m) => act('mode', () => api('/api/mode', { method: 'POST', body: JSON.stringify({ mode: m }) }, T_MODE))} />
 
-		${toast && html`<div class="wrap"><div class="note ${toast.kind}"><p>${toast.msg}</p></div></div>`}
+		<${Toasts} toast=${toast} />
 
 		<div class="wrap">
 			<${SelectionNote} s=${status} t=${t} />
@@ -268,12 +269,72 @@ function jobText(job, t) {
 	return t('job.working');
 }
 
+// ─────────── тосты ───────────
+
+// Первая живая область в панели: до неё aria-live здесь не было нигде.
+// Появилась она под ссылки в шапке — у неактивной ссылки единственный ответ
+// на вопрос «почему серая» это текст, который кладёт сюда flash(). Без
+// role="status" текст возникает молча, и владелец, который ведёт панель
+// с клавиатуры и слушает её, нажатия попросту не заметит.
+//
+// Контейнер висит в разметке всегда, а не появляется вместе с текстом:
+// живая область, вставленная в DOM одновременно со своим содержимым, —
+// классический способ не быть озвученной. Скринридер обязан увидеть её
+// раньше изменения. Пустой контейнер не занимает места (см.
+// .wrap.toasts:empty в app.css); display:none там нет намеренно — скрытая
+// область выпадает из дерева доступности, и объяснение снова замолчит.
+//
+// Разметка держится в одну строку намеренно: перенос дал бы текстовый узел
+// из пробелов, и :empty перестал бы совпадать.
+function Toasts({ toast }) {
+	return html`<div class="wrap toasts" role="status">${toast && html`<div class="note ${toast.kind}"><p>${toast.msg}</p></div>`}</div>`;
+}
+
 // ─────────── шапка ───────────
 
-function Top({ s, t, lang, setLang }) {
+// Ссылка в шапке существует в двух видах, и это не косметика.
+//
+// Пока адрес известен — это настоящая <a>. Когда неизвестен, ссылки нет
+// вовсе: раньше на её месте оставалась <a href="#"> с aria-disabled, и это
+// худший вариант из возможных. Мышь по ней не кликала (pointer-events:none),
+// но Tab доводил фокус, Enter срабатывал и уводил на «#» — фокус улетал
+// в никуда, а объяснения владелец не получал никакого.
+//
+// Поэтому здесь <button> и намеренно БЕЗ disabled: нативный disabled выкинул
+// бы её из tab-order и снова оставил вопрос «почему серая» без ответа.
+// А title с клавиатуры не читается (та же дыра, что у .mark на активной
+// сети). Кнопка остаётся достижимой, :focus-visible показывает её глазами,
+// а по нажатию она объясняет причину вслух — через живую область Toasts.
+//
+// aria-label не дублирует подпись, а разворачивает её: «Nikki» в списке
+// ссылок само по себе не говорит, куда ведёт. Видимая подпись при этом
+// целиком входит в озвученное имя, иначе голосовое управление промахнулось
+// бы мимо этой кнопки.
+function TopLink({ href, label, name, onWhy }) {
+	// Стрелка — украшение направления, а не текст: скринридер прочитал бы
+	// её как «стрелка вправо вверх» посреди имени ссылки.
+	const arrow = html`<span aria-hidden="true">↗</span>`;
+	if (href) {
+		return html`
+			<a class="toplink" href=${href} target="_blank" rel="noreferrer"
+				title=${name} aria-label=${name}>${label} ${arrow}</a>`;
+	}
+	return html`
+		<button type="button" class="toplink off" title=${name} aria-label=${name}
+			onClick=${onWhy}>${label} ${arrow}</button>`;
+}
+
+function Top({ s, t, lang, setLang, onWhy }) {
 	const ap = s.ap || {};
 	const meta = [ap.band && ap.band.toUpperCase(), ap.clients != null && t('ap.clients', { n: ap.clients })]
 		.filter(Boolean).join(' · ');
+	const links = s.links || {};
+	// Причина пустого адреса пока одна на оба сервиса: демон выводит хост из
+	// заголовка Host, и не выводит его, когда панель открыта не по адресу
+	// роутера. Ключи под остальные причины (why.unconfigured, why.nopanel)
+	// в словаре уже лежат, но подключать их нечем: кода причины сервер не
+	// отдаёт, а гадать за него — то же враньё, только вежливое.
+	const why = () => onWhy('links.why.host');
 	return html`
 		<div class="top">
 			<div class="top-id">
@@ -281,10 +342,8 @@ function Top({ s, t, lang, setLang }) {
 				${ap.ssid && html`<span class="ap-meta">${t('ap.broadcasts', { ssid: ap.ssid })}${meta ? ' · ' + meta : ''}</span>`}
 			</div>
 			<div class="top-links">
-				<a href=${s.links?.nikki || '#'} target="_blank" rel="noreferrer"
-					aria-disabled=${!s.links?.nikki}>Nikki ↗</a>
-				<a href=${s.links?.b4 || '#'} target="_blank" rel="noreferrer"
-					aria-disabled=${!s.links?.b4}>b4 ↗</a>
+				<${TopLink} href=${links.nikki} label="Nikki" name=${t('links.nikki')} onWhy=${why} />
+				<${TopLink} href=${links.b4} label="b4" name=${t('links.b4')} onWhy=${why} />
 				<div class="lang">
 					${['ru', 'en'].map((l) => html`
 						<button aria-pressed=${lang === l} onClick=${() => setLang(l)}>${l.toUpperCase()}</button>`)}

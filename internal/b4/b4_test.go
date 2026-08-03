@@ -6,8 +6,10 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -508,3 +510,45 @@ func TestNeverUsesPutSets(t *testing.T) {
 }
 
 var _ Client = (*HTTP)(nil)
+
+// PanelURL берёт порт из подтверждённого DefaultBaseURL, а не из своего
+// литерала: второй литерал в internal/httpapi гейт check-evidence не увидел бы
+// вовсе (он этот пакет не сканирует), и адрес чужого сервиса появился бы в
+// коде без ссылки на разведку.
+func TestPanelURLTakesPortFromConfirmedBaseURL(t *testing.T) {
+	u, err := url.Parse(DefaultBaseURL)
+	if err != nil {
+		t.Fatalf("DefaultBaseURL не разбирается: %v", err)
+	}
+	got, ok := PanelURL("192.168.9.1")
+	if !ok {
+		t.Fatal("PanelURL отказал на обычном хосте")
+	}
+	want := "http://192.168.9.1:" + u.Port() + "/"
+	if got != want {
+		t.Errorf("PanelURL = %q, ожидалось %q", got, want)
+	}
+	// 127.0.0.1 из базового адреса — для демона, а не для браузера владельца.
+	if strings.Contains(got, u.Hostname()) {
+		t.Errorf("в ссылке для браузера остался хост демона: %q", got)
+	}
+}
+
+// IPv6 обязан приезжать в скобках. Ручная склейка host + ":" + port дала бы
+// `http://fd00::1:7000/` — адрес, который браузер разберёт как другой хост
+// без порта, то есть тихо неправильную ссылку вместо ошибки.
+func TestPanelURLBracketsIPv6(t *testing.T) {
+	got, ok := PanelURL("fd00::1")
+	if !ok {
+		t.Fatal("PanelURL отказал на IPv6")
+	}
+	if got != "http://[fd00::1]:7000/" {
+		t.Errorf("PanelURL(fd00::1) = %q, ожидалось http://[fd00::1]:7000/", got)
+	}
+}
+
+func TestPanelURLRefusesEmptyHost(t *testing.T) {
+	if got, ok := PanelURL(""); ok {
+		t.Errorf("пустой хост принят: %q", got)
+	}
+}

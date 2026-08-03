@@ -495,3 +495,105 @@ func TestShutdownWatchdogSurvivesPanic(t *testing.T) {
 		t.Error("в журнале нет стека — по такой записи не найти место паники")
 	}
 }
+
+// ─────────── ссылки на веб-морды (links) ───────────
+
+// statusLinks делает GET /api/status с заданным заголовком Host.
+//
+// Host выставляется полем req.Host, а не заголовком: net/http на стороне
+// сервера читает именно его, и Header.Set("Host", ...) был бы проигнорирован.
+func statusLinks(t *testing.T, s *Server, host string) Links {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/api/status", nil)
+	req.Host = host
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Host %q: код %d", host, rec.Code)
+	}
+	var got struct {
+		Links Links `json:"links"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("Host %q: разбор ответа: %v", host, err)
+	}
+	return got.Links
+}
+
+// Ссылка обязана строиться по Host КАЖДОГО запроса, а не по снимку кэша.
+//
+// Оба запроса идут внутри одного TTL, то есть второй обслуживается из кэша.
+// Если бы links заполнялись в build, второй клиент получил бы адрес первого —
+// то есть ссылку на чужой хост. Панель на роутере опрашивается двумя
+// вкладками одновременно сплошь и рядом.
+func TestStatusLinksFollowRequestHostNotCache(t *testing.T) {
+	s, _ := newServer(t)
+	base := time.Unix(1700000000, 0)
+	s.status.now = func() time.Time { return base }
+
+	first := statusLinks(t, s, "192.168.9.1:8088")
+	if first.B4 == nil {
+		t.Fatal("links.b4 пуст при годном Host — кнопка панели мертва")
+	}
+	if *first.B4 != "http://192.168.9.1:7000/" {
+		t.Errorf("links.b4 = %q, ожидалось http://192.168.9.1:7000/", *first.B4)
+	}
+
+	second := statusLinks(t, s, "router.lan:8088")
+	if second.B4 == nil {
+		t.Fatal("links.b4 пуст для Host без IP")
+	}
+	if *second.B4 != "http://router.lan:7000/" {
+		t.Errorf("второй клиент получил %q — ссылка приехала из кэша первого", *second.B4)
+	}
+}
+
+// links.nikki — пока всегда null: адрес Clash API берётся из конфигурации
+// nikki, а не из нашего Host. Кнопка в никуда хуже отсутствующей кнопки.
+func TestStatusNikkiLinkIsStillNull(t *testing.T) {
+	s, _ := newServer(t)
+	if l := statusLinks(t, s, "192.168.9.1:8088"); l.Nikki != nil {
+		t.Errorf("links.nikki = %q, ожидался null: адрес морды nikki ещё не реализован", *l.Nikki)
+	}
+}
+
+// Панель, открытая через ssh-туннель, не должна получать ссылку на себя же.
+func TestStatusLinksRefuseLoopbackHost(t *testing.T) {
+	s, _ := newServer(t)
+	if l := statusLinks(t, s, "localhost:8088"); l.B4 != nil {
+		t.Errorf("links.b4 = %q при Host=localhost: ссылка ведёт на ноутбук владельца, а не на роутер", *l.B4)
+	}
+}
+
+func TestPanelHost(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"192.168.9.1:8088", "192.168.9.1", true},
+		// Без порта: SplitHostPort здесь ошибается штатно, и это не сбой.
+		{"router.lan", "router.lan", true},
+		{"[fd00::1]:8088", "fd00::1", true},
+		// IPv6 без порта — скобки снимаем сами, SplitHostPort его не берёт.
+		{"[fd00::1]", "fd00::1", true},
+		// HTTP/1.0 без заголовка — собирать ссылку не из чего.
+		{"", "", false},
+		// Петля во всех видах: ссылка указывала бы на машину владельца.
+		{"localhost:8088", "", false},
+		{"LocalHost", "", false},
+		{"router.localhost", "", false},
+		{"127.0.0.1:8088", "", false},
+		{"[::1]:8088", "", false},
+		// Мусор в Host уезжает в href — отказ, а не экранирование.
+		{"evil host/x", "", false},
+		{"evil\"onclick=x", "", false},
+	}
+	for _, c := range cases {
+		got, ok := panelHost(c.in)
+		if ok != c.ok || got != c.want {
+			t.Errorf("panelHost(%q) = (%q, %v), ожидалось (%q, %v)", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}

@@ -1,0 +1,41 @@
+# snapshot: grenderRouter, OpenWrt 25.12, 2026-08-03
+#
+# Как LuCI открывает веб-панель nikki. Кнопка «Open Dashboard» в
+# /www/luci-static/resources/view/nikki/app.js только зовёт nikki.openDashboard();
+# сама сборка адреса живёт в модуле tools.nikki.
+#
+# Секреты затёрты: api_secret — это одновременно пароль веб-панели nikki,
+# а @authentication[0].password — пароль входящего HTTP/SOCKS-прокси.
+
+$ sed 's/;/;\n/g' /www/luci-static/resources/tools/nikki.js | sed -n '36,56p'
+},openDashboard:async function(){const profile=await callNikkiProfile({'external-ui-name':null,'external-controller':null,'external-controller-tls':null,'secret':null});
+const apiSecret=profile['secret']??'';
+if(!apiListen&&!apiTLSListen){return Promise.reject('API has not been configured');
+}
+let protocol;
+let port;
+if(apiTLSListen){protocol='https';
+port=apiTLSListen.substring(apiTLSListen.lastIndexOf(':')+1);
+}else{protocol='http';
+port=apiListen.substring(apiListen.lastIndexOf(':')+1);
+}
+const params={host:window.location.hostname,hostname:window.location.hostname,port:port,secret:apiSecret};
+const query=new URLSearchParams(params).toString();
+let url;
+if(uiName){url=`${protocol}://${window.location.hostname}:${port}/ui/${uiName}/?${query}`;
+}else{url=`${protocol}://${window.location.hostname}:${port}/ui/?${query}`;
+}
+setTimeout(function(){window.open(url,'_blank')},0);
+
+# Точка вызова (тот же снимок):
+$ grep -o "open_dashboard[^;]*;[^;]*;" /www/luci-static/resources/view/nikki/app.js
+o=s.option(form.Button,'open_dashboard');o.inputtitle=_('Open Dashboard');
+
+$ uci show nikki | sed -E "s/(api_secret=|password=)'?[^' ]+'?/\1'<REDACTED>'/g" | grep -E 'mixin\.(ui_|api_)'
+nikki.mixin.ui_path='ui'
+nikki.mixin.ui_url='https://github.com/Zephyruso/zashboard/releases/latest/download/dist-cdn-fonts.zip'
+nikki.mixin.api_listen='[::]:9090'
+nikki.mixin.api_secret='<REDACTED>'
+
+# api_tls_listen в конфигурации отсутствует — значит protocol=http.
+# ui_name (external-ui-name) тоже не задан — значит путь /ui/, без подкаталога.

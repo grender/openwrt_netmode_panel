@@ -60,7 +60,7 @@
 | `status-single.json` | `GET /api/status` | **состояние снимка разведки**: John24 активна, ATOM сохранена, режим nikki |
 | `status-ambiguous.json` | `GET /api/status` | две включённые станционные секции — 200, но записи запрещены |
 | `status-all-disabled.json` | `GET /api/status` | сети есть, ни одна не выбрана — 200, нормальное состояние |
-| `status-empty.json` | `GET /api/status` | свежая установка — 200, нормальное состояние |
+| `status-empty.json` | `GET /api/status` | свежая установка — 200, нормальное состояние. Заодно единственный пример с `links.b4: null` — «хост из `Host` вывести не удалось» |
 | `status-b4-unavailable.json` | `GET /api/status` | b4 лежит, статус всё равно 200 |
 | `status-job-running.json` | `GET /api/status` | выполняется смена режима на b4 |
 | `status-online-unknown.json` | `GET /api/status` | `ubus network.interface.wwan status` не ответил: `online.checked: false` — состояние канала **неизвестно**, а не «оффлайн» |
@@ -69,6 +69,14 @@
 | `b4-sets.json` | `GET /api/b4/sets` | включён ровно один — наша эксклюзивность соблюдена |
 | `nikki-proxies.json` | `GET /api/nikki/proxies` | группа `URLTest` в автовыборе: `fixed: ""`, `pinned: false`; у мёртвого узла ключа `alive` нет вовсе |
 | `logs.json` | `GET /api/logs` | новые строки первыми, среди них одна `fail` |
+
+`links.b4` в остальных шести файлах — `http://192.168.9.1:7000/`, то есть
+ответ на запрос с `Host: 192.168.9.1:8088`. Значение **зависит от запроса**, а
+не от состояния роутера: тот же демон на `Host: router.lan` отдаст
+`http://router.lan:7000/`. Мок, который подставляет эти файлы дословно,
+показывает один правдоподобный случай из многих — см. схему `Links` в
+`openapi.yaml`. Восьмой фикстуры под «адрес неизвестен» нет намеренно: этот
+случай закрыт `status-empty.json`.
 
 Ошибочные ответы фикстурами не покрыты: их форма мала и полностью задана
 схемой `Error` в `openapi.yaml`, а список кодов — в
@@ -84,6 +92,6 @@
 
 | Где | Что | Почему нет |
 |---|---|---|
-| `status-*.json` → `links` | оба значения `null` | `StatusReader.build` поле `Links` не заполняет вовсе. Заполненный `b4`-адрес в контракте — форма на будущее |
+| `status-*.json` → `links.nikki` | всегда `null` | адрес морды Nikki не выводится из `Host` (он в конфигурации nikki), а Clash API на 9090 без `Authorization` не отвечает. Отдаст его отдельный запрос — отдельный пакет работ |
 | `wifi-scan.json` → `saved_id` | ключа нет | поля нет в `wireless.ScanResult`; сопоставление со сохранёнными сетями не реализовано |
 | любой ответ с ошибкой | `details` | поля нет в `apiError`; ни один путь его не отдаёт |
