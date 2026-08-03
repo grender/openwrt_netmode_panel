@@ -136,20 +136,23 @@ export const DICT = {
 		// в списке ссылок не говорит, что это, ни скринридеру, ни владельцу.
 		'links.nikki': 'Панель Nikki',
 		'links.b4': 'Панель b4',
-		// Причина, по которой адреса может не быть. Демон отдаёт links двумя
-		// полями без кода причины, поэтому текст выбирает панель.
-		//
-		// В разметку подключён пока только why.host — остальное ждёт своего
-		// пакета на сервере. Заведены заранее намеренно: наборы ключей ru и en
-		// обязаны совпадать, и дописывать их по одному в двух местах — верный
-		// способ развести словари.
+		// Причина, по которой адреса может не быть. У b4 она одна и выбирается
+		// панелью (links.b4 пуст — значит хост не выведен). У Nikki их три,
+		// и приходят они кодом отказа от GET /api/nikki/panel: host_unknown,
+		// nikki_unconfigured, panel_missing — см. ERR_KEY в app.js.
 		'links.why.host': 'Адрес роутера не выводится из адреса, по которому открыта панель, — так бывает при доступе через ssh-туннель по localhost. Откройте панель по адресу роутера в LAN, и ссылка появится.',
 		'links.why.unconfigured': 'Nikki на роутере не настроен — открывать нечего.',
 		'links.why.nopanel': 'У Nikki на этом роутере нет веб-морды: доступен только Clash API.',
 		'links.err': 'Адрес панели определить не удалось.',
 		'links.blocked': 'Браузер не дал открыть новую вкладку — похоже, всплывающие окна заблокированы.',
-		'links.blocked.cta': 'Открыть в этой вкладке',
+		// Подпись у запасной ссылки: она открывает панель по-настоящему,
+		// в новой вкладке. Текст «в этой вкладке» врал бы про target="_blank",
+		// а адрес с секретом в подпись не выносится намеренно.
+		'links.blocked.cta': 'Открыть панель Nikki',
 		'links.opening': 'Открываю…',
+		// Серую кнопку нажали, а сервер неожиданно отдал адрес: статус
+		// опрашивается раз в секунду и мог отстать от настройки роутера.
+		'links.ready': 'Адрес панели уже известен — ссылка в шапке заработает через секунду.',
 
 		'ap.broadcasts': 'вещает {ssid}',
 		'ap.clients': '{n} устройств',
@@ -286,8 +289,9 @@ export const DICT = {
 		'links.why.nopanel': 'Nikki on this router has no web panel: only the Clash API is available.',
 		'links.err': 'The panel address could not be determined.',
 		'links.blocked': 'The browser refused to open a new tab — pop-ups look blocked.',
-		'links.blocked.cta': 'Open in this tab',
+		'links.blocked.cta': 'Open the Nikki panel',
 		'links.opening': 'Opening…',
+		'links.ready': 'The panel address is known now — the header link starts working within a second.',
 
 		'ap.broadcasts': 'broadcasting {ssid}',
 		'ap.clients': '{n} devices',

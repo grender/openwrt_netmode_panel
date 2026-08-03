@@ -33,6 +33,7 @@
 | [0020](0020-netmode-apply-exit-codes.md) | `netmode-apply` различает отказы кодами возврата | уточняет [0015](0015-executor-shape.md) |
 | [0021](0021-panic-recovery-in-goroutines.md) | Фоновые горутины перехватывают панику общим помощником | уточняет [0006](0006-no-rollback.md), [0010](0010-never-auto-repair.md) |
 | [0022](0022-external-output-limits.md) | Вывод внешних команд ограничен, stdout и stderr — по-разному | уточняет [0015](0015-executor-shape.md) |
+| [0023](0023-nikki-panel-secret-on-demand.md) | Секрет Clash API уходит одним ответом по клику, а не в статусе | уточняет [0012](0012-write-only-credentials.md) |
 
 ## Механические гейты
 
@@ -48,6 +49,7 @@
 | 0020 | `scripts/check-netmode-apply.sh` |
 | — | `scripts/check-evidence.sh` (любой внешний литерал) |
 | — | `scripts/check-netmode-seed.sh` (именованность `netmode.main`) |
+| 0023 | `scripts/check-evidence.sh` (шаблон `/ui/`), `scripts/check-routes.sh` (маршрут) — **но не само правило** |
 | 0001 | `scripts/check-layering.sh` — **ещё не написан** |
 | 0021, 0022 | **гейта нет** — держатся на тестах (`internal/safe`, `internal/executor`) |
 
@@ -61,3 +63,13 @@
 ничего и выглядит на ревью нормально — здесь правило держится на дисциплине.
 Гейт для неё написуем и не написан
 ([ADR-0021](0021-panic-recovery-in-goroutines.md)).
+
+Строка «0023» оговорена по той же причине. Оба названных гейта настоящие и
+валят сборку, но стерегут они **обстановку**, а не само решение:
+`check-evidence.sh` требует, чтобы шаблон адреса чужой панели был подтверждён
+разведкой, `check-routes.sh` — чтобы новый маршрут был описан в
+`docs/api/openapi.yaml` и совпадал с тем, что дёргает панель. Собственно правило
+«секрет уходит только этим одним ответом» держат тесты —
+`TestStatusNeverLeaksSecret` и `TestNikkiPanelNeverLogsSecret`. Они поймают
+секрет, положенный в новое поле статуса, и не поймают нового эндпоинта, который
+станет отдавать его вторым путём.

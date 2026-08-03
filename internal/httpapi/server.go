@@ -184,6 +184,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/mode", s.handleMode)
 	s.mux.HandleFunc("POST /api/upstream", s.handleUpstream)
 	s.mux.HandleFunc("GET /api/nikki/proxies", s.handleNikkiProxies)
+	s.mux.HandleFunc("GET /api/nikki/panel", s.handleNikkiPanel)
 	s.mux.HandleFunc("POST /api/nikki/proxy", s.handleNikkiProxy)
 	s.mux.HandleFunc("POST /api/subscription/update", s.handleSubscriptionUpdate)
 	s.mux.HandleFunc("GET /api/logs", s.handleLogs)
@@ -307,10 +308,20 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		if u, ok := b4.PanelURL(host); ok {
 			st.Links.B4 = &u
 		}
+		// Адрес морды nikki собирается из ДВУХ источников: хост — из Host
+		// запроса, порт — из конфигурации (nikki.mixin.api_listen). Хост из
+		// конфигурации взять нельзя: там 127.0.0.1, по которому ходит демон.
+		//
+		// Секрета здесь нет и не будет ни при каких условиях: статус
+		// опрашивается раз в секунду, и секрет ездил бы в каждом ответе,
+		// оседая в кэшах и журналах промежуточных слоёв. Полный адрес отдаёт
+		// GET /api/nikki/panel по клику. Пинится TestStatusNeverLeaksSecret.
+		if port, ok := nikki.PanelPort(s.cfg.NikkiURL); ok {
+			if u, ok := nikki.PanelBaseURL(host, port); ok {
+				st.Links.Nikki = &u
+			}
+		}
 	}
-	// links.nikki остаётся null: адрес Clash API берётся из конфигурации
-	// nikki, а не из нашего Host, и это отдельный пакет работ. Выдуманное
-	// значение здесь было бы кнопкой в никуда.
 
 	writeJSON(w, http.StatusOK, st)
 }

@@ -32,6 +32,29 @@ const SCENARIOS = {
 	empty: 'status-empty.json',
 	'b4-down': 'status-b4-unavailable.json',
 	job: 'status-job-running.json',
+	// Отказы GET /api/nikki/panel. Статус берётся обычный: ломается не
+	// состояние роутера, а возможность открыть веб-морду Nikki.
+	'nikki-unconfigured': 'status-single.json',
+	'nikki-nopanel': 'status-single.json',
+	'nikki-boom': 'status-single.json',
+};
+
+// Что мок отвечает на запрос адреса панели Nikki.
+//
+// status и links обязаны быть согласованы: демон не кладёт адрес в links,
+// когда открывать нечего, — иначе панель показала бы живую ссылку, которая
+// гарантированно не открывается. Отсюда поле link.
+//
+// Четвёртое состояние, host_unknown, отдельного сценария не требует: оно
+// наступает само, когда мок открыт по localhost (см. hostOf ниже) — ровно
+// как на роутере, куда пришли через ssh-туннель.
+const PANEL_FAIL = {
+	'nikki-unconfigured': { status: 503, code: 'nikki_unconfigured', msg: 'Nikki не настроен', link: false },
+	'nikki-nopanel': { status: 503, code: 'panel_missing', msg: 'У Nikki нет веб-морды: только Clash API', link: false },
+	// Ссылка в шапке живая, а запрос за адресом падает пятисоткой. Сценарий
+	// нужен глазами: панель обязана закрыть уже открытую пустую вкладку,
+	// а не оставить белый прямоугольник без объяснений.
+	'nikki-boom': { status: 500, code: 'internal', msg: 'Внутренняя ошибка', link: true },
 };
 
 const state = {
@@ -60,18 +83,37 @@ const currentStatus = () => readJSON(SCENARIOS[state.scenario] || SCENARIOS.sing
 // роутере. Фикстуры отдают links как есть, а мок открывают на localhost:
 // без пересборки обе ссылки были бы мертвы всегда, и три состояния шапки
 // в разработке посмотреть было бы нечем.
-const LOCAL = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
-const linksFor = (req) => {
+const LOCAL = new Set(['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0', '::']);
+
+// Host — это ввод, а не факт: в заголовок кладут что угодно, и мусор вроде
+// `foo"onmouseover=` уехал бы прямо в href. Пропускаем только то, что вообще
+// может быть именем хоста или IP-литералом; всё остальное — «адрес
+// неизвестен», то есть тот же null, что отдал бы демон.
+const HOST_OK = /^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$|^\[[0-9A-Fa-f:.]+\]$/;
+
+// Хост запроса или пустая строка, если из него адрес роутера не выводится.
+const hostOf = (req) => {
 	// Порт срезаем регуляркой, а не split(':'): у IPv6 хост сам полон
 	// двоеточий и приходит как [::1]:8088.
-	const host = String(req.headers.host || '').replace(/:\d+$/, '');
+	const host = String(req.headers.host || '').replace(/:\d+$/, '').toLowerCase();
+	if (!host || !HOST_OK.test(host)) return '';
 	// Из localhost адрес роутера не выводится: панель открыта через
-	// ssh-туннель, и :7000 на этой машине — не b4. Пустой ответ здесь и
-	// есть правильный: это состояние «адрес неизвестен».
-	if (!host || LOCAL.has(host)) return { nikki: null, b4: null };
-	// nikki остаётся null: адрес его веб-морды с роутера не снят (openapi →
-	// Links.nikki). Порт b4 — 7000 (raw/50-b4-api.txt).
-	return { nikki: null, b4: `http://${host}:7000/` };
+	// ssh-туннель, и :7000 на этой машине — не b4. Суффикс .localhost сюда же
+	// (RFC 6761: весь домен зарезервирован под петлю, и браузеры его так и
+	// разрешают), как и вся сеть 127.0.0.0/8, а не один 127.0.0.1.
+	if (LOCAL.has(host) || host.endsWith('.localhost') || /^127\./.test(host)) return '';
+	return host;
+};
+
+const linksFor = (req) => {
+	const host = hostOf(req);
+	if (!host) return { nikki: null, b4: null };
+	// Адрес веб-морды Nikki — БЕЗ секрета: порт 9090 и путь /ui/
+	// (raw/73-nikki-ui-probe.txt). Секрет отдаётся только по явному запросу
+	// GET /api/nikki/panel. Порт b4 — 7000 (raw/50-b4-api.txt).
+	const fail = PANEL_FAIL[state.scenario];
+	const nikki = fail && !fail.link ? null : `http://${host}:9090/ui/`;
+	return { nikki, b4: `http://${host}:7000/` };
 };
 
 const send = (res, code, body, type = MIME['.json']) => {
@@ -174,6 +216,30 @@ async function handleAPI(req, res, u) {
 				'Активную сеть в этой фазе менять нельзя');
 		}
 		return send(res, 200, { ok: true });
+	}
+
+	// --- Nikki: адрес веб-морды ---
+	//
+	// Отдельный эндпоинт, а не поле в /api/status, потому что в адресе лежит
+	// api_secret — он же пароль веб-морды. В статусе, который панель тянет
+	// раз в секунду, ему делать нечего.
+	if (p === '/api/nikki/panel' && method === 'GET') {
+		const host = hostOf(req);
+		// Порядок проверок тот же, что задуман на демоне: хост выводится из
+		// заголовка Host, и без него собирать нечего — остальные причины
+		// проверять уже незачем.
+		if (!host) {
+			return fail(res, 503, 'host_unknown',
+				'Адрес роутера не выводится из заголовка Host');
+		}
+		const bad = PANEL_FAIL[state.scenario];
+		if (bad) return fail(res, bad.status, bad.code, bad.msg);
+		// Набор параметров и порядок — как у LuCI (raw/71-luci-nikki-open-dashboard.txt):
+		// дашборд читает их из query и сам кладёт секрет в заголовок к API.
+		const q = new URLSearchParams({
+			host, hostname: host, port: '9090', secret: 'mock-secret-not-a-real-one',
+		});
+		return send(res, 200, { url: `http://${host}:9090/ui/?${q}` });
 	}
 
 	// --- Nikki ---

@@ -90,6 +90,11 @@ type Client interface {
 	Proxies(ctx context.Context) (map[string]Proxy, error)
 	Select(ctx context.Context, group, member string) error
 	Unfix(ctx context.Context, group string) error
+	// PanelAlive — проба статики дашборда (panel.go). В интерфейсе, а не
+	// только у HTTP: без неё обработчик не смог бы проверить панель на
+	// подменённом клиенте, и единственный путь, отдающий секрет наружу,
+	// остался бы без теста.
+	PanelAlive(ctx context.Context) error
 }
 
 // HTTP — реальный клиент.

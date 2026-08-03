@@ -3,17 +3,33 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"netmoded/internal/executor"
+	"netmoded/internal/nikki"
 )
 
 const testToken = "dGVzdC10b2tlbi1iYXNlNjR1cmwtMzJieXRlcw"
+
+// testNikkiSecret стоит во ВСЕХ тестовых серверах намеренно.
+//
+// Секрет Clash API имеет право уехать наружу ровно одним путём —
+// GET /api/nikki/panel. Держать его пустым в помощнике значило бы, что
+// проверка «секрет не протёк» сводится к поиску пустой строки, то есть не
+// проверяет ничего. Значение приметное, чтобы искать подстрокой.
+const testNikkiSecret = "nikki-secret-must-not-leak"
+
+// testNikkiURL — то, что даёт nikkiURL() в cmd/netmoded из
+// nikki.mixin.api_listen. Хост тут для ХОЖДЕНИЯ демона по петле; в ссылку
+// для браузера уезжает только порт.
+const testNikkiURL = "http://127.0.0.1:9090"
 
 // NewServer обязан выдать читателю статуса те же клиенты, что и себе.
 //
@@ -61,10 +77,12 @@ func newServer(t *testing.T) (*Server, *executor.Fake) {
 	// Журнал — во временный каталог: путь по умолчанию (/etc/nikki) на
 	// машине разработчика недоступен, и запись молча проваливалась бы.
 	s, err := NewServer(Config{
-		Listen:  "192.168.9.1",
-		Port:    8088,
-		Token:   testToken,
-		LogPath: filepath.Join(t.TempDir(), "updates.log"),
+		Listen:      "192.168.9.1",
+		Port:        8088,
+		Token:       testToken,
+		NikkiURL:    testNikkiURL,
+		NikkiSecret: testNikkiSecret,
+		LogPath:     filepath.Join(t.TempDir(), "updates.log"),
 	}, f)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -72,6 +90,18 @@ func newServer(t *testing.T) (*Server, *executor.Fake) {
 	s.SetB4Client(newFakeB4Client())
 	s.SetNikkiClient(newFakeNikkiClient())
 	return s, f
+}
+
+// nikkiPanelURL делает GET /api/nikki/panel с заданным Host и возвращает
+// ответ целиком: телом интересуется и проверка кода отказа тоже.
+func nikkiPanelURL(t *testing.T, s *Server, host string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/api/nikki/panel", nil)
+	req.Host = host
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	return rec
 }
 
 func do(t *testing.T, s *Server, method, path string, withToken bool) *httptest.ResponseRecorder {
@@ -549,12 +579,197 @@ func TestStatusLinksFollowRequestHostNotCache(t *testing.T) {
 	}
 }
 
-// links.nikki — пока всегда null: адрес Clash API берётся из конфигурации
-// nikki, а не из нашего Host. Кнопка в никуда хуже отсутствующей кнопки.
-func TestStatusNikkiLinkIsStillNull(t *testing.T) {
+// ГЛАВНЫЙ тест решения: секрет Clash API не уезжает в /api/status.
+//
+// Статус опрашивается раз в секунду и любой вкладкой, у которой есть токен;
+// секрет в нём осел бы в кэше браузера, в devtools и в любом логе, который
+// кто-нибудь снимет с панели. Разрешённый путь для него ровно один —
+// GET /api/nikki/panel, по клику и с no-store.
+//
+// Это единственный механический сторож решения: положить полный адрес
+// (с ?secret=) в links.nikki — правка на одну строку, и без этого теста она
+// прошла бы ревью как «упрощение, зачем два запроса».
+func TestStatusNeverLeaksSecret(t *testing.T) {
 	s, _ := newServer(t)
+	if s.cfg.NikkiSecret == "" {
+		t.Fatal("тестовый сервер без секрета: проверка ничего не проверяет")
+	}
+
+	req := httptest.NewRequest("GET", "/api/status", nil)
+	req.Host = "192.168.9.1:8088"
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("код %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), s.cfg.NikkiSecret) {
+		t.Errorf("секрет Clash API уехал в /api/status:\n%s", rec.Body.String())
+	}
+}
+
+// links.nikki — адрес БЕЗ параметров: «куда идти». Хост из Host запроса,
+// порт из конфигурации nikki.
+//
+// Слушаем 192.168.9.1, а спрашиваем с Host: router.lan — если бы адрес
+// собирался из cfg.Listen, тест это увидел бы. Владелец ходит на роутер по
+// имени из dnsmasq не реже, чем по адресу, и ссылка обязана вести туда же,
+// откуда он пришёл: иначе она уводит на адрес, который в его сети может
+// быть не маршрутизируем вовсе.
+func TestStatusNikkiLinkFollowsHostAndConfiguredPort(t *testing.T) {
+	s, _ := newServer(t)
+	l := statusLinks(t, s, "router.lan:8088")
+	if l.Nikki == nil {
+		t.Fatal("links.nikki пуст при годном Host и заданном api_listen — кнопка мертва")
+	}
+	if *l.Nikki != "http://router.lan:9090/ui/" {
+		t.Errorf("links.nikki = %q, ожидалось http://router.lan:9090/ui/", *l.Nikki)
+	}
+	if strings.Contains(*l.Nikki, s.cfg.Listen) {
+		t.Errorf("в ссылке адрес из конфигурации, а не из Host: %q", *l.Nikki)
+	}
+}
+
+// Порт вывести неоткуда — ссылки нет. Кнопка в никуда хуже отсутствующей.
+func TestStatusNikkiLinkNullWithoutAPIListen(t *testing.T) {
+	s, _ := newServer(t)
+	s.cfg.NikkiURL = ""
 	if l := statusLinks(t, s, "192.168.9.1:8088"); l.Nikki != nil {
-		t.Errorf("links.nikki = %q, ожидался null: адрес морды nikki ещё не реализован", *l.Nikki)
+		t.Errorf("links.nikki = %q при пустом api_listen: порт взялся из воздуха", *l.Nikki)
+	}
+}
+
+// ─────────── GET /api/nikki/panel ───────────
+
+// Полный адрес собирается в Go и отдаётся целиком.
+//
+// Целиком, а не частями: шаблон (/ui/, четыре параметра, query вместо hash)
+// — внешнее знание, снятое с LuCI, и жить оно обязано рядом с evidence.json.
+// Собранный в панели из кусков, он не проверялся бы ни одним гейтом.
+func TestNikkiPanelReturnsFullURLWithSecret(t *testing.T) {
+	s, _ := newServer(t)
+	rec := nikkiPanelURL(t, s, "router.lan:8088")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("код %d, тело %s", rec.Code, rec.Body.String())
+	}
+
+	var got struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("разбор ответа: %v", err)
+	}
+
+	u, err := url.Parse(got.URL)
+	if err != nil {
+		t.Fatalf("адрес не разбирается: %v (%q)", err, got.URL)
+	}
+	if u.Scheme != "http" || u.Host != "router.lan:9090" || u.Path != "/ui/" {
+		t.Errorf("адрес = %q, ожидалось http://router.lan:9090/ui/…", got.URL)
+	}
+	q := u.Query()
+	for k, want := range map[string]string{
+		"host":     "router.lan",
+		"hostname": "router.lan",
+		"port":     "9090",
+		"secret":   testNikkiSecret,
+	} {
+		if q.Get(k) != want {
+			t.Errorf("параметр %s = %q, ожидалось %q", k, q.Get(k), want)
+		}
+	}
+}
+
+// no-store обязателен: в теле секрет, и его копия в кэше пережила бы ротацию.
+func TestNikkiPanelIsNotCacheable(t *testing.T) {
+	s, _ := newServer(t)
+	rec := nikkiPanelURL(t, s, "192.168.9.1:8088")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("код %d", rec.Code)
+	}
+	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("Cache-Control = %q, ожидалось no-store: ответ с секретом кэшируем", cc)
+	}
+}
+
+// Три отказа, все 503 и все различимы кодом: чинятся они по-разному.
+func TestNikkiPanelRefusals(t *testing.T) {
+	// Открыто через ssh-туннель: собирать адрес не из чего, а угадывать
+	// демон не будет.
+	t.Run("host_unknown", func(t *testing.T) {
+		s, _ := newServer(t)
+		rec := nikkiPanelURL(t, s, "localhost:8088")
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("код %d, ожидался 503", rec.Code)
+		}
+		if c := errCode(t, rec); c != "host_unknown" {
+			t.Errorf("код отказа %q, ожидался host_unknown", c)
+		}
+	})
+
+	// Секрета нет — панель откроется, но не войдёт. Отдавать адрес,
+	// который заведомо не работает, значит врать кнопкой.
+	t.Run("nikki_unconfigured", func(t *testing.T) {
+		s, _ := newServer(t)
+		s.cfg.NikkiSecret = ""
+		rec := nikkiPanelURL(t, s, "192.168.9.1:8088")
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("код %d, ожидался 503", rec.Code)
+		}
+		if c := errCode(t, rec); c != "nikki_unconfigured" {
+			t.Errorf("код отказа %q, ожидался nikki_unconfigured", c)
+		}
+	})
+
+	// Статики по /ui/ нет: дашборд не скачан. Без живой пробы секрет уехал
+	// бы в историю браузера ради страницы 404.
+	t.Run("panel_missing", func(t *testing.T) {
+		s, _ := newServer(t)
+		fake := newFakeNikkiClient()
+		fake.panelErr = nikki.ErrPanelMissing
+		s.SetNikkiClient(fake)
+		rec := nikkiPanelURL(t, s, "192.168.9.1:8088")
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("код %d, ожидался 503", rec.Code)
+		}
+		if c := errCode(t, rec); c != "panel_missing" {
+			t.Errorf("код отказа %q, ожидался panel_missing", c)
+		}
+	})
+}
+
+// Ни один исход не пишет в журнал ни адрес, ни секрет.
+//
+// Журнал демона уходит в syslog роутера, а оттуда — в любой снимок, который
+// владелец пришлёт с жалобой «кнопка не работает». Секрет в такой строке
+// переживает и ротацию, и удаление панели.
+func TestNikkiPanelNeverLogsSecret(t *testing.T) {
+	s, _ := newServer(t)
+	var sink strings.Builder
+	s.logf = func(f string, a ...any) { fmt.Fprintf(&sink, f+"\n", a...) }
+	s.status.logf = s.logf
+
+	// Все четыре исхода эндпоинта, а не только удачный: текст отказа —
+	// самое место, где адрес просачивается через err.Error().
+	nikkiPanelURL(t, s, "router.lan:8088") // 200
+	nikkiPanelURL(t, s, "localhost:8088")  // host_unknown
+
+	secret := s.cfg.NikkiSecret
+	s.cfg.NikkiSecret = ""
+	nikkiPanelURL(t, s, "router.lan:8088") // nikki_unconfigured
+	s.cfg.NikkiSecret = secret
+
+	fake := newFakeNikkiClient()
+	fake.panelErr = nikki.ErrPanelMissing
+	s.SetNikkiClient(fake)
+	nikkiPanelURL(t, s, "router.lan:8088") // panel_missing
+
+	if strings.Contains(sink.String(), testNikkiSecret) {
+		t.Errorf("секрет попал в журнал демона:\n%s", sink.String())
+	}
+	if strings.Contains(sink.String(), nikki.PanelPath) {
+		t.Errorf("адрес панели попал в журнал демона:\n%s", sink.String())
 	}
 }
 

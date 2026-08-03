@@ -11,6 +11,9 @@ import (
 type fakeNikkiClient struct {
 	all map[string]nikki.Proxy
 	err error
+	// panelErr — чем отвечает проба статики дашборда. nil означает «/ui/
+	// отдаёт 200», как на живом роутере (raw/73-nikki-ui-probe.txt).
+	panelErr error
 }
 
 func newFakeNikkiClient() *fakeNikkiClient {
@@ -65,6 +68,9 @@ func (f *fakeNikkiClient) Select(_ context.Context, group, member string) error 
 	f.all[group] = g
 	return nil
 }
+
+// PanelAlive повторяет пробу /ui/: по умолчанию панель на месте.
+func (f *fakeNikkiClient) PanelAlive(context.Context) error { return f.panelErr }
 
 func (f *fakeNikkiClient) Unfix(_ context.Context, group string) error {
 	if f.err != nil {

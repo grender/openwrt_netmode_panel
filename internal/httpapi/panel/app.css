@@ -177,6 +177,21 @@ button:disabled { cursor: not-allowed; }
 .note.err p { color: #c2a19c; }
 .note.warn { background: #241f14; border-color: #4a3f26; color: #f0e2bc; }
 .note.warn p { color: #c2b79c; }
+/* Нейтральное сообщение о ходе дела («Открываю…»): не ошибка и не
+   предупреждение, красить его в тревожный цвет было бы враньём. */
+.note.info { background: #14191f; border-color: #26303a; color: var(--fg-2); }
+.note.info p { color: var(--muted); }
+
+/* Запасная ссылка в тосте. Крупная и явная: она появляется ровно тогда,
+   когда обычный путь не сработал, и владелец обязан увидеть, куда нажимать.
+   min-height 40px — палец, а не курсор: панель открывают с телефона. */
+.note .cta {
+	display: inline-flex; align-items: center; min-height: 40px;
+	margin-top: 10px; padding: 8px 14px; border-radius: 10px;
+	background: rgba(255,255,255,.07); border: 1px solid currentColor;
+	color: inherit; font: 600 14px var(--sans); text-decoration: none;
+}
+.note .cta:hover { background: rgba(255,255,255,.13); }
 .note code {
 	display: block; margin-top: 9px; padding: 8px 10px; border-radius: 8px;
 	background: rgba(0,0,0,.35); font: 12px var(--mono); color: var(--fg-2);

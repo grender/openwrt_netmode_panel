@@ -125,10 +125,86 @@ function App() {
 	};
 	useEffect(() => { reloadSide(); }, []);
 
-	const flash = (msg, kind = 'err') => {
-		setToast({ msg, kind });
+	// extra добавляет к тосту запасную ссылку (href + cta). Она попадает
+	// в состояние вместе с секретом, поэтому живёт ровно до таймаута тоста
+	// или до клика по ней — см. dropToast ниже.
+	const flash = (msg, kind = 'err', extra = null) => {
+		setToast({ msg, kind, ...extra });
 		clearTimeout(tRef.current);
 		tRef.current = setTimeout(() => setToast(null), 6000);
+	};
+	const dropToast = () => { clearTimeout(tRef.current); setToast(null); };
+
+	// Адрес панели Nikki берётся отдельным запросом и только по клику.
+	//
+	// «Запросить URL заранее, при монтировании, чтобы клик был синхронным» —
+	// отвергнуто намеренно, не забыто. В этом адресе лежит api_secret, а он
+	// же пароль веб-морды Nikki (docs/recon/raw/71-luci-nikki-open-dashboard.txt).
+	// Запрошенный заранее, он висел бы в состоянии панели и в атрибуте href
+	// всё время, пока страница открыта, — у любого, кто её открыл, и в любом
+	// снимке DOM, который снимет расширение браузера. Ровно поэтому секрета
+	// нет и в /api/status, который опрашивается раз в секунду. Плата за
+	// решение — один запрос на клик, единицы миллисекунд по LAN.
+	//
+	// wantTab=false приходит с серой кнопки: адрес там заведомо неизвестен,
+	// и открывать пустую вкладку, чтобы тут же её закрыть, — мигание без
+	// смысла. Причину отказа (их три, и чинятся они по-разному) отдаёт тот же
+	// эндпоинт кодом ошибки, поэтому спрашивать всё равно надо сервер, а не
+	// гадать на пустом links.nikki.
+	const nikkiPanel = async (wantTab) => {
+		// window.open ДО await — это главное здесь. После await пользовательский
+		// жест уже израсходован, и блокировщик всплывающих окон закроет вкладку.
+		// Сам LuCI делает это неправильно: зовёт window.open в setTimeout после
+		// await (тот же файл recon), и его кнопка «Open Dashboard» выживает
+		// только там, где блокировщик выключен.
+		//
+		// Третьим аргументом 'noopener' не передаём: по спецификации window.open
+		// тогда возвращает null, и мы уходили бы в ветку «заблокировано» на
+		// каждом клике в исправном браузере. Связь с открывшей страницей рвём
+		// присваиванием w.opener = null.
+		const w = wantTab ? window.open('', '_blank') : null;
+		if (w) w.opener = null;
+		if (wantTab) flash(t('links.opening'), 'info');
+		try {
+			const r = await api('/api/nikki/panel', null, T_SIDE);
+			const url = r && r.url;
+			if (!url) { if (w) w.close(); flash(t('links.err')); return; }
+			if (w) {
+				// replace, а не присваивание location: адрес с секретом не
+				// должен оседать записью в истории пустой вкладки.
+				w.location.replace(url);
+				dropToast();
+				return;
+			}
+			// Вкладки нет. Либо её не дал блокировщик, либо мы и не просили
+			// (серая кнопка, а адрес неожиданно нашёлся — статус обновляется
+			// раз в секунду и мог отстать). В обоих случаях единственный путь
+			// к панели — настоящая <a href> в тосте: клик по ней сам по себе
+			// полноценный жест, и блокировщик его не трогает. Секрет уходит
+			// в атрибут, но не в текст: подписью служит отдельная строка.
+			flash(t(wantTab ? 'links.blocked' : 'links.ready'), 'warn',
+				{ href: url, cta: t('links.blocked.cta') });
+		} catch (e) {
+			// Без close() остаётся белая вкладка без единого слова о том, что
+			// произошло, а объяснение уезжает в тост на исходной странице.
+			if (w) w.close();
+			// Три штатные причины — объяснение, а не поломка, и красить их
+			// в красный нельзя: у соседней серой ссылки b4 ровно то же самое
+			// объяснение жёлтое. Красный остаётся настоящим сбоям (таймаут,
+			// 500), иначе цвет перестаёт что-либо значить.
+			flash(describe(e, t, 'links.err'), WHY_CODES.has(e.code) ? 'warn' : 'err');
+		}
+	};
+
+	// Обычный левый клик по живой ссылке перехватываем: за адресом с секретом
+	// надо сходить на сервер. Клик с модификатором не трогаем — «открыть
+	// в новой вкладке», «в новом окне» и «копировать адрес» обязаны работать
+	// по-настоящему, и уводят они на адрес без секрета из /api/status. Средняя
+	// кнопка сюда не приходит вовсе: она даёт auxclick, а не click.
+	const onNikkiOpen = (e) => {
+		if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+		e.preventDefault();
+		nikkiPanel(true);
 	};
 
 	const act = async (name, fn) => {
@@ -149,11 +225,12 @@ function App() {
 
 	return html`
 		<${Top} s=${status} t=${t} lang=${lang} setLang=${setLang}
-			onWhy=${(key) => flash(t(key), 'warn')} />
+			onWhy=${(key) => flash(t(key), 'warn')}
+			onNikkiOpen=${onNikkiOpen} onNikkiWhy=${() => nikkiPanel(false)} />
 		<${Banner} s=${status} t=${t} job=${job} locked=${locked}
 			onMode=${(m) => act('mode', () => api('/api/mode', { method: 'POST', body: JSON.stringify({ mode: m }) }, T_MODE))} />
 
-		<${Toasts} toast=${toast} />
+		<${Toasts} toast=${toast} onCta=${() => setTimeout(dropToast, 0)} />
 
 		<div class="wrap">
 			<${SelectionNote} s=${status} t=${t} />
@@ -239,12 +316,29 @@ const ERR_KEY = {
 	ifname_unknown: 'err.ifname',
 	radio_unknown: 'err.radio',
 	unavailable: 'err.sched',
+	// Почему панель Nikki не открыть. Три кода — три разных текста, и это не
+	// многословие: хост не выведен → откройте панель по адресу роутера; Nikki
+	// не настроен → настройте; веб-морды нет → её нельзя открыть в принципе,
+	// есть только Clash API. Один общий текст отправлял бы владельца чинить
+	// не то, что сломано.
+	host_unknown: 'links.why.host',
+	nikki_unconfigured: 'links.why.unconfigured',
+	panel_missing: 'links.why.nopanel',
 };
+
+// Те же три кода, но как множество: по ним тост красится жёлтым, а не
+// красным. Это ответ на вопрос «почему ссылка серая», а не сообщение
+// о сбое, и выглядеть он обязан так же, как ответ у ссылки b4.
+const WHY_CODES = new Set(['host_unknown', 'nikki_unconfigured', 'panel_missing']);
 
 // Сообщение об ошибке объясняет причину, а не показывает код: коды 409
 // в этой панели означают три разные вещи, и «409» пользователю не говорит
 // ничего.
-function describe(e, t) {
+//
+// fallback — ключ запасного текста для мест, где сообщение сервера точно
+// не годится: оно приходит по-русски (тот же текст уходит в syslog) и
+// в английском интерфейсе читалось бы как утечка бэкенда.
+function describe(e, t, fallback) {
 	// Прерванный по таймауту запрос даёт DOMException с name AbortError и
 	// сообщением от браузера («The user aborted a request») — оно и неверно
 	// по сути, и не переводится.
@@ -257,6 +351,7 @@ function describe(e, t) {
 	// Запасной вариант для 503 с незнакомым кодом — нейтральный: конкретика
 	// здесь была бы догадкой.
 	if (e.status === 503) return t('err.unavailable');
+	if (fallback) return t(fallback);
 	return e.message || t('err.generic');
 }
 
@@ -284,10 +379,18 @@ function jobText(job, t) {
 // .wrap.toasts:empty в app.css); display:none там нет намеренно — скрытая
 // область выпадает из дерева доступности, и объяснение снова замолчит.
 //
-// Разметка держится в одну строку намеренно: перенос дал бы текстовый узел
-// из пробелов, и :empty перестал бы совпадать.
-function Toasts({ toast }) {
-	return html`<div class="wrap toasts" role="status">${toast && html`<div class="note ${toast.kind}"><p>${toast.msg}</p></div>`}</div>`;
+// Внешняя разметка держится в одну строку намеренно: перенос дал бы текстовый
+// узел из пробелов, и :empty перестал бы совпадать.
+//
+// toast.href — запасной путь для заблокированного всплывающего окна. Это
+// настоящая <a>, а не кнопка: клик по ней браузер считает жестом владельца
+// и открывает вкладку, что бы ни думал блокировщик. Адрес несёт секрет,
+// поэтому он живёт только в атрибуте (подпись берётся из словаря) и только
+// до клика или до конца тоста.
+function Toasts({ toast, onCta }) {
+	const body = toast && html`<div class="note ${toast.kind}"><p>${toast.msg}</p>${toast.href
+		&& html`<a class="cta" href=${toast.href} target="_blank" rel="noreferrer" onClick=${onCta}>${toast.cta}</a>`}</div>`;
+	return html`<div class="wrap toasts" role="status">${body}</div>`;
 }
 
 // ─────────── шапка ───────────
@@ -310,30 +413,40 @@ function Toasts({ toast }) {
 // ссылок само по себе не говорит, куда ведёт. Видимая подпись при этом
 // целиком входит в озвученное имя, иначе голосовое управление промахнулось
 // бы мимо этой кнопки.
-function TopLink({ href, label, name, onWhy }) {
+//
+// onOpen перехватывает обычный клик там, где настоящий адрес известен только
+// серверу (Nikki: в нём секрет). href при этом остаётся живым и настоящим —
+// без секрета, но рабочим: средний клик, «открыть в новой вкладке» и
+// «копировать адрес» обязаны делать то, что обещает контекстное меню.
+// href="#" с onClick сломал бы всё это разом.
+function TopLink({ href, label, name, onWhy, onOpen }) {
 	// Стрелка — украшение направления, а не текст: скринридер прочитал бы
 	// её как «стрелка вправо вверх» посреди имени ссылки.
 	const arrow = html`<span aria-hidden="true">↗</span>`;
 	if (href) {
 		return html`
 			<a class="toplink" href=${href} target="_blank" rel="noreferrer"
-				title=${name} aria-label=${name}>${label} ${arrow}</a>`;
+				title=${name} aria-label=${name} onClick=${onOpen}>${label} ${arrow}</a>`;
 	}
 	return html`
 		<button type="button" class="toplink off" title=${name} aria-label=${name}
 			onClick=${onWhy}>${label} ${arrow}</button>`;
 }
 
-function Top({ s, t, lang, setLang, onWhy }) {
+function Top({ s, t, lang, setLang, onWhy, onNikkiOpen, onNikkiWhy }) {
 	const ap = s.ap || {};
 	const meta = [ap.band && ap.band.toUpperCase(), ap.clients != null && t('ap.clients', { n: ap.clients })]
 		.filter(Boolean).join(' · ');
 	const links = s.links || {};
-	// Причина пустого адреса пока одна на оба сервиса: демон выводит хост из
-	// заголовка Host, и не выводит его, когда панель открыта не по адресу
-	// роутера. Ключи под остальные причины (why.unconfigured, why.nopanel)
-	// в словаре уже лежат, но подключать их нечем: кода причины сервер не
-	// отдаёт, а гадать за него — то же враньё, только вежливое.
+	// У b4 причина пустого адреса ровно одна: демон выводит хост из заголовка
+	// Host и не выводит его, когда панель открыта не по адресу роутера. Гадать
+	// тут не о чем.
+	//
+	// У Nikki причин три, и различает их только сервер — /api/nikki/panel
+	// отвечает кодом отказа. Поэтому серая кнопка Nikki не берёт текст из
+	// словаря вслепую, а спрашивает (onNikkiWhy): «не настроен» и «нет
+	// веб-морды» чинятся совсем по-разному, а «откройте по адресу роутера»
+	// в этих случаях просто неправда.
 	const why = () => onWhy('links.why.host');
 	return html`
 		<div class="top">
@@ -342,7 +455,8 @@ function Top({ s, t, lang, setLang, onWhy }) {
 				${ap.ssid && html`<span class="ap-meta">${t('ap.broadcasts', { ssid: ap.ssid })}${meta ? ' · ' + meta : ''}</span>`}
 			</div>
 			<div class="top-links">
-				<${TopLink} href=${links.nikki} label="Nikki" name=${t('links.nikki')} onWhy=${why} />
+				<${TopLink} href=${links.nikki} label="Nikki" name=${t('links.nikki')}
+					onWhy=${onNikkiWhy} onOpen=${onNikkiOpen} />
 				<${TopLink} href=${links.b4} label="b4" name=${t('links.b4')} onWhy=${why} />
 				<div class="lang">
 					${['ru', 'en'].map((l) => html`

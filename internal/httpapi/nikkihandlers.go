@@ -60,6 +60,66 @@ func (s *Server) handleNikkiProxies(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleNikkiPanel отдаёт адрес веб-панели mihomo — единственный ответ
+// демона, в котором есть секрет Clash API.
+//
+// Отдельный запрос, а не поле статуса: /api/status опрашивается раз в
+// секунду, и секрет ездил бы в каждом ответе. Здесь он уходит ровно один
+// раз, по клику владельца.
+//
+// GET, а не POST: операция читающая и без побочных эффектов, POST на чтение
+// — ложь контракту (и повод для промежуточных слоёв решить, что запрос
+// небезопасно повторять). «Явность» действия обеспечивает не метод, а то,
+// что запрос делает обработчик клика, а не опрос страницы.
+//
+// НИ URL, НИ СЕКРЕТ НЕ ПОПАДАЮТ В ЖУРНАЛ ни при одном исходе — ни через
+// s.logf, ни текстом ошибки в writeErr. Поэтому сообщения об отказах здесь
+// написаны словами, а не собраны из err.Error(): ошибка клиента содержит
+// адрес, по которому он ходил.
+//
+// Все три отказа — 503 и в порядке «чинится в браузере → чинится на
+// роутере»: host_unknown (открыто через туннель), nikki_unconfigured
+// (api_secret/api_listen не заданы), panel_missing (статики по /ui/ нет).
+func (s *Server) handleNikkiPanel(w http.ResponseWriter, r *http.Request) {
+	host, ok := panelHost(r.Host)
+	if !ok {
+		writeErr(w, http.StatusServiceUnavailable, "host_unknown",
+			"По заголовку Host адрес роутера не выводится: панель открыта "+
+				"через туннель или по петле. Откройте её по адресу роутера в LAN.")
+		return
+	}
+
+	port, portOK := nikki.PanelPort(s.cfg.NikkiURL)
+	if !portOK || s.cfg.NikkiSecret == "" || s.nikki == nil {
+		writeErr(w, http.StatusServiceUnavailable, "nikki_unconfigured",
+			"Адрес или секрет Clash API не заданы: нужны nikki.mixin.api_listen "+
+				"и nikki.mixin.api_secret. Без секрета панель откроется, но не войдёт.")
+		return
+	}
+
+	// Живая проба ДО выдачи адреса. Без неё секрет уезжает в адресную строку
+	// и оседает в истории браузера ради страницы 404: дашборд качается с
+	// GitHub при первом запуске nikki, и без интернета его там просто нет.
+	if err := s.nikki.PanelAlive(r.Context()); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "panel_missing",
+			"Веб-панель nikki не отвечает: статика дашборда не скачана "+
+				"(nikki.mixin.ui_url) или сам движок не запущен.")
+		return
+	}
+
+	u, ok := nikki.PanelURL(host, port, s.cfg.NikkiSecret)
+	if !ok {
+		writeErr(w, http.StatusServiceUnavailable, "nikki_unconfigured",
+			"Адрес панели не собрался из имеющихся данных.")
+		return
+	}
+
+	// Cache-Control: no-store ставит writeJSON для всех ответов. Здесь это не
+	// украшение, а условие выдачи: в теле секрет, и его копия в кэше браузера
+	// или прокси пережила бы ротацию. Пинится TestNikkiPanelIsNotCacheable.
+	writeJSON(w, http.StatusOK, map[string]string{"url": u})
+}
+
 // AutoSentinel — значение, возвращающее группу к автовыбору.
 //
 // Имя из SPEC §7: спека предполагала, что в профиле придётся завести

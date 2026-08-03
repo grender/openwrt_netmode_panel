@@ -259,6 +259,23 @@
       "raw/60-clash-proxies.json",
       "raw/61-clash-groups.json"
     ],
+    "panel": {
+      "status": "verified",
+      "path": "/ui/",
+      "path_source": "external-ui: ui в /etc/nikki/run/config.yaml (uci: nikki.mixin.ui_path='ui'); external-ui-name не задан, поэтому подкаталога после /ui/ нет",
+      "port": "тот же, что у Clash API — отдельного слушателя нет: external-controller '[::]:9090' единственный. Порт берётся разбором адреса из nikki.mixin.api_listen (nikki.PanelPort), а не вторым литералом",
+      "static_needs_auth": false,
+      "static_probe": "GET /ui/ по петле → 200 OK, text/html, ни одного заголовка авторизации (raw/73). Иначе ссылка из браузера была бы невозможна: <a href> заголовков не носит",
+      "dashboard": "zashboard (external-ui-url → github.com/Zephyruso/zashboard); скачивается при первом запуске, поэтому наличие статики проверяется живой пробой перед выдачей адреса",
+      "url_template": "http://<хост>:<порт>/ui/?host=<хост>&hostname=<хост>&port=<порт>&secret=<api_secret> — query, НЕ hash; host и hostname дублируются намеренно (разные дашборды читают разное имя); protocol=http, потому что api_tls_listen не задан",
+      "url_template_src": "/www/luci-static/resources/tools/nikki.js openDashboard (raw/71)",
+      "not_a_contradiction": "запись auth_query_param_does_not_work выше про ДРУГОЕ: там ?secret= предъявляли самому Clash API, который принимает только заголовок. Здесь параметр уходит статике дашборда, и уже она кладёт значение в Authorization",
+      "allow_lan": "uci nikki.mixin.allow_lan='1' — :::9090 достижим с устройства владельца, а не только по петле (raw/73)",
+      "raw": [
+        "raw/71-luci-nikki-open-dashboard.txt",
+        "raw/73-nikki-ui-probe.txt"
+      ]
+    },
     "surfaces": [
       {
         "method": "GET",

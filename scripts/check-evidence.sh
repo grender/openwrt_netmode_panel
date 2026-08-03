@@ -38,7 +38,11 @@ missing=""
 for l in $lits; do
 	case "$l" in
 		# Внешние поверхности, которые обязаны быть подтверждены.
-		/api/*|/sys/class/leds/*|network.wireless|network.interface.*|iwinfo)
+		#
+		# /ui* — веб-панель mihomo. Под /api/* она не подпадает (это статика
+		# дашборда, а не Clash API), и без отдельного шаблона оказалась бы
+		# единственным внешним путём в проекте без механической защиты.
+		/api/*|/ui*|/sys/class/leds/*|network.wireless|network.interface.*|iwinfo)
 			if ! grep -qF "$l" "$EV"; then
 				missing="$missing $l"
 			fi

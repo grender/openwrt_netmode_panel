@@ -58,6 +58,11 @@ func newDevNikki() *devNikki {
 
 func (f *devNikki) Version(context.Context) (string, error) { return "v1.19.27", nil }
 
+// PanelAlive отвечает «панель на месте»: на машине разработчика никакого
+// mihomo нет, а кнопка обязана быть кликабельной, иначе панельная половина
+// работы проверяется только на роутере.
+func (f *devNikki) PanelAlive(context.Context) error { return nil }
+
 func (f *devNikki) Proxies(context.Context) (map[string]nikki.Proxy, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
