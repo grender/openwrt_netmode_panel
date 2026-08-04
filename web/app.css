@@ -156,6 +156,11 @@ button:disabled { cursor: not-allowed; }
 .job { margin-top: 16px; background: rgba(255,255,255,.14); border-radius: var(--r); padding: 12px 13px; }
 .banner.m-b4 .job { background: rgba(15,17,19,.08); }
 .job-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13.5px; }
+/* Провал операции. Селектор с .banner намеренно: у .banner.m-b4 .job выше
+   специфичность (0,3,0), и голое .job.bad проиграло бы ему на светлом
+   баннере b4. Токены те же, что у .note.err — провал везде выглядит
+   одинаково, где бы он ни случился. */
+.banner .job.bad { background: var(--bad-bg); color: var(--bad); }
 .job-row .blink { animation: blink 1.2s infinite; }
 @keyframes blink { 0%,100% { opacity: 1 } 50% { opacity: .4 } }
 .bar { height: 4px; background: rgba(0,0,0,.25); margin-top: 10px; border-radius: 2px; overflow: hidden; }
@@ -208,7 +213,13 @@ button:disabled { cursor: not-allowed; }
 	border: 1px solid transparent; text-align: left; width: 100%;
 }
 .row.sel { background: #1d2a41; color: var(--fg); border-color: var(--nikki); }
-.row.dim { opacity: .55; }
+/* У .row не было :disabled вовсе, и нажатие на узел Nikki не меняло ни
+   одного пикселя: правила приглушения есть у .modes, .sets, .mini, .wide
+   и .linkbtn — а строка списка их не получала. */
+.rows button:disabled { opacity: .5; }
+/* Мёртвый узел уходит глубже приглушённых: иначе на время замка живые
+   и мёртвые сравниваются, а список читают именно тогда, когда идёт джоб. */
+.row.dim, .rows button.dim:disabled { opacity: .3; }
 /* min-width задан намеренно: с flex:1 и min-width:0 имя сети ужимается
    до одной буквы, как только справа появляются кнопки. Имя — главное
    в строке, оно обязано оставаться читаемым. */
@@ -317,4 +328,51 @@ button:disabled { cursor: not-allowed; }
 	}
 	.sheet-actions { flex-direction: row-reverse; }
 	.sheet-actions .wide { margin-top: 0; }
+}
+
+/* ─────────── ожидание ─────────── */
+
+/* Секция стоит последней в файле не для красоты. У button[aria-busy]:disabled
+   специфичность (0,2,1) — ровно как у .sets button:disabled и
+   .rows button:disabled, а при равной специфичности спор решает порядок.
+   Стой она выше, приглушалась бы именно нажатая кнопка, то есть ровно
+   наоборот задуманному. */
+
+/* Кольцо, а не мигание: мигающая точка размером в глиф читается как сбой
+   отрисовки. Вращение — единственная фигура, которая говорит «идёт, срок
+   неизвестен», ничего не обещая про проценты. currentColor обязателен:
+   один и тот же элемент садится и на синий баннер, и на светлый b4. */
+.spin {
+	display: inline-block; width: 12px; height: 12px; flex: none;
+	vertical-align: -1px; border-radius: 50%;
+	border: 2px solid currentColor; border-right-color: transparent;
+	animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg) } }
+
+/* Занятая кнопка остаётся яркой: приглушение означает «нажимать
+   бесполезно», а здесь происходит ровно то, чего ждут. Приём тот же, что
+   у выбранной кнопки режима. */
+button[aria-busy="true"]:disabled { opacity: 1; }
+/* .linkbtn гасится цветом, а не прозрачностью, поэтому opacity его не
+   достаёт — а кольцо рисуется currentColor и осталось бы нечитаемым. */
+.linkbtn[aria-busy="true"]:disabled { color: var(--link); }
+
+/* Скелет: место под данные, которые ещё едут. «Ещё не приехало» и «нечего
+   показывать» — разные ответы, а до сих пор выглядели одинаково.
+   Фон --line-2, а не --card: карточка сама --card-2 (#15181b), и разница
+   с --card (#181c20) в три единицы канала на телефоне ночью не видна. */
+.skel { height: 48px; border-radius: var(--r); background: var(--line-2); animation: pulse 1.4s ease-in-out infinite; }
+.skel.pill { height: 44px; width: 96px; border-radius: 99px; }
+.skel.line { height: 19px; }
+@keyframes pulse { 0%,100% { opacity: .7 } 50% { opacity: .35 } }
+
+/* Движение убирается, индикация — нет. Полное animation:none вернуло бы ту
+   же немоту, которую всё это чинит: кольцо стало бы неподвижным и
+   неотличимым от украшения. Поэтому кольцо замедляется, а мигание и пульс
+   заменяются постоянной приглушённостью. */
+@media (prefers-reduced-motion: reduce) {
+	.spin { animation-duration: 2.4s; }
+	.skel { animation: none; opacity: .55; }
+	.job-row .blink { animation: none; opacity: .75; }
 }

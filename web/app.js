@@ -18,6 +18,11 @@ const T_SCAN = 20000;
 const T_MODE = 8000; // 202 приходит сразу, ждать завершения джоба тут нечего
 const T_DEFAULT = 8000;
 
+// Запас поверх eta_sec, после которого засеянный джоб считается протухшим.
+// Десять секунд: демон обещает eta приблизительно, а смена режима штатно
+// рвёт туннель — пара пропущенных опросов тут норма, а не авария.
+const SEED_SLACK = 10000;
+
 // ─────────── утилиты ───────────
 
 // Таймаут обязателен на каждом запросе: зависший (именно зависший, а не
@@ -75,21 +80,63 @@ const latPct = (ms) => (ms == null ? '0%' : Math.min(100, Math.round((ms / 220) 
 
 const signalClass = (dbm) => (dbm >= -60 ? 'lat-ok' : dbm >= -75 ? 'lat-warn' : 'lat-bad');
 
+// ─────────── ожидание ───────────
+
+// Компонент, а не готовая vnode-константа: preact мутирует vnode при вставке
+// (_dom), и один объект, отрисованный в двух местах, ломается.
+const Spin = () => html`<i class="spin" aria-hidden="true"></i>`;
+
+// Занят ли ИМЕННО этот элемент. Ключ занятости несёт вид операции и её
+// аргумент: без аргумента панель знает, что что-то идёт, но не знает, на
+// какой строке рисовать кольцо, — а до сих пор нажатие на узел Nikki и на
+// сет b4 не меняло вообще ни одного пикселя.
+const on = (busy, kind, arg) => busy === (arg == null ? kind : kind + ':' + arg);
+
+// wrap задаётся параметром, а не зашит: .rows — колонка, .sets — строка
+// с переносом, .log — колонка со своим отступом. Захардкоженный .rows
+// разложил бы пилюли b4 вертикально, а при подстановке данных они прыгнули
+// бы в строку — то самое дёрганье, ради которого скелетон и рисуют.
+//
+// aria-hidden: озвучивать нечего, за состояние отвечает aria-busy на
+// карточке; болтливая заглушка хуже молчаливой.
+const Skel = ({ n = 3, cls = '', wrap = 'rows' }) => html`
+	<div class=${wrap} aria-hidden="true">
+		${Array.from({ length: n }, () => html`<div class="skel ${cls}"></div>`)}
+	</div>`;
+
 // ─────────── корневой компонент ───────────
 
 function App() {
 	const [lang, setLang] = useState(() => localStorage.getItem('netmode.lang') || 'ru');
 	const [status, setStatus] = useState(null);
 	const [stale, setStale] = useState(false);
-	const [nikki, setNikki] = useState(null);
-	const [sets, setSets] = useState(null);
-	const [nets, setNets] = useState(null);
+	// undefined, а не null: «ещё не спрашивали» и «спросили, не ответили» —
+	// разные ответы, и рисуются они по-разному. Отказ в grab пишет сюда
+	// именно null, поэтому различие достаётся даром от начального значения,
+	// без второго флага. До этого карточки на первом кадре показывали
+	// «Clash API не отвечает» и «Панель b4 не отвечает» — до восьми секунд
+	// уверенной неправды про исправный роутер.
+	const [nikki, setNikki] = useState();
+	const [sets, setSets] = useState();
+	const [nets, setNets] = useState();
 	const [scan, setScan] = useState(null);
-	const [logs, setLogs] = useState(null);
+	const [logs, setLogs] = useState();
 	const [busy, setBusy] = useState('');
 	const [sheet, setSheet] = useState(null);
 	const [toast, setToast] = useState(null);
 	const tRef = useRef(null);
+	// Джоб из ответа 202 — до того, как о нём узнает опрос. Ref, а не только
+	// состояние: tick создаётся один раз в эффекте с пустыми зависимостями
+	// и до состояния из своего замыкания не дотянется.
+	const [seed, setSeed] = useState(null);
+	const seedRef = useRef(null);
+	const inFlight = useRef(false);
+	// Настоящий мьютекс действий. Состояние busy для этого не годится: между
+	// setBusy и следующим рендером второе нажатие успевает проскочить.
+	const busyRef = useRef('');
+	// У панели Nikki свой сторож: через act её вести нельзя — window.open
+	// обязан остаться синхронным с жестом пользователя.
+	const panelRef = useRef(false);
 
 	const t = makeT(lang);
 	useEffect(() => { localStorage.setItem('netmode.lang', lang); document.documentElement.lang = lang; }, [lang]);
@@ -100,12 +147,39 @@ function App() {
 	useEffect(() => {
 		let alive = true;
 		const tick = async () => {
+			// Потолок засева проверяется ДО сторожа и до запроса, поэтому
+			// работает и когда опрос падает. Без него засев пережил бы свой
+			// джоб: смена режима рвёт туннель, следующий опрос может не дойти
+			// вовсе — и панель осталась бы запертой навсегда, с полоской на
+			// 99% и мёртвыми кнопками до перезагрузки страницы. Раньше такого
+			// не было, потому что джоб приходил только из статуса; засев эту
+			// дыру и открывает, здесь она и закрывается.
+			const sd = seedRef.current;
+			if (sd && Date.now() - new Date(sd.started_at) > (sd.eta_sec || 15) * 1000 + SEED_SLACK) {
+				seedRef.current = null; setSeed(null);
+			}
+			// T_STATUS больше POLL_MS: без сторожа на медленном канале висит
+			// до четырёх запросов разом, и поздний ответ затирает более свежий.
+			if (inFlight.current) return;
+			inFlight.current = true;
 			try {
 				const s = await api('/api/status', null, T_STATUS);
 				if (!alive) return;
+				const cur = seedRef.current;
+				// Ответ статуса, начатый ДО нажатия, о нашем джобе знать не мог:
+				// снимать по нему засев значило бы погасить блок и через долю
+				// секунды зажечь снова. Обе метки времени приходят с роутера,
+				// поэтому сравнение честное. Иначе снимаем: либо опрос догнал
+				// (дальше ведёт он), либо джоб кончился быстрее опроса.
+				if (cur && ((s.job && s.job.id === cur.id)
+					|| new Date(s.generated_at) >= new Date(cur.started_at))) {
+					seedRef.current = null; setSeed(null);
+				}
 				setStatus(s); setStale(false);
 			} catch {
 				if (alive) setStale(true);
+			} finally {
+				inFlight.current = false;
 			}
 		};
 		tick();
@@ -114,16 +188,26 @@ function App() {
 	}, []);
 
 	// Побочные данные тянем реже: они меняются от действий, а не сами.
-	const reloadSide = async () => {
-		const grab = (p, set) => api(p, null, T_SIDE).then(set).catch(() => set(null));
-		await Promise.all([
-			grab('/api/nikki/proxies', setNikki),
-			grab('/api/b4/sets', setSets),
-			grab('/api/wifi/networks', setNets),
-			grab('/api/logs?n=5', setLogs),
-		]);
-	};
-	useEffect(() => { reloadSide(); }, []);
+	//
+	// Раньше тут был один reloadSide, и он перечитывал все четыре списка после
+	// любого действия — внутри окна занятости, то есть держал запертой всю
+	// панель до восьми секунд ради данных, которых действие не касалось.
+	const grab = (p, set) => api(p, null, T_SIDE).then(set).catch(() => set(null));
+	const loadNikki = () => grab('/api/nikki/proxies', setNikki);
+	const loadSets = () => grab('/api/b4/sets', setSets);
+	const loadNets = () => grab('/api/wifi/networks', setNets);
+	const loadLogs = () => grab('/api/logs?n=5', setLogs);
+
+	useEffect(() => { loadNets(); loadLogs(); }, []);
+	// Узлы Nikki существуют, только когда поднят Nikki, сеты — когда поднят b4.
+	// Перечитываем по факту смены режима, а не после каждого нажатия: это же
+	// покрывает и завершение джоба смены режима, о котором доложит опрос.
+	//
+	// Зависимость — примитив: [status] пересоздаётся каждым тиком опроса и дал
+	// бы два запроса в секунду навсегда, а [status.mode] уронил бы первый
+	// рендер, где status ещё null.
+	const mode = status && status.mode;
+	useEffect(() => { if (mode) { loadNikki(); loadSets(); } }, [mode]);
 
 	// extra добавляет к тосту запасную ссылку (href + cta). Она попадает
 	// в состояние вместе с секретом, поэтому живёт ровно до таймаута тоста
@@ -162,9 +246,18 @@ function App() {
 		// тогда возвращает null, и мы уходили бы в ветку «заблокировано» на
 		// каждом клике в исправном браузере. Связь с открывшей страницей рвём
 		// присваиванием w.opener = null.
+		// Свой сторож, а не act: во-первых, замок act запретил бы объяснение
+		// во время любой другой операции, во-вторых, act асинхронен и увёл бы
+		// window.open за пределы жеста. Двойной клик по живой ссылке иначе
+		// открывает две вкладки и шлёт два запроса.
+		if (panelRef.current) return;
+		panelRef.current = true;
 		const w = wantTab ? window.open('', '_blank') : null;
 		if (w) w.opener = null;
-		if (wantTab) flash(t('links.opening'), 'info');
+		// Безусловно, а не только для вкладки: серая кнопка — это вопрос
+		// «почему не работает», и до сих пор она молчала целый круг обращения
+		// к серверу, до восьми секунд по T_SIDE.
+		flash(t('links.opening'), 'info');
 		try {
 			const r = await api('/api/nikki/panel', null, T_SIDE);
 			const url = r && r.url;
@@ -193,6 +286,8 @@ function App() {
 			// объяснение жёлтое. Красный остаётся настоящим сбоям (таймаут,
 			// 500), иначе цвет перестаёт что-либо значить.
 			flash(describe(e, t, 'links.err'), WHY_CODES.has(e.code) ? 'warn' : 'err');
+		} finally {
+			panelRef.current = false;
 		}
 	};
 
@@ -207,28 +302,66 @@ function App() {
 		nikkiPanel(true);
 	};
 
-	const act = async (name, fn) => {
-		setBusy(name);
-		try { await fn(); await reloadSide(); }
-		catch (e) { flash(describe(e, t)); }
-		finally { setBusy(''); }
+	// Одна операция за раз — требование демона (второй джоб получает 409), и до
+	// сих пор его держал disabled на кнопках. Из-за этого запрет расползался на
+	// всё подряд, включая «Отмену» в форме. Теперь замок здесь, а disabled
+	// снова означает только «нажимать бесполезно».
+	const act = async (name, fn, after) => {
+		// Молча возвращаться нельзя: мёртвая кнопка без объяснения — ровно тот
+		// дефект, который чинил 8da43a7. Сообщение то же, что отдал бы демон.
+		if (busyRef.current) { flash(t('err.busy')); return; }
+		busyRef.current = name; setBusy(name);
+		try { await fn(); }
+		catch (e) { flash(describe(e, t)); return; }
+		finally { busyRef.current = ''; setBusy(''); }
+		// Перечитывание — уже вне окна занятости: кнопки отпускаются, когда
+		// операция закончилась, а не когда доедут побочные списки.
+		if (after) await after();
 	};
 
+	// Первый экран. Раньше здесь было голое '…', а при провале — foot.stale
+	// («данные устарели»), который тут врал: устаревать было нечему, данных
+	// не приходило ни разу.
+	//
+	// Подпись обязана быть прямым потомком .wrap с классом full: от 900px
+	// .wrap — сетка в три колонки, и без него подпись заняла бы первую
+	// из четырёх ячеек, а третий скелетон уехал бы во второй ряд. Группы
+	// заворачиваются в .card, иначе на месте голых блоков потом появятся
+	// рамка и отступы — то есть карточки подпрыгнут.
 	if (!status) {
-		return html`<div class="wrap"><div class="card">${stale
-			? html`<div class="note err"><h3>${t('foot.stale')}</h3></div>`
-			: '…'}</div></div>`;
+		if (stale) {
+			return html`<div class="wrap"><div class="note err full">
+				<h3>${t('boot.down.title')}</h3><p>${t('boot.down')}</p></div></div>`;
+		}
+		return html`<div class="wrap">
+			<div class="note info full" style="display:flex;align-items:center;gap:9px">
+				<${Spin} /><p>${t('boot')}</p></div>
+			${[0, 1, 2].map(() => html`<div class="card"><${Skel} n=${3} /></div>`)}
+		</div>`;
 	}
 
-	const job = status.job && status.job.state === 'running' ? status.job : null;
-	const locked = !!job || !!busy;
+	// Не «status.job || seed». Демон держит завершённый джоб в статусе ещё
+	// пять секунд (job.go, keepFinished), а Start отбивает только идущий —
+	// значит новый джоб успевает стартовать, пока в статусе лежит доигранный.
+	// Простое «или» предпочло бы доигранный только что засеянному: полоска
+	// не появилась бы, и секундная задержка вернулась бы ровно там, где её
+	// чинят. Засев уступает статусу только тогда, когда статус говорит про
+	// тот же самый джоб.
+	const job = seed && !(status.job && status.job.id === seed.id) ? seed : status.job;
+	const running = job && job.state === 'running' ? job : null;
+	const locked = !!running || !!busy;
 
 	return html`
 		<${Top} s=${status} t=${t} lang=${lang} setLang=${setLang}
 			onWhy=${(key) => flash(t(key), 'warn')}
 			onNikkiOpen=${onNikkiOpen} onNikkiWhy=${() => nikkiPanel(false)} />
-		<${Banner} s=${status} t=${t} job=${job} locked=${locked}
-			onMode=${(m) => act('mode', () => api('/api/mode', { method: 'POST', body: JSON.stringify({ mode: m }) }, T_MODE))} />
+		<${Banner} s=${status} t=${t} job=${job} running=${running} busy=${busy} locked=${locked}
+			onMode=${(m) => act('mode:' + m, async () => {
+				const r = await api('/api/mode', { method: 'POST', body: JSON.stringify({ mode: m }) }, T_MODE);
+				// Джоб из 202 — не заглушка: в нём настоящие started_at
+				// и eta_sec, поэтому обратный отсчёт стартует верным.
+				if (r && r.job) { seedRef.current = r.job; setSeed(r.job); }
+			})} />
 
 		<${Toasts} toast=${toast} onCta=${() => setTimeout(dropToast, 0)} />
 
@@ -237,12 +370,12 @@ function App() {
 
 			${status.mode === 'nikki' && html`
 				<${NikkiCard} data=${nikki} t=${t} busy=${busy} locked=${locked}
-					onPick=${(n) => act('proxy', () => api('/api/nikki/proxy', { method: 'POST', body: JSON.stringify({ name: n }) }))}
-					onTest=${() => act('test', () => api('/api/nikki/test', { method: 'POST' }))} />`}
+					onPick=${(n) => act('proxy:' + n, () => api('/api/nikki/proxy', { method: 'POST', body: JSON.stringify({ name: n }) }), loadNikki)}
+					onTest=${() => act('test', () => api('/api/nikki/test', { method: 'POST' }), loadNikki)} />`}
 
 			${status.mode === 'b4' && html`
 				<${B4Card} data=${sets} t=${t} busy=${busy} locked=${locked}
-					onPick=${(id) => act('set', () => api('/api/b4/set', { method: 'POST', body: JSON.stringify({ id }) }))} />`}
+					onPick=${(id) => act('set:' + id, () => api('/api/b4/set', { method: 'POST', body: JSON.stringify({ id }) }), loadSets)} />`}
 
 			${status.mode === 'off' && html`
 				<div class="card"><h2>${t('mode.off')}</h2>
@@ -253,18 +386,23 @@ function App() {
 				onOpenSheet=${(s) => setSheet(s)}
 				onDelete=${(n) => {
 					if (!confirm(t('wifi.confirm.delete', { ssid: n.ssid }))) return;
-					act('del-' + n.id, () => api('/api/wifi/networks/' + encodeURIComponent(n.id), {
+					act('del:' + n.id, () => api('/api/wifi/networks/' + encodeURIComponent(n.id), {
 						method: 'DELETE',
 						headers: { 'If-Match': nets.fingerprint },
-					}));
+					}), loadNets);
 				}} />
 
 			<${SubCard} s=${status} logs=${logs} t=${t} lang=${lang} busy=${busy}
-				onUpdate=${() => act('sub', () => api('/api/subscription/update', { method: 'POST' }))} />
+				onUpdate=${() => act('sub', async () => {
+					const r = await api('/api/subscription/update', { method: 'POST' });
+					if (r && r.job) { seedRef.current = r.job; setSeed(r.job); }
+				// Обновление подписки — это то, что ПРОИЗВОДИТ список узлов
+				// Nikki, поэтому перечитываем и его, а не только журнал.
+				}, async () => { await loadLogs(); await loadNikki(); })} />
 		</div>
 
 		${sheet && html`
-			<${NetworkSheet} sheet=${sheet} t=${t} busy=${busy}
+			<${NetworkSheet} sheet=${sheet} t=${t} busy=${busy} locked=${locked}
 				onClose=${() => setSheet(null)}
 				onSave=${(body, setErr) => act('save', async () => {
 					try {
@@ -278,19 +416,25 @@ function App() {
 						});
 						setSheet(null);
 					} catch (e) {
+						// Ошибка формы докладывается ровно один раз — строкой
+						// в самой форме. Раньше отсюда шёл ещё throw, и act
+						// добавлял вторую копию тостом, другими словами.
+						//
 						// Расхождение отпечатка чинится обновлением списка,
 						// а не повтором вслепую: иначе перезапишем чужое.
+						// Перечитать обязательно — иначе wifi.err.stale
+						// («список обновлён») врёт, и повтор шлёт тот же
+						// устаревший отпечаток бесконечно.
 						if (e.code === 'fingerprint_mismatch') {
-							await reloadSide();
+							await loadNets();
 							setErr(t('wifi.err.stale'));
 						} else if (e.code === 'foreign_staged_changes') {
 							setErr(t('wifi.err.foreign'));
 						} else {
 							setErr(describe(e, t));
 						}
-						throw e;
 					}
-				})} />`}
+				}, loadNets)} />`}
 
 		<${Foot} s=${status} t=${t} lang=${lang} stale=${stale} />
 	`;
@@ -305,6 +449,13 @@ const ERR_KEY = {
 	ambiguous_selection: 'sel.ambiguous.title',
 	enabled_network_readonly: 'wifi.locked',
 	job_busy: 'err.busy',
+	// Три кода оптимистичной блокировки wireless (ADR-0011). Без них
+	// describe() проваливался в e.message, то есть печатал русский текст
+	// демона в английском интерфейсе — ровно та утечка, против которой
+	// заведён весь этот словарь.
+	fingerprint_mismatch: 'wifi.err.stale',
+	fingerprint_required: 'wifi.err.stale',
+	foreign_staged_changes: 'wifi.err.foreign',
 	// Сообщение демона русское (оно же уходит в syslog), поэтому даже там,
 	// где текст совпадает по смыслу, панель берёт свой перевод.
 	nikki_unavailable: 'srv.down',
@@ -468,7 +619,13 @@ function Top({ s, t, lang, setLang, onWhy, onNikkiOpen, onNikkiWhy }) {
 
 // ─────────── баннер ───────────
 
-function Banner({ s, t, job, locked, onMode }) {
+// Заголовок провала — явной таблицей, как jobText, а не склейкой
+// t('job.fail.' + kind): makeT при промахе возвращает сам ключ, и заявленный
+// контрактом kind «upstream» напечатал бы в интерфейсе строку job.fail.upstream.
+const failText = (j, t) => (j.kind === 'mode' ? t('job.fail.mode', { mode: j.arg })
+	: j.kind === 'subscription' ? t('job.fail.subscription') : t('job.fail'));
+
+function Banner({ s, t, job, running, busy, locked, onMode }) {
 	const m = ['nikki', 'b4', 'off'].includes(s.mode) ? s.mode : 'unknown';
 	const ssid = s.configured_ssid || s.associated_ssid;
 
@@ -497,12 +654,15 @@ function Banner({ s, t, job, locked, onMode }) {
 		? (online ? t('net.tip.online', { ssid }) : t('net.tip.offline', { ssid }))
 		: t('net.nossid');
 
-	const pct = job && job.eta_sec
-		? Math.min(99, Math.round(((Date.now() - new Date(job.started_at)) / 1000 / job.eta_sec) * 100))
+	// Прогресс считается по running, а не по job: у доигранного джоба, который
+	// демон держит в статусе ещё пять секунд, отсчитывать нечего.
+	const pct = running && running.eta_sec
+		? Math.min(99, Math.round(((Date.now() - new Date(running.started_at)) / 1000 / running.eta_sec) * 100))
 		: 0;
-	const left = job && job.eta_sec
-		? Math.max(0, job.eta_sec - Math.round((Date.now() - new Date(job.started_at)) / 1000))
+	const left = running && running.eta_sec
+		? Math.max(0, running.eta_sec - Math.round((Date.now() - new Date(running.started_at)) / 1000))
 		: null;
+	const failed = job && job.state === 'failed' ? job : null;
 
 	return html`
 		<div class="banner m-${m}">
@@ -512,7 +672,8 @@ function Banner({ s, t, job, locked, onMode }) {
 				<div class="chips">
 					<span class="chip">↑ ${ssid || t('net.nossid')}</span>
 					<span class="chip ${online ? 'ok' : 'bad'}" title=${netTip}>
-						${job ? t('net.checking') : online ? t('net.online') : t('net.offline')}
+						${running && running.kind === 'mode' ? t('net.checking')
+						: online ? t('net.online') : t('net.offline')}
 					</span>
 					${s.pending_apply && html`<span class="chip" title="uci commit без применения">pending</span>`}
 				</div>
@@ -521,18 +682,25 @@ function Banner({ s, t, job, locked, onMode }) {
 				<div class="modes">
 					${['nikki', 'b4', 'off'].map((id) => html`
 						<button class="m-${id}" aria-pressed=${s.mode === id} disabled=${locked || current(id)}
-							onClick=${() => onMode(id)}>${t('mode.' + id)}</button>`)}
+							aria-busy=${on(busy, 'mode', id)}
+							onClick=${() => onMode(id)}>
+							${on(busy, 'mode', id) && html`<${Spin} /> `}${t('mode.' + id)}</button>`)}
 				</div>
-				${!job && html`<div class="hint" style="opacity:.8">${locked ? t('mode.hint.busy') : t('mode.hint')}</div>`}
+				${!running && !failed && html`<div class="hint" style="opacity:.8">${locked ? t('mode.hint.busy') : t('mode.hint')}</div>`}
 			</div>
-			${job && html`
+			${running && html`
 				<div class="job">
 					<div class="job-row">
-						<span class="blink">${jobText(job, t)}</span>
+						<span class="blink">${jobText(running, t)}</span>
 						<span style="font-family:var(--mono);opacity:.8">
 							${left != null ? t('job.left', { sec: left }) : t('job.blocked')}</span>
 					</div>
 					<div class="bar"><i style="width:${pct}%"></i></div>
+				</div>`}
+			${failed && html`
+				<div class="job bad">
+					<div class="job-row"><span>${failText(failed, t)}</span></div>
+					${failed.error && html`<p class="hint tight" style="margin-top:6px">${failed.error}</p>`}
 				</div>`}
 		</div>`;
 }
@@ -562,6 +730,15 @@ function SelectionNote({ s, t }) {
 // ─────────── Nikki ───────────
 
 function NikkiCard({ data, t, busy, locked, onPick, onTest }) {
+	// undefined — список ещё едет; null и !available — уже ответили отказом.
+	// Заглушка держит и заголовок, и место под нижнюю кнопку: без них
+	// карточка подскочила бы на полсотни пикселей ровно в тот момент, когда
+	// на неё смотрят.
+	if (data === undefined) {
+		return html`<div class="card" aria-busy="true"><h2>${t('srv.title')}</h2>
+			<${Skel} n=${3} />
+			<div class="skel" style="height:46px;margin-top:12px"></div></div>`;
+	}
 	if (!data || !data.available) {
 		return html`<div class="card"><h2>${t('srv.title')}</h2><div class="empty">${t('srv.down')}</div></div>`;
 	}
@@ -578,8 +755,9 @@ function NikkiCard({ data, t, busy, locked, onPick, onTest }) {
 	return html`
 		<div class="card">
 			<h2>${t('srv.title')}
-				<button class="linkbtn" disabled=${!pinned || locked} onClick=${() => onPick('AUTO')}>
-					${pinned ? t('srv.auto.back') : t('srv.auto')}</button>
+				<button class="linkbtn" disabled=${!pinned || locked} aria-busy=${on(busy, 'proxy', 'AUTO')}
+					onClick=${() => onPick('AUTO')}>
+					${on(busy, 'proxy', 'AUTO') && html`<${Spin} /> `}${pinned ? t('srv.auto.back') : t('srv.auto')}</button>
 			</h2>
 			${pinned && html`<p class="hint tight" style="color:var(--warn)">${t('srv.pinned.note')}</p>`}
 			<div class="rows">
@@ -587,25 +765,36 @@ function NikkiCard({ data, t, busy, locked, onPick, onTest }) {
 					const isActive = active === m.name;
 					return html`
 					<button class="row ${isActive ? 'sel' : ''} ${m.alive ? '' : 'dim'}"
-						disabled=${locked} onClick=${() => onPick(m.name)}>
+						disabled=${locked} aria-busy=${on(busy, 'proxy', m.name)}
+						onClick=${() => onPick(m.name)}>
 						<span class="name">${m.name}</span>
 						${isActive && html`
 							<span class="tag ${pinned ? 'tag-pin' : 'tag-auto'}"
 								title=${pinned ? t('srv.tip.pinned') : t('srv.tip.auto')}>
 								${pinned ? '📌 ' + t('srv.tag.pinned') : t('srv.tag.auto')}</span>`}
 						<span class="meter"><i class=${latBg(m.delay_ms)} style="width:${latPct(m.delay_ms)}"></i></span>
-						<span class="ms ${latClass(m.delay_ms)}">${m.delay_ms != null ? m.delay_ms + ' ms' : '—'}</span>
+						<!-- Кольцо занимает слот задержки: у .ms фиксированные 54px,
+						     поэтому имя узла не съезжает. Вставка в начало строки
+						     сдвинула бы его на 22px вправо — дёрганье ровно на том
+						     элементе, за которым в этот момент следят. -->
+						<span class="ms ${latClass(m.delay_ms)}">${on(busy, 'proxy', m.name)
+							? html`<${Spin} />`
+							: (m.delay_ms != null ? m.delay_ms + ' ms' : '—')}</span>
 					</button>`;
 				})}
 			</div>
-			<button class="wide" disabled=${locked} onClick=${onTest}>
-				${busy === 'test' ? t('srv.measuring') : t('srv.measure')}</button>
+			<button class="wide" disabled=${locked} aria-busy=${on(busy, 'test')} onClick=${onTest}>
+				${on(busy, 'test') ? html`<${Spin} /> ${t('srv.measuring')}` : t('srv.measure')}</button>
 		</div>`;
 }
 
 // ─────────── b4 ───────────
 
 function B4Card({ data, t, busy, locked, onPick }) {
+	if (data === undefined) {
+		return html`<div class="card" aria-busy="true"><h2>${t('sets.title')}</h2>
+			<${Skel} n=${3} cls="pill" wrap="sets" /></div>`;
+	}
 	if (!data || !data.available) {
 		return html`<div class="card"><h2>${t('sets.title')}</h2><div class="empty">${t('sets.down')}</div></div>`;
 	}
@@ -614,8 +803,9 @@ function B4Card({ data, t, busy, locked, onPick }) {
 			<h2>${t('sets.title')}</h2>
 			<div class="sets">
 				${(data.sets || []).map((x) => html`
-					<button aria-pressed=${x.enabled} disabled=${locked || busy === 'set'}
-						onClick=${() => onPick(x.id)}>${x.name}</button>`)}
+					<button aria-pressed=${x.enabled} disabled=${locked} aria-busy=${on(busy, 'set', x.id)}
+						onClick=${() => onPick(x.id)}>
+						${on(busy, 'set', x.id) && html`<${Spin} /> `}${x.name}</button>`)}
 			</div>
 			<p class="hint tight">${t('sets.hint')}</p>
 		</div>`;
@@ -660,13 +850,16 @@ function WifiCard({ nets, scan, t, busy, status, onScan, onOpenSheet, onDelete }
 				<div style="display:flex;gap:14px">
 					<button class="linkbtn" disabled=${!!busy || frozen}
 						onClick=${() => onOpenSheet({ mode: 'add' })}>${t('wifi.add')}</button>
-					<button class="linkbtn" disabled=${!!busy} onClick=${onScan}>
-						${busy === 'scan' ? t('wifi.scanning') : scan ? t('wifi.rescan') : t('wifi.scan')}</button>
+					<button class="linkbtn" disabled=${!!busy} aria-busy=${on(busy, 'scan')} onClick=${onScan}>
+						${on(busy, 'scan') ? html`<${Spin} /> ${t('wifi.scanning')}`
+							: scan ? t('wifi.rescan') : t('wifi.scan')}</button>
 				</div>
 			</h2>
 
+			${nets === undefined ? html`<${Skel} n=${2} />` : html`
 			<div class="rows">
-				${saved.length === 0 && html`<div class="empty">${t('sel.empty.title')}</div>`}
+				${nets === null && html`<div class="empty">${t('wifi.down')}</div>`}
+				${nets && saved.length === 0 && html`<div class="empty">${t('sel.empty.title')}</div>`}
 				${saved.map((n) => html`
 					<div class="row ${n.enabled ? 'sel' : ''}">
 						<span class="name">${n.ssid || t('wifi.hidden')}</span>
@@ -678,12 +871,14 @@ function WifiCard({ nets, scan, t, busy, status, onScan, onOpenSheet, onDelete }
 								<button class="mini" title=${t('wifi.edit')} disabled=${!!busy}
 									onClick=${() => onOpenSheet({ mode: 'edit', id: n.id, ssid: n.ssid, encryption: n.encryption })}
 									>${t('wifi.key')}</button>
-								<button class="mini danger icon" title=${t('wifi.delete')} disabled=${!!busy}
+								<button class="mini danger icon"
+									title=${on(busy, 'del', n.id) ? t('wifi.deleting') : t('wifi.delete')}
+									disabled=${!!busy} aria-busy=${on(busy, 'del', n.id)}
 									onClick=${() => onDelete(n)}
-									>${busy === 'del-' + n.id ? '…' : '✕'}</button>`
+									>${on(busy, 'del', n.id) ? html`<${Spin} />` : '✕'}</button>`
 							: html`<span class="mark" title=${n.enabled ? t('wifi.locked') : t('sel.ambiguous.title')}>🔒</span>`}
 					</div>`)}
-			</div>
+			</div>`}
 
 			${extra.length > 0 && html`
 				<div class="rows" style="margin-top:8px">
@@ -707,7 +902,7 @@ function WifiCard({ nets, scan, t, busy, status, onScan, onOpenSheet, onDelete }
 
 // ─────────── форма сети ───────────
 
-function NetworkSheet({ sheet, t, busy, onSave, onClose }) {
+function NetworkSheet({ sheet, t, busy, locked, onSave, onClose }) {
 	const editing = sheet.mode === 'edit';
 	const [ssid, setSsid] = useState(sheet.ssid || '');
 	const [enc, setEnc] = useState(sheet.encryption || 'psk2');
@@ -768,9 +963,15 @@ function NetworkSheet({ sheet, t, busy, onSave, onClose }) {
 				<p class="hint tight">${t('wifi.keyhint')}</p>
 
 				<div class="sheet-actions">
-					<button class="wide primary" disabled=${!!busy} onClick=${submit}>
-						${busy === 'save' ? t('wifi.saving') : t('wifi.save')}</button>
-					<button class="wide" disabled=${!!busy} onClick=${onClose}>${t('wifi.cancel')}</button>
+					<!-- Сохранение — мутация, поэтому запирается и чужим джобом
+					     тоже: раньше оно смотрело только на busy, и форму можно
+					     было отправить посреди смены режима. -->
+					<button class="wide primary" disabled=${!!busy || locked} aria-busy=${on(busy, 'save')} onClick=${submit}>
+						${on(busy, 'save') ? html`<${Spin} /> ${t('wifi.saving')}` : t('wifi.save')}</button>
+					<!-- «Отмена» не блокируется никогда: это выход, а не действие.
+					     Запирать выход из формы из-за постороннего действия — как
+					     раз то, во что превращался disabled в роли мьютекса. -->
+					<button class="wide" onClick=${onClose}>${t('wifi.cancel')}</button>
 				</div>
 			</div>
 		</div>`;
@@ -788,11 +989,13 @@ function SubCard({ s, logs, t, lang, busy, onUpdate }) {
 			<div class="hint">${t('sub.nodes', { n: sub.nodes ?? 0 })}</div>
 			${sub.status === 'fail' && sub.error && html`<div class="hint" style="color:var(--bad)">${sub.error}</div>`}
 
-			<button class="wide" disabled=${!!busy} onClick=${onUpdate}>
-				${busy === 'sub' ? t('sub.updating') : t('sub.update')}</button>
+			<button class="wide" disabled=${!!busy} aria-busy=${on(busy, 'sub')} onClick=${onUpdate}>
+				${on(busy, 'sub') ? html`<${Spin} /> ${t('sub.updating')}` : t('sub.update')}</button>
 
+			${logs === undefined ? html`<${Skel} n=${2} cls="line" wrap="log" />` : html`
 			<div class="log">
-				${(!logs || !logs.lines || !logs.lines.length) && html`<div>${t('sub.emptylog')}</div>`}
+				${logs === null && html`<div>${t('sub.log.down')}</div>`}
+				${logs && (!logs.lines || !logs.lines.length) && html`<div>${t('sub.emptylog')}</div>`}
 				${logs && logs.lines && logs.lines.map((l) => html`
 					<div>
 						<span style="color:${l.status === 'ok' ? 'var(--ok)' : 'var(--bad)'}">
@@ -800,7 +1003,7 @@ function SubCard({ s, logs, t, lang, busy, onUpdate }) {
 						<span class="when">${fmtTime(l.ts, lang)}</span>
 						<span>${l.status === 'ok' ? l.nodes : (l.err || '—')}</span>
 					</div>`)}
-			</div>
+			</div>`}
 		</div>`;
 }
 

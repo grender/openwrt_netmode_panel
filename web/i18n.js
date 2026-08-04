@@ -45,6 +45,15 @@ export const DICT = {
 		'job.mode.off': 'Выключаю обход',
 		'job.subscription': 'Обновляю подписку',
 		'job.working': 'Идёт операция',
+		// Провал виден пять секунд — ровно столько демон держит завершённую
+		// операцию в статусе. Раньше панель выбрасывала всё, кроме running,
+		// и сорванное переключение заканчивалось молча: полоска исчезала,
+		// кнопки отпускались, а что случилось — не говорил никто. Здесь
+		// заголовок, причина приходит в job.error и по контракту пригодна
+		// для показа.
+		'job.fail.mode': 'Не удалось переключиться на {mode}',
+		'job.fail.subscription': 'Подписка не обновилась',
+		'job.fail': 'Операция не удалась',
 
 		// Тексты ошибок по машинному коду от демона. Сообщение самого демона
 		// в панель не попадает: оно русское и уходит в syslog.
@@ -98,6 +107,10 @@ export const DICT = {
 		'wifi.hidden': '(скрытая сеть)',
 		'wifi.none': 'открытая',
 		'wifi.empty': 'Сканирование не запускалось.',
+		// Отказ эндпоинта, а не пустой список: sel.empty.title утверждает,
+		// что сохранённых сетей нет, — про роутер, у которого их просто
+		// не удалось прочитать, это неправда.
+		'wifi.down': 'Список сохранённых сетей недоступен',
 		'wifi.add': 'Добавить сеть',
 		'wifi.edit': 'Изменить пароль',
 		'wifi.key': 'Пароль',
@@ -130,6 +143,11 @@ export const DICT = {
 		'sub.update': 'Обновить сейчас',
 		'sub.updating': 'Обновляю…',
 		'sub.emptylog': 'Обновлений ещё не было',
+		// Список не доехал — это не то же самое, что «обновлений не было».
+		// Второе — утверждение о роутере, и оно ложно, когда просто лёг
+		// эндпоинт. Разделение видно с тех пор, как побочные списки стартуют
+		// с undefined, а null означает именно отказ.
+		'sub.log.down': 'Журнал обновлений недоступен',
 
 		// Ссылки на веб-морды в шапке. Видимая подпись остаётся короткой
 		// («Nikki ↗»), полное имя уходит в aria-label и title: голое «Nikki»
@@ -158,6 +176,12 @@ export const DICT = {
 		'ap.clients': '{n} устройств',
 		'foot.updated': 'обновлено {when}',
 		'foot.stale': 'данные устарели — панель не достучалась до демона',
+
+		// Первый экран. foot.stale тут врал бы: устаревать было нечему,
+		// данных ещё не было ни одного раза.
+		'boot': 'Читаю состояние роутера…',
+		'boot.down.title': 'Демон не отвечает',
+		'boot.down': 'Панель продолжает спрашивать и откроется, как только он ответит.',
 		'foot.phase': 'фаза 1: смена внешней сети отключена',
 	},
 
@@ -198,6 +222,9 @@ export const DICT = {
 		'job.mode.off': 'Turning the bypass off',
 		'job.subscription': 'Updating the subscription',
 		'job.working': 'Operation in progress',
+		'job.fail.mode': 'Could not switch to {mode}',
+		'job.fail.subscription': 'The subscription did not update',
+		'job.fail': 'The operation failed',
 
 		'err.generic': 'Error',
 		'err.busy': 'Another operation is already running. Wait for it to finish.',
@@ -249,6 +276,7 @@ export const DICT = {
 		'wifi.hidden': '(hidden network)',
 		'wifi.none': 'open',
 		'wifi.empty': 'No scan has been run.',
+		'wifi.down': 'The saved-network list is unavailable',
 		'wifi.add': 'Add network',
 		'wifi.edit': 'Change password',
 		'wifi.key': 'Password',
@@ -281,6 +309,7 @@ export const DICT = {
 		'sub.update': 'Update now',
 		'sub.updating': 'Updating…',
 		'sub.emptylog': 'No updates yet',
+		'sub.log.down': 'The update log is unavailable',
 
 		'links.nikki': 'Nikki panel',
 		'links.b4': 'b4 panel',
@@ -297,6 +326,10 @@ export const DICT = {
 		'ap.clients': '{n} devices',
 		'foot.updated': 'updated {when}',
 		'foot.stale': 'data is stale — the panel cannot reach the daemon',
+
+		'boot': 'Reading the router state…',
+		'boot.down.title': 'The daemon does not answer',
+		'boot.down': 'The panel keeps asking and opens as soon as it does.',
 		'foot.phase': 'phase 1: uplink switching is disabled',
 	},
 };

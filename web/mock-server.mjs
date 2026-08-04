@@ -137,6 +137,14 @@ const readBody = (req) => new Promise((resolve) => {
 // Панель подписывает джоб сама по kind и arg, а label читает только человек
 // в syslog, поэтому мок обязан отдавать оба поля, иначе подпись в панели
 // проверить нечем.
+// 409 job_busy отбивает только ИДУЩУЮ операцию, а не любую присутствующую
+// в статусе. Демон устроен именно так (job.Manager.Start проверяет
+// State == Running), и держит завершённый джоб ещё несколько секунд, чтобы
+// панель успела показать исход. Мок раньше проверял просто «есть ли джоб»
+// и в это окно отказывал в новой операции — расхождение с контрактом,
+// из-за которого поведение панели в самый интересный момент не проверялось.
+const busyJob = () => !!state.job && state.job.state === 'running';
+
 const startJob = (kind, arg, label, sec) => {
 	state.job = {
 		id: 'j-' + Math.random().toString(16).slice(2, 8),
@@ -147,9 +155,14 @@ const startJob = (kind, arg, label, sec) => {
 		state: 'running',
 		error: null,
 	};
+	// Таймеры привязаны к своему джобу по id. Без этого таймер завершившейся
+	// операции догонял уже следующую и гасил её: доиграл первый джоб — и через
+	// полторы секунды из статуса пропадал второй, только что запущенный.
+	const id = state.job.id;
+	const mine = () => state.job && state.job.id === id;
 	setTimeout(() => {
-		if (state.job) { state.job.state = 'done'; state.job.finished_at = new Date().toISOString(); }
-		setTimeout(() => { state.job = null; }, 1500);
+		if (mine()) { state.job.state = 'done'; state.job.finished_at = new Date().toISOString(); }
+		setTimeout(() => { if (mine()) state.job = null; }, 1500);
 	}, sec * 1000);
 };
 
@@ -168,7 +181,7 @@ async function handleAPI(req, res, u) {
 
 	// --- медленные операции: джоб ---
 	if (p === '/api/mode' && method === 'POST') {
-		if (state.job) return fail(res, 409, 'job_busy', 'Уже идёт другая операция');
+		if (busyJob()) return fail(res, 409, 'job_busy', 'Уже идёт другая операция');
 		const { mode } = await readBody(req);
 		if (!['nikki', 'b4', 'off'].includes(mode)) {
 			return fail(res, 400, 'bad_request', 'Неизвестный режим');
@@ -285,7 +298,7 @@ async function handleAPI(req, res, u) {
 
 	// --- подписка и логи ---
 	if (p === '/api/subscription/update' && method === 'POST') {
-		if (state.job) return fail(res, 409, 'job_busy', 'Уже идёт другая операция');
+		if (busyJob()) return fail(res, 409, 'job_busy', 'Уже идёт другая операция');
 		startJob('subscription', '', 'Обновление подписки', 4);
 		return send(res, 202, { job: state.job });
 	}
