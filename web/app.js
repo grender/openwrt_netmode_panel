@@ -23,6 +23,20 @@ const T_DEFAULT = 8000;
 // рвёт туннель — пара пропущенных опросов тут норма, а не авария.
 const SEED_SLACK = 10000;
 
+// Сколько ждём слушателя службы, прежде чем сказать «не отвечает». Демон
+// коммитит UCI mode ДО того, как служба поднялась (internal/httpapi/
+// modehandler.go:77-86), поэтому первые секунды нового режима — штатный старт,
+// а не отказ. Двадцать секунд: firewall restart плюс запуск b4/nikki на живом
+// роутере укладываются в единицы секунд, остальное — запас на холодный старт
+// и медленную флешку. Меньше — и панель начнёт врать про исправный роутер,
+// больше — и настоящая поломка будет полминуты притворяться загрузкой.
+const START_GRACE = 20000;
+
+// Как часто досылать запрос списка, если служба отвечает, а список не доехал.
+// Пять секунд, а не каждый тик: это починка редкой гонки, и она не стоит
+// секундного долбления роутера, которое на медленном канале само себе мешает.
+const RETRY_MS = 5000;
+
 // ─────────── утилиты ───────────
 
 // Таймаут обязателен на каждом запросе: зависший (именно зависший, а не
@@ -137,6 +151,66 @@ function App() {
 	// У панели Nikki свой сторож: через act её вести нельзя — window.open
 	// обязан остаться синхронным с жестом пользователя.
 	const panelRef = useRef(false);
+	// Докуда служба вправе молчать, не считаясь мёртвой. Ключ в том, ОТ ЧЕГО
+	// ведётся отсчёт: от джоба, которым службу попросили подняться, а не от
+	// момента, когда панель заметила молчание.
+	//
+	// Отсчёт от первого молчания выглядел правдоподобно и не работал вовсе.
+	// netmode-apply гасит вторую службу всегда (files/usr/local/bin/
+	// netmode-apply:129, `svc b4 stop` безусловно), поэтому в режиме nikki
+	// статус отдаёт b4.available:false ПОСТОЯННО — метка вставала на первом
+	// же тике опроса и к моменту нажатия давно протухала. Грация доставалась
+	// ровно тому, кто открыл панель и переключил режим в пределах двадцати
+	// секунд; на всех остальных путях штатный старт с первой секунды называли
+	// отказом. Обратная ошибка ничем не лучше: над давно лежащей службой
+	// панель двадцать секунд писала «запускается», хотя ничего не запускалось,
+	// — и откладывала правду ровно тогда, когда её пришли узнать.
+	//
+	// Хранит либо 'running' (джоб идёт прямо сейчас, срок не тикает), либо
+	// метку времени, до которой ждём слушателя. Ноль — «ждать нечего».
+	const grace = useRef({ b4: 0, nikki: 0 });
+
+	// Производное состояние службы: 'up' | 'starting' | 'down'. Пишется прямо
+	// в рендере, поэтому useRef, а не useState: setState отсюда — это setState
+	// во время рендера. Переходы идемпотентны, повторный рендер с тем же job
+	// ничего не сдвигает.
+	const svcState = (name, up, job, stale) => {
+		const g = grace.current;
+		// Джоб смены режима на этот движок — единственное доказательство, что
+		// запуск идёт. Ищем и в статусе, и в засеве: засев кладётся из ответа
+		// 202, то есть момент нажатия известен на первом же кадре, до того как
+		// о джобе узнает опрос.
+		const mine = job && job.kind === 'mode' && job.arg === name ? job : null;
+		if (mine && mine.state === 'running') {
+			// Пока джоб идёт, срок не начисляется: 5–15 секунд смены режима
+			// не должны съедать время, отведённое на подъём слушателя.
+			g[name] = 'running';
+		} else if (mine && mine.state === 'failed') {
+			// Провал — доказательство, что запуск НЕ идёт, поэтому срок
+			// снимается, а не досчитывается. Без этой ветки один экран
+			// одновременно утверждал «не удалось переключиться в b4» и «b4
+			// запускается»; демон убирает завершённый джоб через пять секунд
+			// (job.Manager, keepFinished), и ложная половина переживала
+			// красную плашку ещё на пятнадцать.
+			g[name] = 0;
+		} else if (g[name] === 'running') {
+			// Джоб этого движка только что перестал идти — вот отсюда и
+			// начинается ожидание слушателя. Ветка идемпотентна: со второго
+			// рендера g[name] уже число, и срок не продлевается.
+			g[name] = Date.now() + START_GRACE;
+		}
+
+		if (up) { g[name] = 0; return 'up'; }
+		// Устаревший статус — не доказательство запуска: свежих подтверждений
+		// у нас нет ни одного, а «запускается» это утверждение о происходящем
+		// прямо сейчас. Заодно это единственный выход из замёрзшего ожидания:
+		// при падающем опросе setStatus не зовётся вовсе, Date.now() в рендере
+		// читать некому, и без этой строки скелетон висел бы вечно. stale
+		// переключается один раз, и одного рендера ровно хватает.
+		if (stale) return 'down';
+		if (g[name] === 'running') return 'starting';
+		return g[name] > Date.now() ? 'starting' : 'down';
+	};
 
 	const t = makeT(lang);
 	useEffect(() => { localStorage.setItem('netmode.lang', lang); document.documentElement.lang = lang; }, [lang]);
@@ -200,14 +274,61 @@ function App() {
 
 	useEffect(() => { loadNets(); loadLogs(); }, []);
 	// Узлы Nikki существуют, только когда поднят Nikki, сеты — когда поднят b4.
-	// Перечитываем по факту смены режима, а не после каждого нажатия: это же
-	// покрывает и завершение джоба смены режима, о котором доложит опрос.
 	//
-	// Зависимость — примитив: [status] пересоздаётся каждым тиком опроса и дал
+	// Триггер перечитывания — доступность службы, а НЕ смена режима.
+	// status.<svc>.available буквально значит «служба ответила по HTTP менее
+	// полусекунды назад» (статус зовёт её каждый тик, кэш 500 мс), и это строго
+	// лучший признак готовности, чем завершение джоба: netmode-apply считает
+	// готовностью факт `/etc/init.d/b4 running` (files/usr/local/bin/
+	// netmode-apply:118-121, 222-224) — то есть процесс, а не слушателя.
+	//
+	// По одному лишь mode эффект срабатывал ровно один раз, и срабатывал рано:
+	// демон коммитит UCI mode ДО запуска службы, так что единственное
+	// перечитывание попадало в connection refused, grab писал null — и карточка
+	// печатала «не отвечает» до перезагрузки страницы, потому что mode больше
+	// не менялся. Подпись баннера при этом чинилась сама (она смотрит на тот же
+	// available), и расхождение выглядело как случайный глюк, а не как дефект.
+	//
+	// Зависимости — примитивы: [status] пересоздаётся каждым тиком опроса и дал
 	// бы два запроса в секунду навсегда, а [status.mode] уронил бы первый
 	// рендер, где status ещё null.
 	const mode = status && status.mode;
-	useEffect(() => { if (mode) { loadNikki(); loadSets(); } }, [mode]);
+	const b4Up = !!(status && status.b4 && status.b4.available);
+	const nikkiUp = !!(status && status.nikki && status.nikki.available);
+	// setSets(undefined), а не null — это возврат к «ещё не спрашивали»
+	// (скелетон), а не к «спросили и получили отказ». Договорённость трёх
+	// состояний выше обязана оставаться дословно верной: сложи эти два
+	// значения в одно, и панель снова начнёт печатать отказ там, где ещё
+	// ничего не спрашивала.
+	useEffect(() => { if (mode === 'b4') { b4Up ? loadSets() : setSets(undefined); } }, [mode, b4Up]);
+	useEffect(() => { if (mode === 'nikki') { nikkiUp ? loadNikki() : setNikki(undefined); } }, [mode, nikkiUp]);
+
+	// Досылка при противоречии: служба отвечает, а списка нет. Само по себе
+	// это не редкость — /api/b4/sets бьёт по живому b4 без кэша, а available
+	// приходит из снимка статуса с кэшем 500 мс (StatusCacheTTL), так что
+	// достаточно службе моргнуть внутри окна запроса, чтобы grab записал null,
+	// а b4Up для клиента ни разу не стал false. Эффект выше при этом не
+	// сработает НИКОГДА: [mode, b4Up] не изменились. Владелец оставался перед
+	// «Панель b4 не отвечает» рядом с живой синей кнопкой b4 в шапке, и выхода
+	// не было вовсе — в состоянии отказа кнопок сетов не рисуется, значит
+	// onPick недостижим, значит и перечитывание после действия недостижимо.
+	//
+	// Ретраем работает сам опрос, а не свой таймер: у панели уже есть ровно
+	// один источник времени, и второй развёл бы их по фазе. Поэтому [status] —
+	// он пересоздаётся каждым тиком, и это здесь не дефект, а движок. Что
+	// делает такую зависимость безопасной — retryAt: без него получились бы
+	// обещанные два запроса в секунду навсегда.
+	const retryAt = useRef({ b4: 0, nikki: 0 });
+	useEffect(() => {
+		const now = Date.now();
+		const again = (name, up, data, load) => {
+			if (!up || data !== null || now < retryAt.current[name]) return;
+			retryAt.current[name] = now + RETRY_MS;
+			load();
+		};
+		if (mode === 'b4') again('b4', b4Up, sets, loadSets);
+		if (mode === 'nikki') again('nikki', nikkiUp, nikki, loadNikki);
+	}, [status, mode, b4Up, nikkiUp, sets, nikki]);
 
 	// extra добавляет к тосту запасную ссылку (href + cta). Она попадает
 	// в состояние вместе с секретом, поэтому живёт ровно до таймаута тоста
@@ -230,12 +351,13 @@ function App() {
 	// нет и в /api/status, который опрашивается раз в секунду. Плата за
 	// решение — один запрос на клик, единицы миллисекунд по LAN.
 	//
-	// wantTab=false приходит с серой кнопки: адрес там заведомо неизвестен,
-	// и открывать пустую вкладку, чтобы тут же её закрыть, — мигание без
-	// смысла. Причину отказа (их три, и чинятся они по-разному) отдаёт тот же
-	// эндпоинт кодом ошибки, поэтому спрашивать всё равно надо сервер, а не
-	// гадать на пустом links.nikki.
-	const nikkiPanel = async (wantTab) => {
+	// Вкладку открываем безусловно: кнопка теперь рисуется только тогда, когда
+	// адрес известен и Clash API отвечает, — то есть промах здесь редкость,
+	// а не штатный ход. Но именно редкость, а не невозможность: живой Clash API
+	// ещё не означает открываемой панели (нет api_secret; дашборд zashboard
+	// качается при первом запуске), поэтому отказ ниже разбирается по коду
+	// и остаётся жёлтым объяснением, а не красным сбоем.
+	const nikkiPanel = async () => {
 		// window.open ДО await — это главное здесь. После await пользовательский
 		// жест уже израсходован, и блокировщик всплывающих окон закроет вкладку.
 		// Сам LuCI делает это неправильно: зовёт window.open в setTimeout после
@@ -252,11 +374,11 @@ function App() {
 		// открывает две вкладки и шлёт два запроса.
 		if (panelRef.current) return;
 		panelRef.current = true;
-		const w = wantTab ? window.open('', '_blank') : null;
+		const w = window.open('', '_blank');
 		if (w) w.opener = null;
-		// Безусловно, а не только для вкладки: серая кнопка — это вопрос
-		// «почему не работает», и до сих пор она молчала целый круг обращения
-		// к серверу, до восьми секунд по T_SIDE.
+		// Тост ставится сразу, а не по ответу: круг обращения к серверу длится
+		// до восьми секунд по T_SIDE, и всё это время исходная страница обязана
+		// показывать, что нажатие принято.
 		flash(t('links.opening'), 'info');
 		try {
 			const r = await api('/api/nikki/panel', null, T_SIDE);
@@ -269,22 +391,19 @@ function App() {
 				dropToast();
 				return;
 			}
-			// Вкладки нет. Либо её не дал блокировщик, либо мы и не просили
-			// (серая кнопка, а адрес неожиданно нашёлся — статус обновляется
-			// раз в секунду и мог отстать). В обоих случаях единственный путь
+			// Вкладки нет — её не дал блокировщик. Единственный оставшийся путь
 			// к панели — настоящая <a href> в тосте: клик по ней сам по себе
 			// полноценный жест, и блокировщик его не трогает. Секрет уходит
 			// в атрибут, но не в текст: подписью служит отдельная строка.
-			flash(t(wantTab ? 'links.blocked' : 'links.ready'), 'warn',
-				{ href: url, cta: t('links.blocked.cta') });
+			flash(t('links.blocked'), 'warn', { href: url, cta: t('links.blocked.cta') });
 		} catch (e) {
 			// Без close() остаётся белая вкладка без единого слова о том, что
 			// произошло, а объяснение уезжает в тост на исходной странице.
 			if (w) w.close();
 			// Три штатные причины — объяснение, а не поломка, и красить их
-			// в красный нельзя: у соседней серой ссылки b4 ровно то же самое
-			// объяснение жёлтое. Красный остаётся настоящим сбоям (таймаут,
-			// 500), иначе цвет перестаёт что-либо значить.
+			// в красный нельзя: роутер исправен, просто открывать пока нечего.
+			// Красный остаётся настоящим сбоям (таймаут, 500), иначе цвет
+			// перестаёт что-либо значить.
 			flash(describe(e, t, 'links.err'), WHY_CODES.has(e.code) ? 'warn' : 'err');
 		} finally {
 			panelRef.current = false;
@@ -299,7 +418,7 @@ function App() {
 	const onNikkiOpen = (e) => {
 		if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
 		e.preventDefault();
-		nikkiPanel(true);
+		nikkiPanel();
 	};
 
 	// Одна операция за раз — требование демона (второй джоб получает 409), и до
@@ -349,13 +468,20 @@ function App() {
 	// тот же самый джоб.
 	const job = seed && !(status.job && status.job.id === seed.id) ? seed : status.job;
 	const running = job && job.state === 'running' ? job : null;
+	const failed = job && job.state === 'failed' ? job : null;
 	const locked = !!running || !!busy;
 
+	// Считается здесь, а не выше, потому что кормится job — тем самым, который
+	// уже разобран строкой выше с учётом засева. Раньше запуска не докажет
+	// ничто другое: available у обеих служб штатно false в чужом режиме.
+	const svc = {
+		b4: svcState('b4', b4Up, job, stale),
+		nikki: svcState('nikki', nikkiUp, job, stale),
+	};
+
 	return html`
-		<${Top} s=${status} t=${t} lang=${lang} setLang=${setLang}
-			onWhy=${(key) => flash(t(key), 'warn')}
-			onNikkiOpen=${onNikkiOpen} onNikkiWhy=${() => nikkiPanel(false)} />
-		<${Banner} s=${status} t=${t} job=${job} running=${running} busy=${busy} locked=${locked}
+		<${Top} s=${status} t=${t} lang=${lang} setLang=${setLang} onNikkiOpen=${onNikkiOpen} />
+		<${Banner} s=${status} t=${t} svc=${svc} running=${running} failed=${failed} busy=${busy} locked=${locked}
 			onMode=${(m) => act('mode:' + m, async () => {
 				const r = await api('/api/mode', { method: 'POST', body: JSON.stringify({ mode: m }) }, T_MODE);
 				// Джоб из 202 — не заглушка: в нём настоящие started_at
@@ -366,15 +492,27 @@ function App() {
 		<${Toasts} toast=${toast} onCta=${() => setTimeout(dropToast, 0)} />
 
 		<div class="wrap">
+			<!-- Причина провала живёт здесь, а не в баннере рядом со своим
+			     заголовком. Сообщения демона длинные (internal/httpapi/
+			     modehandler.go:129), а слот баннера держит постоянную высоту —
+			     внутри него такой текст пришлось бы обрезать, а обрезанное
+			     сообщение об ошибке хуже отсутствующего: оно выглядит полным.
+			     .note — то место, где сообщения в этой панели уже живут: 14px
+			     на --bad-bg во всю ширину, и растёт оно вниз, никуда не толкая
+			     карточки. Заголовок остаётся в баннере, прямо над этой
+			     строкой, — вместе они читаются как одно сообщение. -->
+			${failed && failed.error && html`
+				<div class="note err full"><p>${failed.error}</p></div>`}
+
 			<${SelectionNote} s=${status} t=${t} />
 
 			${status.mode === 'nikki' && html`
-				<${NikkiCard} data=${nikki} t=${t} busy=${busy} locked=${locked}
+				<${NikkiCard} data=${nikki} svc=${svc.nikki} t=${t} busy=${busy} locked=${locked}
 					onPick=${(n) => act('proxy:' + n, () => api('/api/nikki/proxy', { method: 'POST', body: JSON.stringify({ name: n }) }), loadNikki)}
 					onTest=${() => act('test', () => api('/api/nikki/test', { method: 'POST' }), loadNikki)} />`}
 
 			${status.mode === 'b4' && html`
-				<${B4Card} data=${sets} t=${t} busy=${busy} locked=${locked}
+				<${B4Card} data=${sets} svc=${svc.b4} t=${t} busy=${busy} locked=${locked}
 					onPick=${(id) => act('set:' + id, () => api('/api/b4/set', { method: 'POST', body: JSON.stringify({ id }) }), loadSets)} />`}
 
 			${status.mode === 'off' && html`
@@ -478,8 +616,9 @@ const ERR_KEY = {
 };
 
 // Те же три кода, но как множество: по ним тост красится жёлтым, а не
-// красным. Это ответ на вопрос «почему ссылка серая», а не сообщение
-// о сбое, и выглядеть он обязан так же, как ответ у ссылки b4.
+// красным. Все три означают «открывать нечего», а не «сломалось»: роутер
+// исправен, Clash API отвечает — иначе кнопки Nikki в шапке не было бы
+// вовсе. Красный остаётся таймаутам и 500, иначе цвет перестаёт значить.
 const WHY_CODES = new Set(['host_unknown', 'nikki_unconfigured', 'panel_missing']);
 
 // Сообщение об ошибке объясняет причину, а не показывает код: коды 409
@@ -518,9 +657,11 @@ function jobText(job, t) {
 // ─────────── тосты ───────────
 
 // Первая живая область в панели: до неё aria-live здесь не было нигде.
-// Появилась она под ссылки в шапке — у неактивной ссылки единственный ответ
-// на вопрос «почему серая» это текст, который кладёт сюда flash(). Без
-// role="status" текст возникает молча, и владелец, который ведёт панель
+// Заводилась она под серую кнопку в шапке, которой больше нет (ADR-0024), но
+// пережила её и нужна не меньше: сюда кладут текст ВСЕ действия, у которых
+// нет своего места на экране, — «открываю панель», отказ /api/nikki/panel,
+// заблокированная браузером вкладка, ошибки нажатий в карточках. Без
+// role="status" этот текст возникает молча, и владелец, который ведёт панель
 // с клавиатуры и слушает её, нажатия попросту не заметит.
 //
 // Контейнер висит в разметке всегда, а не появляется вместе с текстом:
@@ -546,59 +687,49 @@ function Toasts({ toast, onCta }) {
 
 // ─────────── шапка ───────────
 
-// Ссылка в шапке существует в двух видах, и это не косметика.
-//
-// Пока адрес известен — это настоящая <a>. Когда неизвестен, ссылки нет
-// вовсе: раньше на её месте оставалась <a href="#"> с aria-disabled, и это
-// худший вариант из возможных. Мышь по ней не кликала (pointer-events:none),
-// но Tab доводил фокус, Enter срабатывал и уводил на «#» — фокус улетал
-// в никуда, а объяснения владелец не получал никакого.
-//
-// Поэтому здесь <button> и намеренно БЕЗ disabled: нативный disabled выкинул
-// бы её из tab-order и снова оставил вопрос «почему серая» без ответа.
-// А title с клавиатуры не читается (та же дыра, что у .mark на активной
-// сети). Кнопка остаётся достижимой, :focus-visible показывает её глазами,
-// а по нажатию она объясняет причину вслух — через живую область Toasts.
+// Ссылка в шапке существует ровно в одном виде — настоящая <a>. Заглушки
+// на её месте нет и быть не должно: недоступную панель не рисуем вовсе,
+// решение о показе принимает Top ниже.
 //
 // aria-label не дублирует подпись, а разворачивает её: «Nikki» в списке
 // ссылок само по себе не говорит, куда ведёт. Видимая подпись при этом
 // целиком входит в озвученное имя, иначе голосовое управление промахнулось
-// бы мимо этой кнопки.
+// бы мимо этой ссылки.
 //
 // onOpen перехватывает обычный клик там, где настоящий адрес известен только
 // серверу (Nikki: в нём секрет). href при этом остаётся живым и настоящим —
 // без секрета, но рабочим: средний клик, «открыть в новой вкладке» и
 // «копировать адрес» обязаны делать то, что обещает контекстное меню.
 // href="#" с onClick сломал бы всё это разом.
-function TopLink({ href, label, name, onWhy, onOpen }) {
+function TopLink({ href, label, name, onOpen }) {
 	// Стрелка — украшение направления, а не текст: скринридер прочитал бы
 	// её как «стрелка вправо вверх» посреди имени ссылки.
 	const arrow = html`<span aria-hidden="true">↗</span>`;
-	if (href) {
-		return html`
-			<a class="toplink" href=${href} target="_blank" rel="noreferrer"
-				title=${name} aria-label=${name} onClick=${onOpen}>${label} ${arrow}</a>`;
-	}
 	return html`
-		<button type="button" class="toplink off" title=${name} aria-label=${name}
-			onClick=${onWhy}>${label} ${arrow}</button>`;
+		<a class="toplink" href=${href} target="_blank" rel="noreferrer"
+			title=${name} aria-label=${name} onClick=${onOpen}>${label} ${arrow}</a>`;
 }
 
-function Top({ s, t, lang, setLang, onWhy, onNikkiOpen, onNikkiWhy }) {
+function Top({ s, t, lang, setLang, onNikkiOpen }) {
 	const ap = s.ap || {};
 	const meta = [ap.band && ap.band.toUpperCase(), ap.clients != null && t('ap.clients', { n: ap.clients })]
 		.filter(Boolean).join(' · ');
 	const links = s.links || {};
-	// У b4 причина пустого адреса ровно одна: демон выводит хост из заголовка
-	// Host и не выводит его, когда панель открыта не по адресу роутера. Гадать
-	// тут не о чем.
+	// Кнопка ДВИЖКА рисуется, только если известен адрес И служба отвечает
+	// (у LuCI ниже условие другое, там же и почему). Второе условие не
+	// перестраховка: у обеих служб веб-морда живёт на ТОМ ЖЕ
+	// слушателе, который опрашивает демон, — у b4 это ":::7000"
+	// (docs/recon/evidence.json:8), у Nikki «отдельного слушателя нет:
+	// external-controller '[::]:9090' единственный» (там же:266). Значит при
+	// available:false ссылка гарантированно упёрлась бы в connection refused:
+	// это была не запасная дверь, а обещание, которое некому выполнить.
 	//
-	// У Nikki причин три, и различает их только сервер — /api/nikki/panel
-	// отвечает кодом отказа. Поэтому серая кнопка Nikki не берёт текст из
-	// словаря вслепую, а спрашивает (onNikkiWhy): «не настроен» и «нет
-	// веб-морды» чинятся совсем по-разному, а «откройте по адресу роутера»
-	// в этих случаях просто неправда.
-	const why = () => onWhy('links.why.host');
+	// Недоступная кнопка не рисуется вообще — ни серой, ни какой. Серая
+	// заглушка отвечала на вопрос «где панель» ровно тем же молчанием, что и её
+	// отсутствие, но занимала место в шапке и ловила палец. Клик по видимой
+	// кнопке Nikki всё ещё может не открыть панель (нет api_secret, не скачан
+	// дашборд) — на это отвечает nikkiPanel кодом отказа, и это уже настоящий
+	// ответ, а не догадка панели по пустому links.nikki.
 	return html`
 		<div class="top">
 			<div class="top-id">
@@ -606,9 +737,25 @@ function Top({ s, t, lang, setLang, onWhy, onNikkiOpen, onNikkiWhy }) {
 				${ap.ssid && html`<span class="ap-meta">${t('ap.broadcasts', { ssid: ap.ssid })}${meta ? ' · ' + meta : ''}</span>`}
 			</div>
 			<div class="top-links">
-				<${TopLink} href=${links.nikki} label="Nikki" name=${t('links.nikki')}
-					onWhy=${onNikkiWhy} onOpen=${onNikkiOpen} />
-				<${TopLink} href=${links.b4} label="b4" name=${t('links.b4')} onWhy=${why} />
+				${links.nikki && s.nikki?.available && html`
+					<${TopLink} href=${links.nikki} label="Nikki" name=${t('links.nikki')}
+						onOpen=${onNikkiOpen} />`}
+				${links.b4 && s.b4?.available && html`
+					<${TopLink} href=${links.b4} label="b4" name=${t('links.b4')} />`}
+				<!-- Условие тут короче соседского, и это не недосмотр: у LuCI нет
+				     «&& available» намеренно. Правило «прятать недоступные»
+				     заведено на морды движков, которыми управляет netmode-apply
+				     (ADR-0024, «Границы правила»): они гаснут по нашей же
+				     команде при смене режима, и кнопка в никуда скрывала бы
+				     нашу собственную работу. uhttpd мы не гасим и живость его
+				     не считаем — она стоила бы пробы к чужой службе на каждом
+				     тике, 3600 запросов в час ради подсветки кнопки.
+				     Практическое следствие: в режиме off кнопок движков нет ни
+				     одной, а LuCI есть; при мёртвых b4 и nikki — тоже. Клик без
+				     onOpen: секрета в адресе нет (порт 80, /cgi-bin/luci),
+				     перехватывать нечего. -->
+				${links.luci && html`
+					<${TopLink} href=${links.luci} label="LuCI" name=${t('links.luci')} />`}
 				<div class="lang">
 					${['ru', 'en'].map((l) => html`
 						<button aria-pressed=${lang === l} onClick=${() => setLang(l)}>${l.toUpperCase()}</button>`)}
@@ -625,19 +772,26 @@ function Top({ s, t, lang, setLang, onWhy, onNikkiOpen, onNikkiWhy }) {
 const failText = (j, t) => (j.kind === 'mode' ? t('job.fail.mode', { mode: j.arg })
 	: j.kind === 'subscription' ? t('job.fail.subscription') : t('job.fail'));
 
-function Banner({ s, t, job, running, busy, locked, onMode }) {
+function Banner({ s, t, svc, running, failed, busy, locked, onMode }) {
 	const m = ['nikki', 'b4', 'off'].includes(s.mode) ? s.mode : 'unknown';
 	const ssid = s.configured_ssid || s.associated_ssid;
 
+	// Подпись идёт от svc, а не от голого available. Демон коммитит новый режим
+	// раньше, чем поднимет службу, поэтому первые секунды available честно
+	// false — и «Clash API недоступен» в этот момент отправлял бы владельца
+	// чинить исправный роутер ровно тогда, когда всё идёт по плану.
 	let sub;
 	if (m === 'nikki') {
 		// Признак закрепления приходит отдельным полем: имя узла в обоих
 		// случаях одно и то же, а состояния разные.
-		sub = !s.nikki?.available ? t('sub.nikki.down')
-			: s.nikki.pinned ? t('sub.nikki.manual', { node: s.nikki.set })
-				: t('sub.nikki.auto', { node: s.nikki.set || '—' });
+		sub = svc.nikki === 'down' ? t('sub.nikki.down')
+			: svc.nikki === 'starting' ? t('sub.nikki.starting')
+				: s.nikki.pinned ? t('sub.nikki.manual', { node: s.nikki.set })
+					: t('sub.nikki.auto', { node: s.nikki.set || '—' });
 	} else if (m === 'b4') {
-		sub = !s.b4?.available ? t('sub.b4.down') : t('sub.b4', { set: s.b4.set || '—' });
+		sub = svc.b4 === 'down' ? t('sub.b4.down')
+			: svc.b4 === 'starting' ? t('sub.b4.starting')
+				: t('sub.b4', { set: s.b4.set || '—' });
 	} else sub = t('sub.' + m);
 
 	// Текущий режим не нажимается: повторное нажатие запускает полный джоб со
@@ -662,7 +816,30 @@ function Banner({ s, t, job, running, busy, locked, onMode }) {
 	const left = running && running.eta_sec
 		? Math.max(0, running.eta_sec - Math.round((Date.now() - new Date(running.started_at)) / 1000))
 		: null;
-	const failed = job && job.state === 'failed' ? job : null;
+
+	// Содержимое слота — ровно одно из трёх, и последняя ветка обязана быть
+	// else, а не `&&`. Слот держит высоту призраком, поэтому пустое содержимое
+	// даёт не «ничего», а дыру ровно в высоту .job под кнопками режимов.
+	// Здесь всегда есть что сказать: пока нечего показывать про операцию,
+	// показывается подсказка.
+	const slot = () => {
+		if (running) {
+			return html`
+				<div class="job">
+					<div class="job-row">
+						<span class="blink">${jobText(running, t)}</span>
+						<span style="font-family:var(--mono);opacity:.8">
+							${left != null ? t('job.left', { sec: left }) : t('job.blocked')}</span>
+					</div>
+					<div class="bar"><i style="width:${pct}%"></i></div>
+				</div>`;
+		}
+		// Только заголовок: причина уехала в .note err в .wrap — см. App.
+		if (failed) {
+			return html`<div class="job bad"><div class="job-row"><span>${failText(failed, t)}</span></div></div>`;
+		}
+		return html`<div class="hint" style="opacity:.8">${locked ? t('mode.hint.busy') : t('mode.hint')}</div>`;
+	};
 
 	return html`
 		<div class="banner m-${m}">
@@ -686,22 +863,29 @@ function Banner({ s, t, job, running, busy, locked, onMode }) {
 							onClick=${() => onMode(id)}>
 							${on(busy, 'mode', id) && html`<${Spin} /> `}${t('mode.' + id)}</button>`)}
 				</div>
-				${!running && !failed && html`<div class="hint" style="opacity:.8">${locked ? t('mode.hint.busy') : t('mode.hint')}</div>`}
-			</div>
-			${running && html`
-				<div class="job">
-					<div class="job-row">
-						<span class="blink">${jobText(running, t)}</span>
-						<span style="font-family:var(--mono);opacity:.8">
-							${left != null ? t('job.left', { sec: left }) : t('job.blocked')}</span>
+				<!-- Слот постоянной высоты. Подсказка, идущий джоб и провал —
+				     три состояния одного места, а не три блока, приходящих
+				     и уходящих из потока: раньше старт джоба разом убирал .hint
+				     и добавлял ~74px, и карточки под баннером уезжали вниз
+				     ровно в тот момент, когда владелец смотрит, сработало ли
+				     нажатие. Высоту держит призрак — безусловно, потому что
+				     держать её больше нечем: он не смотрит ни на running, ни на
+				     failed, иначе исчезал бы вместе с тем, что замещает.
+				     Неразрывный пробел, а не пустой span: высоту строки задают
+				     метрики шрифта, и без единого символа их нечему задать.
+				     Символом, а не сущностью &#160;, — htm сущности не
+				     разбирает и напечатал бы их как текст.
+				     И .job, и .hint обязаны быть детьми .slot: до прямых детей
+				     .side десктопное .slot{width:100%} не дотянется, и на
+				     широком экране вернётся третья строка флекса. -->
+				<div class="slot">
+					<div class="job ghost" aria-hidden="true">
+						<div class="job-row"><span>${'\u00a0'}</span></div>
+						<div class="bar"></div>
 					</div>
-					<div class="bar"><i style="width:${pct}%"></i></div>
-				</div>`}
-			${failed && html`
-				<div class="job bad">
-					<div class="job-row"><span>${failText(failed, t)}</span></div>
-					${failed.error && html`<p class="hint tight" style="margin-top:6px">${failed.error}</p>`}
-				</div>`}
+					${slot()}
+				</div>
+			</div>
 		</div>`;
 }
 
@@ -729,19 +913,36 @@ function SelectionNote({ s, t }) {
 
 // ─────────── Nikki ───────────
 
-function NikkiCard({ data, t, busy, locked, onPick, onTest }) {
-	// undefined — список ещё едет; null и !available — уже ответили отказом.
+function NikkiCard({ data, svc, t, busy, locked, onPick, onTest }) {
 	// Заглушка держит и заголовок, и место под нижнюю кнопку: без них
 	// карточка подскочила бы на полсотни пикселей ровно в тот момент, когда
 	// на неё смотрят.
-	if (data === undefined) {
-		return html`<div class="card" aria-busy="true"><h2>${t('srv.title')}</h2>
-			<${Skel} n=${3} />
-			<div class="skel" style="height:46px;margin-top:12px"></div></div>`;
-	}
-	if (!data || !data.available) {
-		return html`<div class="card"><h2>${t('srv.title')}</h2><div class="empty">${t('srv.down')}</div></div>`;
-	}
+	//
+	// data сам по себе больше не отвечает на вопрос «что показывать»:
+	// undefined теперь означает не только «список ещё едет», но и «служба
+	// молчит, спрашивать нечего» — так его выставляет эффект в App. Что
+	// именно происходит, знает svc, поэтому ветки идут от него.
+	//
+	// ПОРЯДОК ВЕТОК ЗНАЧИМ, и обе перестановки ломают своё.
+	//
+	// 'starting' идёт раньше отказа: гонку легко проиграть — 503 от ещё не
+	// поднявшегося Clash API прилетает раньше, чем available станет true,
+	// и data успевает стать null. Проверь отказ первым — и карточка снова
+	// напечатает «не отвечает» про службу, которая нормально запускается.
+	//
+	// 'down' идёт раньше data === undefined: эффект в App возвращает data
+	// в «ещё не спрашивали» именно потому, что служба молчит, так что здесь
+	// undefined — норма, а не редкость. Проверь скелетон первым — и он станет
+	// вечным, то есть START_GRACE не будет значить ничего.
+	const skeleton = (note) => html`<div class="card" aria-busy="true"><h2>${t('srv.title')}</h2>
+		<${Skel} n=${3} />
+		<div class="skel" style="height:46px;margin-top:12px"></div>${note}</div>`;
+	const down = () => html`<div class="card"><h2>${t('srv.title')}</h2><div class="empty">${t('srv.down')}</div></div>`;
+
+	if (svc === 'starting') return skeleton(html`<p class="hint tight">${t('srv.starting')}</p>`);
+	if (svc === 'down') return down();
+	if (data === undefined) return skeleton(null);
+	if (!data || !data.available) return down();
 	const members = data.members || [];
 	if (!members.length) {
 		return html`<div class="card"><h2>${t('srv.title')}</h2><div class="empty">${t('srv.empty')}</div></div>`;
@@ -790,14 +991,21 @@ function NikkiCard({ data, t, busy, locked, onPick, onTest }) {
 
 // ─────────── b4 ───────────
 
-function B4Card({ data, t, busy, locked, onPick }) {
-	if (data === undefined) {
-		return html`<div class="card" aria-busy="true"><h2>${t('sets.title')}</h2>
-			<${Skel} n=${3} cls="pill" wrap="sets" /></div>`;
-	}
-	if (!data || !data.available) {
-		return html`<div class="card"><h2>${t('sets.title')}</h2><div class="empty">${t('sets.down')}</div></div>`;
-	}
+function B4Card({ data, svc, t, busy, locked, onPick }) {
+	// Порядок веток тот же и по тем же двум причинам, что в NikkiCard:
+	// 'starting' раньше отказа (иначе проигранная гонка печатает «не отвечает»
+	// про запускающуюся службу), 'down' раньше скелетона (иначе скелетон
+	// вечен). Именно здесь дефект и был виден дольше всего: подпись баннера
+	// чинилась сама со следующим тиком опроса, а карточка оставалась
+	// в «Панель b4 не отвечает» до F5.
+	const skeleton = (note) => html`<div class="card" aria-busy="true"><h2>${t('sets.title')}</h2>
+		<${Skel} n=${3} cls="pill" wrap="sets" />${note}</div>`;
+	const down = () => html`<div class="card"><h2>${t('sets.title')}</h2><div class="empty">${t('sets.down')}</div></div>`;
+
+	if (svc === 'starting') return skeleton(html`<p class="hint tight">${t('sets.starting')}</p>`);
+	if (svc === 'down') return down();
+	if (data === undefined) return skeleton(null);
+	if (!data || !data.available) return down();
 	return html`
 		<div class="card">
 			<h2>${t('sets.title')}</h2>

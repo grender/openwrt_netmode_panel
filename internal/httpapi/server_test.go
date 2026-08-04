@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"netmoded/internal/b4"
 	"netmoded/internal/executor"
+	"netmoded/internal/luci"
 	"netmoded/internal/nikki"
 )
 
@@ -220,6 +222,19 @@ func TestStatusEndpointShape(t *testing.T) {
 	} {
 		if _, ok := got[k]; !ok {
 			t.Errorf("в ответе нет поля %q", k)
+		}
+	}
+	// Внутри links тот же уговор: ключ присутствует всегда, даже как null.
+	// Пропавший ключ читается клиентом как «демон не прислал», а не как
+	// «адрес не собрался», и панель не отличит старую сборку от непригодного
+	// Host.
+	links, ok := got["links"].(map[string]any)
+	if !ok {
+		t.Fatalf("links не объект: %#v", got["links"])
+	}
+	for _, k := range []string{"nikki", "b4", "luci"} {
+		if _, ok := links[k]; !ok {
+			t.Errorf("в links нет ключа %q", k)
 		}
 	}
 }
@@ -570,12 +585,86 @@ func TestStatusLinksFollowRequestHostNotCache(t *testing.T) {
 		t.Errorf("links.b4 = %q, ожидалось http://192.168.9.1:7000/", *first.B4)
 	}
 
+	if first.LuCI == nil {
+		t.Fatal("links.luci пуст при годном Host — кнопка веб-морды роутера мертва")
+	}
+	if *first.LuCI != "http://192.168.9.1"+luci.PanelPath {
+		t.Errorf("links.luci = %q, ожидалось http://192.168.9.1%s", *first.LuCI, luci.PanelPath)
+	}
+
 	second := statusLinks(t, s, "router.lan:8088")
 	if second.B4 == nil {
 		t.Fatal("links.b4 пуст для Host без IP")
 	}
 	if *second.B4 != "http://router.lan:7000/" {
 		t.Errorf("второй клиент получил %q — ссылка приехала из кэша первого", *second.B4)
+	}
+	if second.LuCI == nil {
+		t.Fatal("links.luci пуст для Host без IP")
+	}
+	if *second.LuCI != "http://router.lan"+luci.PanelPath {
+		t.Errorf("второй клиент получил luci=%q — ссылка приехала из кэша первого", *second.LuCI)
+	}
+}
+
+// Асимметрия ADR-0024, раздел «Границы правила», в виде теста.
+//
+// Оба движка лежат — links.luci обязан остаться на месте. uhttpd не
+// управляется netmode-apply: мы его не гасим, гаснуть по нашей вине он не
+// может, и правило «кнопка только когда служба отвечает» на него не
+// распространяется. Без этого теста первая же правка «привести luci к общему
+// виду» отняла бы у владельца единственную работающую кнопку ровно тогда,
+// когда оба движка не поднялись и он полез разбираться в веб-морду роутера.
+func TestStatusLuCILinkSurvivesBothEnginesDown(t *testing.T) {
+	s, _ := newServer(t)
+	s.SetB4Client(&fakeB4Client{err: b4.ErrUnavailable})
+	s.SetNikkiClient(&fakeNikkiClient{err: nikki.ErrUnavailable})
+
+	req := httptest.NewRequest("GET", "/api/status", nil)
+	req.Host = "192.168.9.1:8088"
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("код %d", rec.Code)
+	}
+
+	var got struct {
+		Links Links `json:"links"`
+		Nikki struct {
+			Available bool `json:"available"`
+		} `json:"nikki"`
+		B4 struct {
+			Available bool `json:"available"`
+		} `json:"b4"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("разбор ответа: %v", err)
+	}
+	if got.B4.Available || got.Nikki.Available {
+		t.Fatalf("движки не легли: b4=%v nikki=%v — тест проверяет не то", got.B4.Available, got.Nikki.Available)
+	}
+	if got.Links.LuCI == nil {
+		t.Fatal("links.luci обнулился вместе с движками: веб-морда роутера от netmode-apply не зависит (ADR-0024, «Границы правила»)")
+	}
+	if *got.Links.LuCI != "http://192.168.9.1"+luci.PanelPath {
+		t.Errorf("links.luci = %q", *got.Links.LuCI)
+	}
+}
+
+// IPv6 в Host доезжает до ссылки скобленным.
+//
+// Сквозная проверка: panelHost скобки снимает, luci.PanelURL обязан вернуть
+// их обратно. Порта у адреса LuCI нет, поэтому net.JoinHostPort здесь не
+// работает, и потерять скобки легко — а без них браузер уйдёт на другой хост.
+func TestStatusLuCILinkBracketsIPv6Host(t *testing.T) {
+	s, _ := newServer(t)
+	l := statusLinks(t, s, "[fd00::1]:8088")
+	if l.LuCI == nil {
+		t.Fatal("links.luci пуст при IPv6 в Host")
+	}
+	if want := "http://[fd00::1]" + luci.PanelPath; *l.LuCI != want {
+		t.Errorf("links.luci = %q, ожидалось %q", *l.LuCI, want)
 	}
 }
 
@@ -776,8 +865,15 @@ func TestNikkiPanelNeverLogsSecret(t *testing.T) {
 // Панель, открытая через ssh-туннель, не должна получать ссылку на себя же.
 func TestStatusLinksRefuseLoopbackHost(t *testing.T) {
 	s, _ := newServer(t)
-	if l := statusLinks(t, s, "localhost:8088"); l.B4 != nil {
+	l := statusLinks(t, s, "localhost:8088")
+	if l.B4 != nil {
 		t.Errorf("links.b4 = %q при Host=localhost: ссылка ведёт на ноутбук владельца, а не на роутер", *l.B4)
+	}
+	// Веб-морда роутера — тот же случай: на 80-м порту ноутбука владельца
+	// либо ничего нет, либо его собственный сервис. Отказ от гейта по
+	// живости причин отказать НЕпригодному Host не отменяет.
+	if l.LuCI != nil {
+		t.Errorf("links.luci = %q при Host=localhost: ссылка ведёт на ноутбук владельца, а не на роутер", *l.LuCI)
 	}
 }
 

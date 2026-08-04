@@ -19,7 +19,8 @@
   },
   "links": {
     "nikki": "http://192.168.9.1:9090/ui/",
-    "b4": "http://192.168.9.1:7000/"
+    "b4": "http://192.168.9.1:7000/",
+    "luci": "http://192.168.9.1/cgi-bin/luci"
   },
   "job": null,
   "subscription": {
@@ -36,8 +37,8 @@
     "enabled_count": 0
   },
   "b4": {
-    "available": true,
-    "version": "1.74.1",
+    "available": false,
+    "version": null,
     "set": "",
     "enabled_count": 0
   }

@@ -64,10 +64,11 @@ button:disabled { cursor: not-allowed; }
 .host { font: 600 15px var(--mono); letter-spacing: .02em; }
 .ap-meta { font: 12.5px var(--mono); color: var(--muted-2); }
 .top-links { display: flex; gap: 8px; flex: none; align-items: center; }
-/* Один класс на <a> и на <button>: когда адрес неизвестен, элемент меняется
-   на кнопку, и соседство двух разных на вид сущностей читалось бы как сбой
-   вёрстки, а не как разница состояний. Приём тот же, что у .linkbtn, —
-   нативная кнопка разбирается до вида ссылки. */
+/* Кнопка рисуется только тогда, когда адрес панели известен, поэтому здесь
+   остался один <a> и вариант на <button> (.toplink.off) удалён. Серая
+   заглушка отвечала на вопрос «где панель Nikki» ровно тем же молчанием,
+   что и её отсутствие, но при этом занимала место в шапке и ловила палец:
+   владелец жал её и не получал ничего. Отсутствие кнопки честнее. */
 .toplink {
 	display: inline-flex; align-items: center; gap: 5px;
 	font: 12px var(--mono); padding: 7px 11px; border-radius: 8px;
@@ -75,12 +76,6 @@ button:disabled { cursor: not-allowed; }
 	text-decoration: none;
 }
 .toplink:hover { border-color: var(--link); color: var(--link); }
-/* Адрес неизвестен. Приглушение .45 — то же, что у недоступных кнопок
-   (.mini, .sets, .modes), но disabled здесь нет и pointer-events не гасятся:
-   кнопка обязана оставаться нажимаемой, иначе объяснить причину нечем.
-   Курсор help, как у .mark, — она не ведёт наружу, а отвечает на вопрос. */
-.toplink.off { opacity: .45; cursor: help; }
-.toplink.off:hover { border-color: #262b30; color: var(--fg-2); }
 
 .lang { display: flex; gap: 2px; background: #14181c; border-radius: 8px; padding: 2px; }
 .lang button {
@@ -153,7 +148,25 @@ button:disabled { cursor: not-allowed; }
 
 /* ─────────── джоб ─────────── */
 
-.job { margin-top: 16px; background: rgba(255,255,255,.14); border-radius: var(--r); padding: 12px 13px; }
+/* Слот постоянной высоты под .modes. Подсказка, идущий джоб и провалившийся
+   джоб — три состояния ОДНОГО места, а не три блока, приходящих и уходящих
+   из потока. Раньше они и были блоками: старт джоба добавлял ~74px и разом
+   убирал строку .hint, так что карточки под баннером дёргались дважды за
+   один кадр — ровно в тот момент, когда владелец смотрит, сработало ли
+   нажатие. Стопка вместо потока: все дети в одной клетке грида.
+   Высоту держит невидимый призрак .ghost.job, а не число. Число пришлось бы
+   сложить из пяти констант (padding 12+12, строка 13.5×1.5, .bar margin-top
+   10 + height 4), и первая же правка .job — другой шрифт, другой padding —
+   разошлась бы с ним МОЛЧА: прыжок вернулся бы, а в CSS всё выглядело бы
+   правильно. Призрак же собран из той же разметки и врать не умеет. */
+.slot { margin-top: 16px; display: grid; align-items: center; }
+.slot > * { grid-area: 1 / 1; }
+/* Именно visibility: display:none выкинул бы призрак из потока вместе с его
+   высотой, ради которой он и живёт, а прозрачность оставила бы его сверху
+   настоящего состояния и перехватывала бы нажатия. */
+.slot > .ghost { visibility: hidden; pointer-events: none; }
+
+.job { background: rgba(255,255,255,.14); border-radius: var(--r); padding: 12px 13px; }
 .banner.m-b4 .job { background: rgba(15,17,19,.08); }
 .job-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13.5px; }
 /* Провал операции. Селектор с .banner намеренно: у .banner.m-b4 .job выше
@@ -276,7 +289,13 @@ button:disabled { cursor: not-allowed; }
 	.banner h1 { font-size: 42px; }
 	.banner .side { display: flex; flex-direction: column; gap: 12px; align-items: flex-end; }
 	.modes { flex: none; }
-	.job { width: 100%; margin-top: 0; }
+	/* Слот теперь ребёнок .side, а не .banner, поэтому третьей строки флекса,
+	   куда его выносило правило .job { width:100% }, больше нет; вертикальный
+	   отступ отдан gap самой .side, отсюда margin-top:0.
+	   width:100% обязателен: у .side align-items:flex-end, и без него слот
+	   сжался бы по своему содержимому — полоска .bar оказалась бы короче
+	   переключателя над ней и читалась бы как «прогресс уже не тот». */
+	.slot { width: 100%; margin-top: 0; }
 	.wrap { padding: 18px 26px 30px; grid-template-columns: repeat(3, 1fr); align-items: start; }
 	.wrap > .full { grid-column: 1 / -1; }
 }
@@ -375,4 +394,10 @@ button[aria-busy="true"]:disabled { opacity: 1; }
 	.spin { animation-duration: 2.4s; }
 	.skel { animation: none; opacity: .55; }
 	.job-row .blink { animation: none; opacity: .75; }
+	/* Исключения из принципа тут нет. У .spin вращение — единственный сигнал,
+	   убери его, и останется кружок. У полоски сигнал — ШИРИНА, её ставит
+	   опрос раз в секунду; transition лишь размазывает эти скачки. Убрав его,
+	   мы убираем движение и не теряем ни бита индикации: полоска по-прежнему
+	   растёт, просто ступеньками. */
+	.bar > i { transition: none; }
 }

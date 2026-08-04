@@ -50,6 +50,7 @@ checks:
 	@scripts/check-netmode-seed.sh
 	@scripts/check-netmode-apply.sh
 	@scripts/check-web-size.sh
+	@scripts/check-panel-sync.sh
 
 clean:
 	@rm -rf $(BUILDDIR)

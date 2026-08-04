@@ -1,0 +1,147 @@
+# snapshot: grenderRouter, Tue Aug  4 16:59:22 MSK 2026
+# цель: схема, порт, путь LuCI и наличие редиректа 80->443
+
+== uci show uhttpd ==
+uhttpd.main=uhttpd
+uhttpd.main.listen_http='0.0.0.0:80' '[::]:80'
+uhttpd.main.listen_https='0.0.0.0:443' '[::]:443'
+uhttpd.main.redirect_https='0'
+uhttpd.main.home='/www'
+uhttpd.main.rfc1918_filter='1'
+uhttpd.main.max_requests='3'
+uhttpd.main.max_connections='100'
+uhttpd.main.cert='/etc/uhttpd.crt'
+uhttpd.main.key='/etc/uhttpd.key'
+uhttpd.main.cgi_prefix='/cgi-bin'
+uhttpd.main.lua_prefix='/cgi-bin/luci=/usr/lib/lua/luci/sgi/uhttpd.lua'
+uhttpd.main.script_timeout='60'
+uhttpd.main.network_timeout='30'
+uhttpd.main.http_keepalive='20'
+uhttpd.main.tcp_keepalive='1'
+uhttpd.main.ubus_prefix='/ubus'
+uhttpd.defaults=cert
+uhttpd.defaults.days='397'
+uhttpd.defaults.key_type='ec'
+uhttpd.defaults.bits='2048'
+uhttpd.defaults.ec_curve='P-256'
+uhttpd.defaults.country='ZZ'
+uhttpd.defaults.state='Somewhere'
+uhttpd.defaults.location='Unknown'
+uhttpd.defaults.commonname='OpenWrt'
+
+== uci show luci ==
+luci.main=core
+luci.main.lang='auto'
+luci.main.mediaurlbase='/luci-static/bootstrap'
+luci.main.resourcebase='/luci-static/resources'
+luci.main.ubuspath='/ubus/'
+luci.main.tablefilters='1'
+luci.flash_keep=extern
+luci.flash_keep.uci='/etc/config/'
+luci.flash_keep.dropbear='/etc/dropbear/'
+luci.flash_keep.openvpn='/etc/openvpn/'
+luci.flash_keep.passwd='/etc/passwd'
+luci.flash_keep.opkg='/etc/opkg.conf'
+luci.flash_keep.firewall='/etc/firewall.user'
+luci.flash_keep.uploads='/lib/uci/upload/'
+luci.languages=internal
+luci.languages.ru='Русский (Russian)'
+luci.sauth=internal
+luci.sauth.sessionpath='/tmp/luci-sessions'
+luci.sauth.sessiontime='3600'
+luci.ccache=internal
+luci.ccache.enable='1'
+luci.themes=internal
+luci.themes.Bootstrap='/luci-static/bootstrap'
+luci.themes.BootstrapDark='/luci-static/bootstrap-dark'
+luci.themes.BootstrapLight='/luci-static/bootstrap-light'
+luci.apply=internal
+luci.apply.rollback='90'
+luci.apply.holdoff='4'
+luci.apply.timeout='5'
+luci.apply.display='1.5'
+luci.diag=internal
+luci.diag.dns='openwrt.org'
+luci.diag.ping='openwrt.org'
+luci.diag.route='openwrt.org'
+
+== netstat -lntp | grep uhttpd ==
+tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN      2049/uhttpd
+tcp        0      0 0.0.0.0:443             0.0.0.0:*               LISTEN      2049/uhttpd
+tcp        0      0 :::80                   :::*                    LISTEN      2049/uhttpd
+tcp        0      0 :::443                  :::*                    LISTEN      2049/uhttpd
+
+== ls -la /www ==
+drwxr-xr-x    1 root     root           296 Jun 29 15:59 .
+drwxr-xr-x    1 root     root           544 Jun 29 15:59 ..
+drwxr-xr-x    1 root     root           448 Jul 31 03:25 cgi-bin
+-rw-r--r--    1 root     root           664 Jun 29 15:59 index.html
+drwxr-xr-x    1 root     root           232 Jun 29 15:59 luci-static
+
+== пакеты luci-* ==
+luci-26.209.73834~b61f907 noarch {feeds/luci/feeds/luci/collections/luci} (Apache-2.0) [installed]
+luci-app-attendedsysupgrade-26.180.75667~128a781 noarch {feeds/luci/feeds/luci/applications/luci-app-attendedsysupgrade} (GPL-2.0) [installed]
+luci-app-commands-26.209.73834~b61f907 noarch {feeds/luci/feeds/luci/applications/luci-app-commands} (Apache-2.0) [installed]
+luci-app-firewall-26.209.73834~b61f907 noarch {feeds/luci/feeds/luci/applications/luci-app-firewall} (Apache-2.0) [installed]
+luci-app-nikki-1.26.1-r1 noarch {/feed/luci-app-nikki} () [installed]
+luci-app-package-manager-26.180.75667~128a781 noarch {feeds/luci/feeds/luci/applications/luci-app-package-manager} (Apache-2.0) [installed]
+luci-app-ttyd-26.209.73834~b61f907 noarch {feeds/luci/feeds/luci/applications/luci-app-ttyd} (Apache-2.0) [installed]
+luci-base-26.180.75667~128a781 aarch64_cortex-a53 {feeds/luci/feeds/luci/modules/luci-base} (Apache-2.0) [installed]
+luci-i18n-nikki-ru-26.161.56550~95d41dd noarch {/feed/luci-app-nikki} () [installed]
+luci-lib-uqr-26.180.75667~128a781 noarch {feeds/luci/feeds/luci/libs/luci-lib-uqr} (MIT) [installed]
+luci-light-26.209.73834~b61f907 noarch {feeds/luci/feeds/luci/collections/luci-light} (Apache-2.0) [installed]
+luci-mod-admin-full-26.180.75667~128a781 noarch {feeds/luci/feeds/luci/modules/luci-mod-admin-full} (Apache-2.0) [installed]
+luci-mod-network-26.180.75667~128a781 noarch {feeds/luci/feeds/luci/modules/luci-mod-network} (Apache-2.0) [installed]
+luci-mod-status-26.180.75667~128a781 aarch64_cortex-a53 {feeds/luci/feeds/luci/modules/luci-mod-status} (Apache-2.0) [installed]
+luci-mod-system-26.180.75667~128a781 noarch {feeds/luci/feeds/luci/modules/luci-mod-system} (Apache-2.0) [installed]
+luci-proto-ipv6-26.180.75667~128a781 noarch {feeds/luci/feeds/luci/protocols/luci-proto-ipv6} (Apache-2.0) [installed]
+luci-proto-ppp-26.180.75667~128a781 noarch {feeds/luci/feeds/luci/protocols/luci-proto-ppp} (Apache-2.0) [installed]
+luci-ssl-26.180.75667~128a781 noarch {feeds/luci/feeds/luci/collections/luci-ssl} (Apache-2.0) [installed]
+luci-theme-bootstrap-26.180.75667~128a781 noarch {feeds/luci/feeds/luci/themes/luci-theme-bootstrap} (Apache-2.0) [installed]
+
+== GET http://127.0.0.1/ ==
+HTTP/1.1 200 OK
+Connection: Keep-Alive
+Keep-Alive: timeout=20
+ETag: "44b-298-6a426c28"
+Last-Modified: Mon, 29 Jun 2026 12:59:20 GMT
+Date: Tue, 04 Aug 2026 13:59:22 GMT
+Content-Type: text/html
+Content-Length: 664
+
+
+== GET http://127.0.0.1/cgi-bin/luci ==
+HTTP/1.1 403 Forbidden
+Connection: Keep-Alive
+Transfer-Encoding: chunked
+Keep-Alive: timeout=20
+x-luci-login-required: yes
+content-type: text/html; charset=UTF-8
+cache-control: no-cache
+expires: 0
+x-frame-options: SAMEORIGIN
+x-xss-protection: 1; mode=block
+x-content-type-options: nosniff
+
+
+== GET https://127.0.0.1/ (-k) ==
+HTTP/1.1 200 OK
+Connection: Keep-Alive
+Keep-Alive: timeout=20
+ETag: "44b-298-6a426c28"
+Last-Modified: Mon, 29 Jun 2026 12:59:20 GMT
+Date: Tue, 04 Aug 2026 13:59:22 GMT
+Content-Type: text/html
+Content-Length: 664
+
+
+== GET http://192.168.9.1/ (как придёт браузер) ==
+HTTP/1.1 200 OK
+Connection: Keep-Alive
+Keep-Alive: timeout=20
+ETag: "44b-298-6a426c28"
+Last-Modified: Mon, 29 Jun 2026 12:59:20 GMT
+Date: Tue, 04 Aug 2026 13:59:22 GMT
+Content-Type: text/html
+Content-Length: 664
+

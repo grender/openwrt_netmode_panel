@@ -19,8 +19,14 @@ export const DICT = {
 		'sub.nikki.auto': 'Авто → {node}',
 		'sub.nikki.manual': 'Закреплён вручную: {node}',
 		'sub.nikki.down': 'Clash API недоступен',
+		// Отдельная строка для первых секунд после переключения. Демон
+		// коммитит режим раньше, чем поднимет службу, и «недоступен» в этот
+		// момент — неправда про исправный роутер. Молчать тоже нельзя:
+		// владелец, который смотрит на баннер, обязан понимать, чего ждёт.
+		'sub.nikki.starting': 'Clash API запускается…',
 		'sub.b4': 'Обход DPI · сет {set}',
 		'sub.b4.down': 'Панель b4 недоступна',
+		'sub.b4.starting': 'b4 запускается…',
 		'sub.off': 'Трафик идёт напрямую, без туннеля',
 		'sub.unknown': 'В /etc/config/netmode значение вне набора. Демон не исправляет его сам.',
 
@@ -88,11 +94,17 @@ export const DICT = {
 		'srv.measure': 'Замерить все',
 		'srv.measuring': 'Замеряю…',
 		'srv.down': 'Clash API не отвечает. Узлы недоступны, режим переключается по-прежнему.',
+		// Подпись под скелетоном. Скелетон без слов честен, но молчалив:
+		// на третьей секунде владелец обязан понимать, что идёт запуск, а не
+		// вечная загрузка. Поэтому здесь сказано, чего именно ждём и чем
+		// ожидание кончится, — «загрузка…» не говорит ни того, ни другого.
+		'srv.starting': 'Nikki запускается — узлы появятся, как только ответит Clash API.',
 		'srv.empty': 'Узлов ещё нет — подписка не обновлялась.',
 		'srv.dead': 'не отвечает',
 
 		'sets.title': 'Сет стратегий',
 		'sets.down': 'Панель b4 не отвечает. Сеты недоступны, режим переключается по-прежнему.',
+		'sets.starting': 'b4 запускается — сеты появятся, как только он ответит.',
 		'sets.hint': 'Выбор одного сета гасит остальные — это поведение панели, не b4.',
 
 		'wifi.title': 'Внешняя сеть',
@@ -149,15 +161,22 @@ export const DICT = {
 		// с undefined, а null означает именно отказ.
 		'sub.log.down': 'Журнал обновлений недоступен',
 
-		// Ссылки на веб-морды в шапке. Видимая подпись остаётся короткой
-		// («Nikki ↗»), полное имя уходит в aria-label и title: голое «Nikki»
-		// в списке ссылок не говорит, что это, ни скринридеру, ни владельцу.
+		// Ссылки на чужие веб-морды в шапке — их три. Видимая подпись остаётся
+		// короткой («Nikki ↗»), полное имя уходит в aria-label и title: голое
+		// «Nikki» в списке ссылок не говорит, что это, ни скринридеру, ни
+		// владельцу. Слово «панель» здесь занято нашей собственной, поэтому
+		// у LuCI подпись говорит «веб-интерфейс роутера», а не «панель LuCI».
 		'links.nikki': 'Панель Nikki',
 		'links.b4': 'Панель b4',
-		// Причина, по которой адреса может не быть. У b4 она одна и выбирается
-		// панелью (links.b4 пуст — значит хост не выведен). У Nikki их три,
-		// и приходят они кодом отказа от GET /api/nikki/panel: host_unknown,
-		// nikki_unconfigured, panel_missing — см. ERR_KEY в app.js.
+		'links.luci': 'Веб-интерфейс роутера (LuCI)',
+		// Почему панель не открылась. Тексты нужны только Nikki: её кнопка
+		// видима, пока Clash API отвечает, но живой Clash API ещё не значит
+		// открываемой панели. Причину называет сам сервер кодом отказа от
+		// GET /api/nikki/panel — host_unknown, nikki_unconfigured,
+		// panel_missing — см. ERR_KEY в app.js. Панель ничего не выбирает
+		// сама: кнопки без адреса она просто не рисует. links.why.host
+		// остаётся страховкой describe() на случай, когда адрес успел
+		// протухнуть между опросом и кликом.
 		'links.why.host': 'Адрес роутера не выводится из адреса, по которому открыта панель, — так бывает при доступе через ssh-туннель по localhost. Откройте панель по адресу роутера в LAN, и ссылка появится.',
 		'links.why.unconfigured': 'Nikki на роутере не настроен — открывать нечего.',
 		'links.why.nopanel': 'У Nikki на этом роутере нет веб-морды: доступен только Clash API.',
@@ -168,9 +187,6 @@ export const DICT = {
 		// а адрес с секретом в подпись не выносится намеренно.
 		'links.blocked.cta': 'Открыть панель Nikki',
 		'links.opening': 'Открываю…',
-		// Серую кнопку нажали, а сервер неожиданно отдал адрес: статус
-		// опрашивается раз в секунду и мог отстать от настройки роутера.
-		'links.ready': 'Адрес панели уже известен — ссылка в шапке заработает через секунду.',
 
 		'ap.broadcasts': 'вещает {ssid}',
 		'ap.clients': '{n} устройств',
@@ -199,8 +215,10 @@ export const DICT = {
 		'sub.nikki.auto': 'Auto → {node}',
 		'sub.nikki.manual': 'Pinned manually: {node}',
 		'sub.nikki.down': 'Clash API unreachable',
+		'sub.nikki.starting': 'Clash API is starting…',
 		'sub.b4': 'DPI bypass · set {set}',
 		'sub.b4.down': 'b4 panel unreachable',
+		'sub.b4.starting': 'b4 is starting…',
 		'sub.off': 'Traffic goes straight out, no tunnel',
 		'sub.unknown': 'The value in /etc/config/netmode is outside the set. The daemon does not correct it.',
 
@@ -257,11 +275,13 @@ export const DICT = {
 		'srv.measure': 'Measure all',
 		'srv.measuring': 'Measuring…',
 		'srv.down': 'Clash API does not respond. Nodes are unavailable; mode switching still works.',
+		'srv.starting': 'Nikki is starting — nodes appear as soon as the Clash API answers.',
 		'srv.empty': 'No nodes yet — the subscription has never been updated.',
 		'srv.dead': 'no reply',
 
 		'sets.title': 'Strategy set',
 		'sets.down': 'The b4 panel does not respond. Sets are unavailable; mode switching still works.',
+		'sets.starting': 'b4 is starting — sets appear as soon as it answers.',
 		'sets.hint': 'Choosing one set disables the rest — that is the panel behaviour, not b4.',
 
 		'wifi.title': 'Uplink network',
@@ -313,6 +333,7 @@ export const DICT = {
 
 		'links.nikki': 'Nikki panel',
 		'links.b4': 'b4 panel',
+		'links.luci': 'Router web interface (LuCI)',
 		'links.why.host': 'The router address does not follow from the address this panel is open at — that happens over an ssh tunnel through localhost. Open the panel at the router address on your LAN and the link will appear.',
 		'links.why.unconfigured': 'Nikki is not configured on the router — there is nothing to open.',
 		'links.why.nopanel': 'Nikki on this router has no web panel: only the Clash API is available.',
@@ -320,7 +341,6 @@ export const DICT = {
 		'links.blocked': 'The browser refused to open a new tab — pop-ups look blocked.',
 		'links.blocked.cta': 'Open the Nikki panel',
 		'links.opening': 'Opening…',
-		'links.ready': 'The panel address is known now — the header link starts working within a second.',
 
 		'ap.broadcasts': 'broadcasting {ssid}',
 		'ap.clients': '{n} devices',

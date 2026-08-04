@@ -14,7 +14,7 @@
 set -eu
 
 EV=docs/recon/evidence.json
-DIRS="internal/b4 internal/nikki internal/led internal/executor internal/wireless"
+DIRS="internal/b4 internal/nikki internal/luci internal/led internal/executor internal/wireless"
 
 [ -f "$EV" ] || { echo "check-evidence: нет $EV" >&2; exit 1; }
 
@@ -42,7 +42,11 @@ for l in $lits; do
 		# /ui* — веб-панель mihomo. Под /api/* она не подпадает (это статика
 		# дашборда, а не Clash API), и без отдельного шаблона оказалась бы
 		# единственным внешним путём в проекте без механической защиты.
-		/api/*|/ui*|/sys/class/leds/*|network.wireless|network.interface.*|iwinfo)
+		#
+		# /cgi-bin/* — точка входа LuCI на uhttpd. Тот же случай: путь чужой
+		# службы, снятый разведкой, и подтверждать его обязан гейт, а не
+		# память автора правки.
+		/api/*|/ui*|/cgi-bin/*|/sys/class/leds/*|network.wireless|network.interface.*|iwinfo)
 			if ! grep -qF "$l" "$EV"; then
 				missing="$missing $l"
 			fi

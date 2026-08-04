@@ -10,7 +10,7 @@
 // package.json и бандлера, и заводить их ради мока незачем.
 //
 // Запуск:  node web/mock-server.mjs  [порт]
-// Сценарий: кнопки в шапке страницы либо ?scenario=<имя> либо POST /__scenario
+// Сценарий: curl 'http://localhost:8088/__scenario?name=<имя>' (GET или POST)
 
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -37,24 +37,111 @@ const SCENARIOS = {
 	'nikki-unconfigured': 'status-single.json',
 	'nikki-nopanel': 'status-single.json',
 	'nikki-boom': 'status-single.json',
+	// Адрес роутера не выводится из Host. Статус обычный и движок отвечает —
+	// смотреть надо именно на шапку: кнопки нет, хотя движок жив.
+	'host-unknown': 'status-single.json',
+	// Медленный старт службы режима (см. PREARM ниже). База — статус,
+	// где нужный движок уже лежит: сценарий его потом ПОДНИМАЕТ, а не роняет.
+	'b4-slow-start': 'status-b4-unavailable.json',
+	'nikki-slow-start': 'status-single.json',
+	// Главный: долгий режим nikki, потом переключение на b4. База — рабочий
+	// nikki, где b4 молчит СТОЛЬКО, сколько вы просидите в этом режиме.
+	'b4-after-nikki': 'status-single.json',
+	'b4-never-up': 'status-b4-unavailable.json',
+	// Провалившаяся операция. Три сценария на одной фикстуре: два различаются
+	// длиной текста (JOB_FAIL ниже), третий убирает джоб через пять секунд.
+	'job-fail-short': 'status-job-failed.json',
+	'job-fail-long': 'status-job-failed.json',
+	'job-fail-vanish': 'status-job-failed.json',
+};
+
+// SLOW_START_SEC — сколько секунд служба режима не слушает свой порт ПОСЛЕ
+// того, как демон уже записал mode.
+//
+// Это не украшение и не «медленный мок»: демон коммитит UCI mode ДО запуска
+// службы (internal/httpapi/modehandler.go:77-86, и порядок там намеренный —
+// намерение сохраняется первым). Значит на живом роутере есть окно, в котором
+// /api/status уже говорит mode:"b4", а порт 7000 ещё молчит, и /api/b4/sets
+// отвечает 503. Восемь секунд — середина вилки SPEC §5 (5–15 с).
+const SLOW_START_SEC = 8;
+
+// PREARM — сценарии, где окно молчания заводится уже при переключении
+// сценария, а не только по нажатию кнопки режима: их смысл виден без клика,
+// и перезагрузка страницы в середине окна обязана показывать то же самое.
+//
+// Значение — движок, чей порт молчит. У b4-after-nikki здесь записи нет
+// намеренно: в нём окно открывает именно нажатие, а до нажатия b4 молчит
+// потому, что режим не его (см. инвариант в applyEngines).
+const PREARM = {
+	'b4-slow-start': 'b4',
+	'nikki-slow-start': 'nikki',
+};
+
+// DEAD — движок, который в этом сценарии не поднимется вовсе.
+//
+// b4-never-up проверяет потолок ожидания в панели: скелетон обязан смениться
+// на «не отвечает», а не остаться навсегда. b4-down — то же самое состояние,
+// но без всякой истории: b4 лежал ещё до того, как страницу открыли.
+const DEAD = {
+	'b4-down': 'b4',
+	'b4-never-up': 'b4',
+};
+
+const ENGINES = ['nikki', 'b4'];
+
+// Блок движка в /api/status. Значения «поднятого» согласованы с b4-sets.json
+// и nikki-proxies.json: панель показывает set из статуса, а список — из
+// побочного запроса, и расхождение между ними выглядело бы как её ошибка.
+//
+// Порядок ключей — как в httpapi.Service: available, version, set,
+// enabled_count. Поле pinned опущено (omitempty, и оно false).
+const SERVICE_DOWN = { available: false, version: null, set: '', enabled_count: 0 };
+const SERVICE_UP = {
+	b4: { available: true, version: '1.74.1', set: 'general', enabled_count: 1 },
+	// enabled_count у Nikki остаётся нулём: статус его не считает
+	// (internal/httpapi/status.go — заполняются только Set и Pinned).
+	nikki: { available: true, version: 'v1.19.27', set: 'NL-01', enabled_count: 0 },
+};
+
+// JOB_KEEP_MS — сколько демон показывает завершённую операцию.
+//
+// Ровно keepFinished из internal/job/job.go. По истечении из статуса исчезает
+// весь джоб целиком — и заголовок провала, и текст ошибки. Мок обязан уметь
+// то же самое: провал, который висит вечно, — состояние, которого на роутере
+// нет, и мерить на нём читаемость значит мерить не то.
+const JOB_KEEP_MS = 5000;
+
+// Текст провалившейся операции — под замер геометрии баннера.
+//
+// Длинный — дословный текст демона (internal/httpapi/modehandler.go:129 плюс
+// executor.ErrApplyFirewall), и он же лежит в фикстуре: это худший реальный
+// случай, 2–3 строки при ширине карточки на телефоне. Короткий — провал
+// записи UCI (modehandler.go:77-84 возвращает ошибку executor как есть),
+// одна строка. Между ними баннер обязан менять высоту, а не обрезать текст.
+const JOB_FAIL = {
+	'job-fail-short': 'uci commit netmode: exit status 1',
+	'job-fail-long':
+		'режим не включён, обход выключен — трафик идёт напрямую: netmode-apply: firewall не перезапустился',
 };
 
 // Что мок отвечает на запрос адреса панели Nikki.
 //
-// status и links обязаны быть согласованы: демон не кладёт адрес в links,
-// когда открывать нечего, — иначе панель показала бы живую ссылку, которая
-// гарантированно не открывается. Отсюда поле link.
+// Ломается не статус и не links, а ровно один запрос — тот, что идёт по
+// клику. Links демон кладёт всегда, когда из Host выводится хост: поле не
+// зависит ни от available, ни от наличия веб-морды (internal/httpapi/
+// status.go:104-122). Прежде здесь стояло поле link, гасившее links.nikki
+// в двух сценариях из трёх, — оно моделировало поведение, которого у демона
+// нет, и заодно прятало кнопку, по которой эти сценарии только и проверяются.
 //
-// Четвёртое состояние, host_unknown, отдельного сценария не требует: оно
-// наступает само, когда мок открыт по localhost (см. hostOf ниже) — ровно
-// как на роутере, куда пришли через ssh-туннель.
+// Все три достижимы глазами: кнопка Nikki в шапке рисуется, когда известен
+// адрес И движок отвечает (ADR-0024), а база у всех трёх — status-single.json,
+// где режим nikki и Clash API жив.
 const PANEL_FAIL = {
-	'nikki-unconfigured': { status: 503, code: 'nikki_unconfigured', msg: 'Nikki не настроен', link: false },
-	'nikki-nopanel': { status: 503, code: 'panel_missing', msg: 'У Nikki нет веб-морды: только Clash API', link: false },
-	// Ссылка в шапке живая, а запрос за адресом падает пятисоткой. Сценарий
-	// нужен глазами: панель обязана закрыть уже открытую пустую вкладку,
-	// а не оставить белый прямоугольник без объяснений.
-	'nikki-boom': { status: 500, code: 'internal', msg: 'Внутренняя ошибка', link: true },
+	'nikki-unconfigured': { status: 503, code: 'nikki_unconfigured', msg: 'Nikki не настроен' },
+	'nikki-nopanel': { status: 503, code: 'panel_missing', msg: 'У Nikki нет веб-морды: только Clash API' },
+	// Панель обязана закрыть уже открытую пустую вкладку, а не оставить
+	// белый прямоугольник без объяснений.
+	'nikki-boom': { status: 500, code: 'internal', msg: 'Внутренняя ошибка' },
 };
 
 const state = {
@@ -63,6 +150,13 @@ const state = {
 	// накладывает поверх — так исходные данные остаются эталоном.
 	overlay: {},
 	job: null,
+	// Окно молчания службы: upEngine — чей порт молчит, upAt — момент (мс),
+	// с которого он начинает отвечать. Ноль означает «окна нет»: движок виден
+	// таким, каким его показывает фикстура.
+	upEngine: '',
+	upAt: 0,
+	// Докуда показывается провалившийся джоб из фикстуры. Ноль — бессрочно.
+	jobUntil: 0,
 };
 
 const MIME = {
@@ -79,11 +173,79 @@ const readJSON = async (name) => JSON.parse(await fs.readFile(path.join(EX, name
 // и /api/status, и согласованность побочных списков.
 const currentStatus = () => readJSON(SCENARIOS[state.scenario] || SCENARIOS.single);
 
+// arm открывает окно молчания движка: столько-то секунд порт не отвечает,
+// потом движок поднимается сам. Пустой engine закрывает окно вовсе.
+const arm = (engine, sec = SLOW_START_SEC) => {
+	state.upEngine = engine || '';
+	state.upAt = engine ? Date.now() + sec * 1000 : 0;
+};
+
+// engineDown — порт движка не слушает: либо ещё не открылся, либо в этом
+// сценарии не откроется никогда.
+//
+// Про инвариант «движок не тот, что в mode» здесь ничего нет намеренно: это
+// знание про статус, и живёт оно в одном месте — applyEngines.
+const engineDown = (engine) =>
+	DEAD[state.scenario] === engine || (state.upEngine === engine && Date.now() < state.upAt);
+
+// applyEngines приводит блоки движков в статусе к тому, что бывает на роутере.
+//
+// Инвариант: одновременно работает НЕ БОЛЬШЕ одного движка, и это тот, что
+// записан в mode. netmode-apply гасит второй безусловно и до всего остального
+// (files/usr/local/bin/netmode-apply:128-129 — `svc nikki stop`, `svc b4 stop`
+// перед firewall restart), поэтому «mode: nikki при b4.available: true» —
+// состояние, которого не бывает.
+//
+// Держать инвариант обязан мок, а не только фикстуры: mode меняется POST-ом
+// на лету, и без этой сборки статус после нажатия расходился бы с роутером
+// на ровном месте. Цена расхождения высокая с обеих сторон: в шапке рисуется
+// кнопка чужого движка (ADR-0024 требует не больше одной, а в режиме off —
+// ни одной), а главное — панель НИКОГДА не видит долго молчащий движок, и
+// дефекты, которые из этого молчания растут, на ноуте невоспроизводимы.
+//
+// Движок режима поднятым здесь не назначается: фикстура вправе показывать
+// mode: "b4" при лежащем b4 (status-b4-unavailable.json, status-job-failed.json
+// — намерение записано, служба не поднялась). Мок вмешивается, только когда
+// сам открыл окно молчания.
+const applyEngines = (s) => {
+	for (const e of ENGINES) {
+		if (s.mode !== e || engineDown(e)) { s[e] = SERVICE_DOWN; continue; }
+		if (state.upEngine === e) s[e] = SERVICE_UP[e];
+	}
+};
+
+// engineUp — отвечает ли движок прямо сейчас, тем же расчётом, что и статус.
+//
+// Побочные списки обязаны соглашаться со статусом: «b4 лежит» в /api/status и
+// работающий /api/b4/sets в соседнем ответе — это две правды об одном роутере,
+// и та из них, что удобнее, всегда достаётся панели случайно. Отдельная
+// проверка «а не идёт ли окно молчания» этого не давала: она молчала про
+// фикстуры, где движок лежит сам по себе (status-job-failed.json), и про
+// чужой режим, где движок погашен инвариантом.
+const engineUp = async (engine) => {
+	const s = { ...(await currentStatus()), ...state.overlay };
+	applyEngines(s);
+	return s[engine].available;
+};
+
 // Ссылки на веб-морды строятся от заголовка Host — тем же правилом, что и на
 // роутере. Фикстуры отдают links как есть, а мок открывают на localhost:
-// без пересборки обе ссылки были бы мертвы всегда, и три состояния шапки
-// в разработке посмотреть было бы нечем.
+// без пересборки все три ссылки были бы мертвы всегда, и в шапке не появилось
+// бы ни одной кнопки — ни движков, ни LuCI.
 const LOCAL = new Set(['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0', '::']);
+
+// LINK_HOST — чем подменяется невыводимый хост.
+//
+// Мок открывают по localhost (web/README.md), а из петли адрес роутера не
+// выводится — правило hostOf ниже дословно повторяет демон. Повторив его и
+// на выходе, мок отдавал бы links: null ВСЕГДА: ни одной кнопки движка в
+// шапке, а вместе с ними ни одного пути к GET /api/nikki/panel — то есть три
+// сценария его отказа проверить было бы нечем.
+//
+// Поэтому для петли подставляется LAN-адрес из фикстур. Случай «адрес не
+// выводится» не потерян: он вынесен в сценарий host-unknown, где отдаётся
+// ровно то, что отдал бы демон за ssh-туннелем.
+const LINK_HOST = process.env.MOCK_LINK_HOST || '192.168.9.1';
 
 // Host — это ввод, а не факт: в заголовок кладут что угодно, и мусор вроде
 // `foo"onmouseover=` уехал бы прямо в href. Пропускаем только то, что вообще
@@ -105,15 +267,40 @@ const hostOf = (req) => {
 	return host;
 };
 
+// linkHost — хост для ссылок: из запроса, а для петли — LINK_HOST.
+// Пустая строка означает «адрес не выводится», и это ровно один сценарий.
+const linkHost = (req) => (state.scenario === 'host-unknown' ? '' : hostOf(req) || LINK_HOST);
+
+// Все три поля собираются ОДИНАКОВО и не зависят ни от available, ни от того,
+// ответит ли что-нибудь по адресу (internal/httpapi/status.go:104-122).
+// Показывать ли кнопку — решает панель, и решает по available (ADR-0024);
+// смешивать эти два предмета в моке значило бы проверять не тот код.
+//
+// Порядок полей значим и повторяет Links: nikki, b4, luci.
 const linksFor = (req) => {
-	const host = hostOf(req);
-	if (!host) return { nikki: null, b4: null };
+	const host = linkHost(req);
+	if (!host) return { nikki: null, b4: null, luci: null };
 	// Адрес веб-морды Nikki — БЕЗ секрета: порт 9090 и путь /ui/
 	// (raw/73-nikki-ui-probe.txt). Секрет отдаётся только по явному запросу
 	// GET /api/nikki/panel. Порт b4 — 7000 (raw/50-b4-api.txt).
-	const fail = PANEL_FAIL[state.scenario];
-	const nikki = fail && !fail.link ? null : `http://${host}:9090/ui/`;
-	return { nikki, b4: `http://${host}:7000/` };
+	//
+	// LuCI: схема http и порт по умолчанию, поэтому порта в адресе НЕТ.
+	// uhttpd слушает и 80, и 443, но redirect_https='0' — редиректа нет, а
+	// сертификат самоподписанный, и https увёл бы владельца на страницу об
+	// угрозе безопасности вместо роутера. Путь — точка входа LuCI, а не «/»:
+	// по «/» отдаётся статический /www/index.html. Всё — raw/72-luci-probe.txt.
+	//
+	// Живостью НЕ гейтится, и это не забывчивость. Правило «прятать кнопку
+	// недоступной морды» действует на движки, которыми управляет netmode-apply
+	// (ADR-0024, «Границы правила»): они гаснут по нашей же команде. uhttpd мы
+	// не трогаем, available для него не считаем, и кнопка LuCI обязана быть
+	// видна во всех сценариях, где выводится хост, — включая режим off, где
+	// кнопок движков нет ни одной, и b4-down, где как раз и надо уйти чинить.
+	return {
+		nikki: `http://${host}:9090/ui/`,
+		b4: `http://${host}:7000/`,
+		luci: `http://${host}/cgi-bin/luci`,
+	};
 };
 
 const send = (res, code, body, type = MIME['.json']) => {
@@ -176,6 +363,19 @@ async function handleAPI(req, res, u) {
 		const s = { ...base, ...state.overlay, links: linksFor(req), generated_at: new Date().toISOString() };
 		if (state.job) s.job = state.job;
 		if (s.online) s.online = { ...s.online, checked_at: s.generated_at };
+		// Движки: инвариант роутера плюс окно молчания. mode здесь уже новый
+		// (его положил overlay при POST либо сама фикстура), а служба ещё
+		// лежит — ровно то расхождение, которое даёт роутер между коммитом
+		// UCI и стартом службы.
+		applyEngines(s);
+		// Демон убирает завершённый джоб через keepFinished, и провал уходит
+		// с экрана вместе с текстом ошибки. Ноль — «сценарий этого не
+		// показывает», джоб из фикстуры висит бессрочно.
+		if (state.jobUntil && Date.now() > state.jobUntil) s.job = null;
+		// Длину текста провала задаёт сценарий, а не фикстура: под замер
+		// баннера нужны оба края. Идущий джоб не трогаем — у него ошибки нет.
+		const failText = JOB_FAIL[state.scenario];
+		if (failText && s.job && s.job.state === 'failed') s.job = { ...s.job, error: failText };
 		return send(res, 200, s);
 	}
 
@@ -187,7 +387,16 @@ async function handleAPI(req, res, u) {
 			return fail(res, 400, 'bad_request', 'Неизвестный режим');
 		}
 		startJob('mode', mode, mode === 'off' ? 'Выключение обхода' : `Переключение режима на ${mode}`, 8);
+		// Режим виден в статусе СРАЗУ, до конца джоба: демон коммитит UCI
+		// первым действием applyMode, и панель узнаёт новый mode задолго до
+		// того, как служба начнёт отвечать.
 		state.overlay.mode = mode;
+		// Целевая служба молчит те же секунды, что на роутере. Для off движка
+		// нет — окно закрывается: обход выключен, и молчать нечему.
+		arm(mode === 'off' ? '' : mode);
+		// Провалившийся джоб из фикстуры замещён идущим — срок его показа
+		// больше ни при чём, иначе он погасил бы и новый.
+		state.jobUntil = 0;
 		return send(res, 202, { job: state.job });
 	}
 
@@ -237,10 +446,16 @@ async function handleAPI(req, res, u) {
 	// api_secret — он же пароль веб-морды. В статусе, который панель тянет
 	// раз в секунду, ему делать нечего.
 	if (p === '/api/nikki/panel' && method === 'GET') {
-		const host = hostOf(req);
+		// Тот же хост, что уехал в links: иначе кнопка вела бы на один адрес,
+		// а её собственный запрос отвечал бы про другой.
+		const host = linkHost(req);
 		// Порядок проверок тот же, что задуман на демоне: хост выводится из
 		// заголовка Host, и без него собирать нечего — остальные причины
 		// проверять уже незачем.
+		//
+		// Кликом сюда теперь не попасть: кнопки нет ровно тогда, когда нет
+		// адреса (ADR-0024 убрал серую заглушку), поэтому ветка проверяется
+		// сценарием host-unknown и curl-ом, а не пальцем.
 		if (!host) {
 			return fail(res, 503, 'host_unknown',
 				'Адрес роутера не выводится из заголовка Host');
@@ -257,23 +472,32 @@ async function handleAPI(req, res, u) {
 
 	// --- Nikki ---
 	if (p === '/api/nikki/proxies' && method === 'GET') {
+		if (!(await engineUp('nikki'))) {
+			return fail(res, 503, 'nikki_unavailable', 'Nikki не отвечает');
+		}
 		const d = await readJSON('nikki-proxies.json');
 		if (state.overlay.nikkiSelected) d.selected = state.overlay.nikkiSelected;
 		return send(res, 200, d);
 	}
 	if (p === '/api/nikki/proxy' && method === 'POST') {
+		if (!(await engineUp('nikki'))) {
+			return fail(res, 503, 'nikki_unavailable', 'Nikki не отвечает');
+		}
 		const { name } = await readBody(req);
 		state.overlay.nikkiSelected = name;
 		return send(res, 200, { selected: name }); // быстрая операция: без джоба
 	}
 	if (p === '/api/nikki/test' && method === 'POST') {
+		if (!(await engineUp('nikki'))) {
+			return fail(res, 503, 'nikki_unavailable', 'Nikki не отвечает');
+		}
 		await new Promise((r) => setTimeout(r, 900));
 		return send(res, 200, { ok: true });
 	}
 
 	// --- b4 ---
 	if (p === '/api/b4/sets' && method === 'GET') {
-		if (state.scenario === 'b4-down') {
+		if (!(await engineUp('b4'))) {
 			return fail(res, 503, 'b4_unavailable', 'Панель b4 не отвечает');
 		}
 		const d = await readJSON('b4-sets.json');
@@ -284,7 +508,7 @@ async function handleAPI(req, res, u) {
 		return send(res, 200, d);
 	}
 	if (p === '/api/b4/set' && method === 'POST') {
-		if (state.scenario === 'b4-down') {
+		if (!(await engineUp('b4'))) {
 			return fail(res, 503, 'b4_unavailable', 'Панель b4 не отвечает');
 		}
 		const { id } = await readBody(req);
@@ -322,6 +546,11 @@ const server = http.createServer(async (req, res) => {
 			state.scenario = name;
 			state.overlay = {};
 			state.job = null;
+			// Окно молчания и срок показа провала отсчитываются от переключения
+			// сценария: оба состояния кратковременны, и наблюдать их надо
+			// с самого начала. Пересмотреть — переключить сценарий заново.
+			arm(PREARM[name] || '');
+			state.jobUntil = name === 'job-fail-vanish' ? Date.now() + JOB_KEEP_MS : 0;
 		}
 		return send(res, 200, { scenario: state.scenario, available: Object.keys(SCENARIOS) });
 	}

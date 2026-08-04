@@ -18,6 +18,7 @@ import (
 	"netmoded/internal/job"
 	"netmoded/internal/led"
 	"netmoded/internal/logs"
+	"netmoded/internal/luci"
 	"netmoded/internal/nikki"
 	"netmoded/internal/safe"
 	"netmoded/internal/sched"
@@ -301,9 +302,28 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// к r.Host, а его результат кэшируется на 500 мс и уходит разным клиентам
 	// (см. Links и Read в status.go).
 	//
-	// К available ссылки НЕ привязаны намеренно: ссылка — это адрес, а не
-	// проба живости. Владелец скорее полезет в морду b4 именно тогда, когда
-	// b4 нам не отвечает.
+	// К available поля НЕ привязаны — и это про поле, а не про кнопку.
+	//
+	// Раньше здесь стоял довод «ссылка — это адрес, а не проба живости:
+	// владелец скорее полезет в морду b4 именно тогда, когда b4 нам не
+	// отвечает». Он опровергнут: он предполагал, что API и веб-морда — разные
+	// слушатели, а у обоих движков слушатель ОДИН (b4 — ":::7000",
+	// docs/recon/evidence.json:8; nikki — «отдельного слушателя нет:
+	// external-controller '[::]:9090' единственный», там же:266). При
+	// available:false ссылка вела в connection refused в 100% случаев.
+	//
+	// Поле осталось независимым по другой причине, и она сильная: обнулив его
+	// по available, мы (а) потеряли бы различение «хост не вывелся» и «служба
+	// легла», на котором стоит текст links.why.host, и (б) втащили бы сюда
+	// кэшированную на 500 мс живость — в поле, которое заведено некэшируемым
+	// именно затем, чтобы следовать Host каждого запроса
+	// (TestStatusLinksFollowRequestHostNotCache).
+	//
+	// Кнопку МОРДЫ ДВИЖКА панель рисует, только когда служба отвечает
+	// (ADR-0024: docs/adr/0024-panel-links-only-when-service-answers.md).
+	// К LuCI ниже это не относится, и не как исключение, а по самой
+	// формулировке правила: оно про морды тех служб, которые гасит
+	// netmode-apply. uhttpd мы не гасим и живость его не считаем.
 	if host, ok := panelHost(r.Host); ok {
 		if u, ok := b4.PanelURL(host); ok {
 			st.Links.B4 = &u
@@ -320,6 +340,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			if u, ok := nikki.PanelBaseURL(host, port); ok {
 				st.Links.Nikki = &u
 			}
+		}
+		// Веб-интерфейс роутера. Живостью не гейтится — и это не забывчивость,
+		// а прямое следствие формулировки ADR-0024, раздел «Границы правила»:
+		// правило накрывает морды движков, которыми управляет netmode-apply,
+		// а uhttpd мы не гасим. Пробы ради подсветки кнопки здесь не будет:
+		// при опросе раз в секунду (ADR-0017) это 3600 запросов в час к чужой
+		// службе.
+		if u, ok := luci.PanelURL(host); ok {
+			st.Links.LuCI = &u
 		}
 	}
 

@@ -1,14 +1,20 @@
 #!/bin/sh
 # Сборка и доставка netmoded на роутер.
 #
-#   ./scripts/deploy.sh                 собрать и залить только бинарь
+#   ./scripts/deploy.sh                 собрать, залить бинарь и перезапустить
 #   ./scripts/deploy.sh --install       полная установка: бинарь, netmode-apply,
 #                                       init.d, сид конфига, автозапуск
 #   ./scripts/deploy.sh --run           залить и запустить в консоли
+#   ./scripts/deploy.sh --no-restart    залить и оставить демон погашенным
 #   ./scripts/deploy.sh --host root@10.0.0.1 --port 8089
 #
 # Вход по паролю: ssh спросит его ОДИН раз. Дальше все команды идут через
 # то же соединение (ControlMaster), поэтому повторных запросов не будет.
+#
+# Залить бинарь можно только поверх остановленного демона, поэтому деплой
+# всегда сначала гасит его. Перезапуск идёт через init.d, а тот вызывает
+# netmode-apply — на пару секунд гаснет туннель и перезапускается
+# firewall. Если сейчас так нельзя, деплойте с --no-restart.
 #
 # Что делает фаза 1 на роутере: правит только ВЫКЛЮЧЕННЫЕ секции
 # wifi-iface и переключает режим через netmode-apply. Активную сеть не
@@ -19,17 +25,19 @@ HOST=root@192.168.9.1
 PORT=8088
 RUN=no
 INSTALL=no
+RESTART=yes
 REMOTE=/usr/local/bin/netmoded
 APPLY=/usr/local/bin/netmode-apply
 INITD=/etc/init.d/netmoded
 
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--run)     RUN=yes ;;
-		--install) INSTALL=yes ;;
-		--host)    HOST=$2; shift ;;
-		--port)    PORT=$2; shift ;;
-		-h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		--run)        RUN=yes ;;
+		--install)    INSTALL=yes ;;
+		--no-restart) RESTART=no ;;
+		--host)       HOST=$2; shift ;;
+		--port)       PORT=$2; shift ;;
+		-h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		*) echo "неизвестный аргумент: $1" >&2; exit 2 ;;
 	esac
 	shift
@@ -75,6 +83,15 @@ FREE=$(sh_ "df -k /usr/local 2>/dev/null || df -k /" | awk 'NR==2{print $4}')
 echo "  ✓ свободно: $((FREE / 1024)) МБ"
 
 # Порт проверяем, только если демон ещё не наш: иначе он же его и держит.
+#
+# ОСТОРОЖНО с pgrep -f: удалённая команда сама содержит подстроку netmoded,
+# и на некоторых оболочках процесс-обёртка матчит сам себя — тогда проверка
+# всегда решает «занят нами» и пропускает чужую службу. На busybox роутера
+# оболочка делает exec и лишнего процесса не остаётся, но подтверждено это
+# не на нём. Ошибка здесь безопасна в одну сторону: если пре-флайт промахнётся,
+# health-check после перезапуска пойдёт с токеном и по коду возврата, и чужая
+# служба на том же адресе даст не-200 — деплой упадёт внятно, а не соврёт.
+# В health-check этот приём поэтому не используется вовсе (см. wait_listening).
 if sh_ "netstat -lnt 2>/dev/null | grep -q ':$PORT '" && ! sh_ "pgrep -f netmoded >/dev/null 2>&1"; then
 	echo "  ✗ порт $PORT занят не нами:" >&2
 	sh_ "netstat -lntp 2>/dev/null | grep ':$PORT '" >&2
@@ -122,26 +139,146 @@ if [ "$INSTALL" = yes ]; then
 	echo "  ✓ автозапуск включён"
 fi
 
-# ─────────── как открыть панель ───────────
+# ─────────── перезапуск и проверка, что панель ожила ───────────
 
-say "Готово"
+# Слушает демон то, что записано в его конфиге, а не то, что передали
+# в --port: --port нужен пре-флайту и первому сиду. Проверять надо по
+# настоящему адресу, иначе health-check соврёт на нестандартном порту.
+health_target() {
+	RPORT=$(sh_ "uci get netmode.main.port 2>/dev/null" || true)
+	[ -n "$RPORT" ] || RPORT=$PORT
+	BIND=$(sh_ "uci get netmode.main.listen 2>/dev/null" || true)
+	[ -n "$BIND" ] || BIND=$LAN
+}
+
+# Ждём, пока сокет появится. pgrep -f netmoded здесь не годится:
+# удалённая команда сама содержит эту подстроку и матчит саму себя.
+wait_listening() {
+	i=0
+	while [ "$i" -lt 20 ]; do
+		if sh_ "netstat -lnt 2>/dev/null | grep -q '$BIND:$RPORT'"; then
+			return 0
+		fi
+		sleep 0.5
+		i=$((i + 1))
+	done
+	return 1
+}
+
+# Открытый сокет ещё не значит «панель отдаётся»: запрашиваем её всерьёз,
+# с токеном, и судим по КОДУ ВОЗВРАТА клиента.
+#
+# Заголовки не разбираем. На OpenWrt wget — это busybox или
+# uclient-fetch: GNU-шный -S они не понимают и падают на разборе
+# аргументов, так и не сходив на сервер, а про 401 каждый пишет своё.
+# С токеном ответ ровно 200, и curl -f / wget возвращают 0 только на нём.
+#
+# Токен идёт ЗАГОЛОВКОМ, а не в query, и читается на роутере — не приезжает
+# от нас аргументом. Три причины, и все три настоящие: в query он попал бы
+# в argv клиента (виден в ps на роутере), в текст ошибки (uclient-fetch
+# печатает URL целиком, и токен уехал бы в терминал разработчика), и в наш
+# собственный вызов ssh. Проект держит секреты строго: на ответ с секретом
+# ставится no-store, а TestNikkiPanelNeverLogsSecret стережёт журнал, — деплою
+# нет причин быть исключением.
+http_alive() {
+	PROBE=$(sh_ "T=\$(cat /etc/netmoded/token 2>/dev/null)
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsS -m 5 -o /dev/null -H \"Authorization: Bearer \$T\" '$1'
+	else
+		wget -q -T 5 --header=\"Authorization: Bearer \$T\" -O /dev/null '$1'
+	fi" 2>&1) && return 0
+	[ -z "$PROBE" ] || echo "    $PROBE" >&2
+	return 1
+}
+
+tail_log() { sh_ "logread -e netmoded 2>/dev/null | tail -20" >&2 || true; }
+
+print_panel() {
+	[ -n "${TOKEN:-}" ] || TOKEN=$(sh_ "cat /etc/netmoded/token 2>/dev/null" || true)
+	if [ -n "$TOKEN" ]; then
+		echo "Панель: http://${BIND:-$LAN}:${RPORT:-$PORT}/?token=$TOKEN"
+		echo
+		echo "Открытую вкладку перезагрузите жёстко (Cmd-Shift-R): статика зашита"
+		echo "в бинарь и отдаётся без ETag, браузер может держать прежний app.js."
+	else
+		echo "Демон запущен, но токен ещё не создан. Посмотрите:"
+		echo
+		echo "    ssh $HOST logread -e netmoded"
+	fi
+}
 
 if [ "$RUN" = yes ]; then
-	echo "Запускаю в консоли. Ctrl-C останавливает."
+	say "Запуск в консоли — Ctrl-C останавливает"
 	echo
 	ssh -S "$CTL" -t "$HOST" "$REMOTE" || true
 	echo
-	TOKEN=$(sh_ "cat /etc/netmoded/token 2>/dev/null" || true)
-	[ -n "$TOKEN" ] && echo "Панель: http://$LAN:$PORT/?token=$TOKEN"
-elif [ "$INSTALL" = yes ]; then
-	sh_ "$INITD start" >/dev/null 2>&1 || true
-	sleep 1
-	TOKEN=$(sh_ "cat /etc/netmoded/token 2>/dev/null" || true)
-	if [ -n "$TOKEN" ]; then
-		echo "Панель: http://$LAN:$PORT/?token=$TOKEN"
+
+	# Сюда мы попадаем ровно тогда, когда демон УМЕР: ssh -t держит консоль,
+	# пока он жив, и возвращается на Ctrl-C или на падении. Печатать здесь
+	# «Готово» и ссылку на панель значило бы рапортовать успех над трупом и
+	# дать владельцу мёртвый адрес — а роутер при этом остаётся без демона:
+	# заливка сделала stop, init.d в этой ветке не звался, procd поднимет
+	# его только на перезагрузке.
+	say "Демон остановлен"
+	printf '%s\n' \
+		"Консольный запуск закончился, на роутере демон не работает. Поднять:" \
+		"" \
+		"    ssh $HOST $INITD start" \
+		"" \
+		"Или перезалить с перезапуском: ./scripts/deploy.sh"
+elif [ "$RESTART" = no ]; then
+	say "Готово"
+	printf '%s\n' \
+		"Бинарь залит, демон оставлен погашенным (--no-restart). Поднять:" \
+		"" \
+		"    ssh $HOST $INITD start"
+elif ! sh_ "[ -x $INITD ]"; then
+	say "Готово"
+	printf '%s\n' \
+		"Бинарь залит, но $INITD на роутере нет — перезапускать нечего." \
+		"Полная установка (init.d, конфиг, автозапуск):" \
+		"" \
+		"    ./scripts/deploy.sh --install" \
+		"" \
+		"Запустить вручную и посмотреть лог:" \
+		"" \
+		"    ssh $HOST $REMOTE"
+else
+	say "Перезапуск"
+
+	# restart, а не start: заливка уже сделала stop, но procd мог успеть
+	# поднять старый экземпляр по respawn.
+	sh_ "$INITD restart" >/dev/null 2>&1 || true
+
+	health_target
+
+	if wait_listening; then
+		echo "  ✓ слушает $BIND:$RPORT"
 	else
-		echo "Демон запущен, но токен ещё не создан. Посмотрите: ssh $HOST logread -e netmoded"
+		echo "  ✗ демон не поднялся за 10 с — последние строки лога:" >&2
+		tail_log
+		exit 1
 	fi
+
+	TOKEN=$(sh_ "cat /etc/netmoded/token 2>/dev/null" || true)
+
+	if [ -z "$TOKEN" ]; then
+		echo "  · токена ещё нет, панель не проверена"
+	elif ! sh_ "command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1"; then
+		echo "  · ни curl, ни wget на роутере, панель не проверена"
+	elif http_alive "http://$BIND:$RPORT/"; then
+		echo "  ✓ панель отвечает"
+	else
+		echo "  ✗ порт слушается, но панель не отдаётся — последние строки лога:" >&2
+		tail_log
+		exit 1
+	fi
+
+	say "Готово"
+	print_panel
+fi
+
+if [ "$INSTALL" = yes ]; then
 	cat <<EOF
 
 Осталось сделать РУКАМИ — демон чужой crontab не правит:
@@ -150,15 +287,5 @@ elif [ "$INSTALL" = yes ]; then
 
 Расписание обновления подписки теперь внутри демона (SPEC §9), и две
 копии дёргали бы конвертер вдвое чаще, чем нужно.
-EOF
-else
-	cat <<EOF
-Залит только бинарь. Полная установка (init.d, конфиг, автозапуск):
-
-    ./scripts/deploy.sh --install
-
-Запустить вручную и посмотреть лог:
-
-    ssh $HOST $REMOTE
 EOF
 fi

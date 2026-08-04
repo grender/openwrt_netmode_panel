@@ -344,6 +344,35 @@
     "fixed_field": "поле fixed = selected группы; отличает ручное закрепление от автовыбора, по одному now это неразличимо",
     "residual_risk": "поведение fail-closed при закреплённом МЁРТВОМ узле не прослежено. Закрепление трактуется как временное: панель держит возврат к AUTO на виду."
   },
+  "luci": {
+    "status": "verified",
+    "raw": "raw/72-luci-probe.txt",
+    "server": "uhttpd (netstat: pid 2049 держит 0.0.0.0:80, 0.0.0.0:443, :::80, :::443)",
+    "path": "/cgi-bin/luci",
+    "path_source": "uhttpd.main.lua_prefix='/cgi-bin/luci=/usr/lib/lua/luci/sgi/uhttpd.lua'; рядом uhttpd.main.cgi_prefix='/cgi-bin'",
+    "scheme": "http",
+    "scheme_rationale": "uhttpd.main.redirect_https='0' — редиректа 80→443 НЕТ, оба слушателя подняты (listen_http='0.0.0.0:80' '[::]:80', listen_https='0.0.0.0:443' '[::]:443'). Сертификат самоподписанный (uhttpd.defaults.commonname='OpenWrt', key_type=ec, days=397), поэтому https встретил бы владельца предупреждением браузера за тем же самым LuCI",
+    "port": 80,
+    "port_not_in_url": "80 — умолчание схемы http, поэтому в собранном адресе порта нет и нового литерала порта в коде не появляется",
+    "redirect_https": "0",
+    "listen_http": "'0.0.0.0:80' '[::]:80'",
+    "listen_https": "'0.0.0.0:443' '[::]:443'",
+    "docroot": "/www (uhttpd.main.home='/www'); внутри cgi-bin/, index.html, luci-static/",
+    "probe": "GET http://127.0.0.1/cgi-bin/luci → HTTP/1.1 403 Forbidden, x-luci-login-required: yes, content-type: text/html; charset=UTF-8, cache-control: no-cache, x-frame-options: SAMEORIGIN",
+    "probe_403_is_confirmation": "403 здесь — подтверждение, а не отказ: заголовок x-luci-login-required выдаёт именно LuCI (статика uhttpd таких заголовков не ставит), и в браузере владельца это форма входа",
+    "auth": "сессия LuCI: вход через форму, кука sysauth, luci.sauth.sessionpath='/tmp/luci-sessions', sessiontime='3600'. Демон аутентификацию LuCI не трогает и никаких кук не выдаёт — ссылка ведёт на страницу входа, дальше владелец сам",
+    "root_not_used": "GET http://127.0.0.1/ и GET http://192.168.9.1/ отвечают 200 OK, text/html, Content-Length: 664 — это статический /www/index.html. Его СОДЕРЖИМОЕ разведкой НЕ снималось, поэтому ссылаться на корень значило бы угадывать, куда он ведёт. Ссылка идёт на /cgi-bin/luci, где ответ снят дословно",
+    "no_liveness_probe": "живостью ссылка не гейтится: uhttpd не управляется netmode-apply, гаснуть по нашей вине не может (ADR-0024, раздел «Границы правила»), а проба ради подсветки кнопки стоила бы 3600 запросов в час к чужой службе при опросе раз в секунду (ADR-0017)",
+    "packages": [
+      "luci-base",
+      "luci-mod-admin-full",
+      "luci-mod-network",
+      "luci-mod-status",
+      "luci-mod-system",
+      "luci-ssl",
+      "luci-theme-bootstrap"
+    ]
+  },
   "b4_sets_observed": {
     "status": "verified",
     "raw": "raw/51-b4-sets.json",
