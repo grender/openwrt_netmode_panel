@@ -157,9 +157,21 @@ export const DICT = {
 		// Дубль ssid — штатный случай (ADR-0005), а не ошибка ввода: два профиля
 		// одной сети с разными паролями бывают. Поэтому подсказка, а не запрет.
 		'wifi.hint.dup': 'Сеть с именем {ssid} уже сохранена — это будет вторая запись с тем же именем.',
-		// Форма сохранила сеть, но какую именно запись включать — не разобрала
-		// (совпадений по ssid не одно). Гадать нельзя: включится не та сеть.
+		// Форма сохранила сеть, но какую именно запись включать — не разобрала.
+		// Поиск идёт диффом по id (совпадение по ssid снято: дубли имён штатны),
+		// и сюда приводит ответ, где новых записей не ровно одна: ноль либо две
+		// и больше — список поменяла не только наша запись. Гадать нельзя:
+		// у чужой записи может быть другой пароль, включится не та сеть.
 		'wifi.saved.pick': 'Сеть {ssid} сохранена. Какую именно запись включать, панель не определила однозначно — нажмите «Подключить» у нужной строки.',
+		// Два шага — две новости, и вторая без первой врёт. Форма к этому
+		// моменту закрыта, поэтому общее «не удалось» читается как «ничего
+		// не сохранилось»: владелец заводит сеть заново и получает два профиля
+		// одной сети с разными паролями (дубли штатны, ADR-0005).
+		// {why} стоит В КОНЦЕ, и это не вкусовщина: подставляется туда готовая
+		// фраза из describe(), почти всегда со своей точкой. В середине она
+		// давала бы «не прочитать.. Сеть в списке» — две точки подряд на каждом
+		// втором коде.
+		'wifi.saved.nolink': 'Сеть {ssid} сохранена, но переключиться на неё не удалось. Она есть в списке — повторить можно кнопкой «Подключить» в её строке. Причина: {why}',
 		'wifi.sheet.edit': 'Пароль сети {ssid}',
 		'wifi.field.ssid': 'Имя сети (SSID)',
 		'wifi.field.key': 'Пароль',
@@ -204,11 +216,25 @@ export const DICT = {
 		'wifi.fail.no_ipv4.text': 'Станция ассоциировалась с {ssid}, но не получила адрес по DHCP — интернета через эту сеть нет. Проверьте настройки этой сети или роутер, который её раздаёт.',
 		'wifi.fail.unverifiable.title': 'Исход неизвестен',
 		'wifi.fail.unverifiable.text': 'Роутер применил переключение на {ssid}, но не смог проверить результат: ubus не ответил или ответ не разобрался. Успех и провал одинаково возможны — откройте панель заново или проверьте состояние по ssh.',
-		// Запасной ключ. Набор reason закрыт на сервере, но это не гарантирует,
-		// что панель и демон одного дня: приписать чужой код одной из восьми
-		// известных формулировок было бы прямой ложью о том, что наблюдали.
-		'wifi.fail.unknown.title': 'Неизвестный исход',
-		'wifi.fail.unknown.text': 'Демон сообщил об исходе переключения на {ssid} кодом, которого эта версия панели не знает. Обновите панель или проверьте состояние по ssh.',
+		// Единственная причина, где «повторите» — вредный совет: повтор упрётся
+		// в тот же застрявший черновик и выдаст отказ про чужие правки. Поэтому
+		// текст ведёт не к кнопке, а в терминал, и называет команду целиком.
+		'wifi.fail.stale_draft.title': 'В конфигурации застрял черновик',
+		'wifi.fail.stale_draft.text': 'Переключение на {ssid} не состоялось, и отменить недописанные правки роутер не смог — они остались в конфигурации черновиком. Повторное нажатие не поможет: панель будет отказываться, ссылаясь на незакоммиченные правки, и в LuCI при этом пусто — черновик наш. Зайдите на роутер по ssh и выполните: uci revert wireless',
+		// Запасной ключ, и случаев в нём ДВА, а не один (web/app.js, upFail
+		// и UpstreamFailNote): reason вне закрытого набора — панель старее
+		// демона; reason === '' — джоб уже провалился, а last_fail ещё не
+		// приехал (поле в памяти демона, придёт следующим опросом). Прежний
+		// текст описывал только первый и во втором врал: обещал незнакомый
+		// код там, где кода не было вовсе. Поэтому новый называет не причину,
+		// а своё незнание — и разводит ДЕЙСТВИЯ: в гонке ждать (причина придёт
+		// сама), при рассинхроне версий не ждать (не придёт никогда).
+		// Заголовок намеренно не сближен с unverifiable выше: там исход правда
+		// неизвестен (успех равновозможен), здесь провал установлен и неясна
+		// лишь причина. Один заголовок на двоих стёр бы разницу между
+		// «может, получилось» и «точно не получилось».
+		'wifi.fail.unknown.title': 'Переключение не вышло, причина неизвестна',
+		'wifi.fail.unknown.text': 'Переключиться на {ssid} не удалось, но причину панель назвать не может. Либо она ещё не доехала — тогда появится здесь сама через секунду, подождите. Либо демон прислал код, которого эта версия панели не знает, — тогда не появится никогда, и остаётся обновить панель или посмотреть состояние по ssh.',
 
 		'sub.title': 'Подписка',
 		'sub.when': 'Обновлена {when}',
@@ -377,6 +403,7 @@ export const DICT = {
 		'wifi.sheet.saveconnect': 'Save and connect',
 		'wifi.hint.dup': 'A network named {ssid} is already saved — this will be a second entry with the same name.',
 		'wifi.saved.pick': 'The network {ssid} is saved. The panel could not tell which entry to enable — press “Connect” on the row you want.',
+		'wifi.saved.nolink': 'The network {ssid} was saved, but switching to it failed. It is in the list — you can retry with “Connect” on its row. Reason: {why}',
 		'wifi.sheet.edit': 'Password for {ssid}',
 		'wifi.field.ssid': 'Network name (SSID)',
 		'wifi.field.key': 'Password',
@@ -413,8 +440,10 @@ export const DICT = {
 		'wifi.fail.no_ipv4.text': 'The station associated with {ssid} but did not get an address over DHCP — there is no internet through this network. Check that network’s settings or the router providing it.',
 		'wifi.fail.unverifiable.title': 'Outcome unknown',
 		'wifi.fail.unverifiable.text': 'The router applied the switch to {ssid} but could not verify the result: ubus did not answer, or its answer did not parse. Success and failure are equally possible — reopen the panel or check over ssh.',
-		'wifi.fail.unknown.title': 'Unknown outcome',
-		'wifi.fail.unknown.text': 'The daemon reported an outcome for {ssid} with a code this panel version does not recognize. Update the panel or check over ssh.',
+		'wifi.fail.stale_draft.title': 'A draft is stuck in the configuration',
+		'wifi.fail.stale_draft.text': 'The switch to {ssid} did not happen, and the router could not undo the half-written changes — they stayed in the configuration as a draft. Trying again will not help: the panel will keep refusing, citing uncommitted changes, and LuCI will show none — the draft is ours. Log in to the router over ssh and run: uci revert wireless',
+		'wifi.fail.unknown.title': 'Switch failed, reason unknown',
+		'wifi.fail.unknown.text': 'The switch to {ssid} did not succeed, but the panel cannot name the reason. Either it has not arrived yet — then it shows up here on its own within a second, so just wait. Or the daemon sent a code this panel version does not recognize — then it never will, and what is left is to update the panel or check over ssh.',
 
 		'sub.title': 'Subscription',
 		'sub.when': 'Updated {when}',

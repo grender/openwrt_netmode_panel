@@ -1,0 +1,41 @@
+{
+  "fingerprint": "sha256:5c2ea8d417b60f93",
+  "selection_state": "single",
+  "radio": {
+    "device": "radio0",
+    "band": "2g",
+    "mode": "sta"
+  },
+  "networks": [
+    {
+      "id": "wifinet0",
+      "ssid": "John24",
+      "encryption": "psk2",
+      "has_key": true,
+      "network": "wwan",
+      "enabled": true,
+      "editable": false,
+      "switchable": false
+    },
+    {
+      "id": "wifinet2",
+      "ssid": "ATOM",
+      "encryption": "psk2",
+      "has_key": true,
+      "network": "wwan",
+      "enabled": false,
+      "editable": true,
+      "switchable": true
+    },
+    {
+      "id": "netmode_7c1a4e9b",
+      "ssid": "Beeline_Home_5GHz_Guest_2024_ext",
+      "encryption": "psk2",
+      "has_key": true,
+      "network": "wwan",
+      "enabled": false,
+      "editable": true,
+      "switchable": true
+    }
+  ]
+}

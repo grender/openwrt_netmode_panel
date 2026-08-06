@@ -146,10 +146,16 @@ type Subscription struct {
 	Error      *string `json:"error"`
 }
 
+// Fail — последняя неудачная смена внешней сети (см. failStore).
+//
+// Reason — типизированный машинный код, а не string: в JSON он уезжает той же
+// строкой, что и раньше (контракт не менялся), но внутри демона его нельзя
+// перепутать с ssid, который лежит соседним полем и соседним параметром
+// failStore.Set.
 type Fail struct {
-	SSID   string `json:"ssid"`
-	Reason string `json:"reason"`
-	At     string `json:"at"`
+	SSID   string     `json:"ssid"`
+	Reason FailReason `json:"reason"`
+	At     string     `json:"at"`
 }
 
 // Service — состояние подключаемого движка (nikki, b4).

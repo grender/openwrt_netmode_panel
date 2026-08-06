@@ -5,7 +5,7 @@ TARGET   := $(BUILDDIR)/$(BIN)
 GOFLAGS_TARGET := GOOS=linux GOARCH=arm64 CGO_ENABLED=0
 LDFLAGS        := -s -w
 
-.PHONY: all verify fmt vet test panel build size checks probe-check clean help
+.PHONY: all verify fmt vet test panel build size checks probe-check geometry clean help
 
 all: verify
 
@@ -47,6 +47,7 @@ checks:
 	@scripts/check-evidence.sh
 	@scripts/check-wireless-write.sh
 	@scripts/check-routes.sh
+	@scripts/check-fail-reasons.sh
 	@scripts/check-netmode-seed.sh
 	@scripts/check-netmode-apply.sh
 	@scripts/check-netmode-wifi.sh
@@ -58,6 +59,15 @@ checks:
 ## гонять его ОБЯЗАТЕЛЬНО перед тем, как везти замер на железо.
 probe-check:
 	@scripts/check-probe-rq03.sh
+
+## geometry — замер геометрии панели (протокол web/README.md, но машиной).
+## Не в verify и не в checks намеренно: требует установленного Google Chrome,
+## которого нет ни в CI, ни у того, кто правит только Go. Гонять ОБЯЗАТЕЛЬНО
+## до и после любой правки web/app.css и web/app.js: числа «карточка не
+## дёрнулась» и «документ не шире окна» проверяются только замером, глазами
+## скачок в 74px за один кадр пропускается.
+geometry:
+	@node scripts/measure-geometry.mjs
 
 clean:
 	@rm -rf $(BUILDDIR)

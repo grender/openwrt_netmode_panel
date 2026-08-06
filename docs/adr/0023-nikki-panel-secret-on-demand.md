@@ -20,8 +20,9 @@
 > - **Довод «ссылка — это адрес, а не проба живости»** (он же в
 >   `internal/httpapi/server.go` и в схеме `Links` в `openapi.yaml`) —
 >   **опровергнут**. Он предполагал, что API движка и его веб-морда — разные
->   слушатели; разведка говорит обратное (`docs/recon/evidence.json:8`,
->   `:266`), то есть при `available: false` ссылка вела в connection refused
+>   слушатели; разведка говорит обратное (`docs/recon/evidence.json`, ключи
+>   `b4_api.listen_observed` и `nikki.panel.port`), то есть при
+>   `available: false` ссылка вела в connection refused
 >   всегда. См. [ADR-0024](0024-panel-links-only-when-service-answers.md).
 > - **Строка `host_unknown` в таблице «Три отказа»** (ниже, раздел «Решение»).
 >   Код по-прежнему отдаётся сервером и по-прежнему различим, но **из

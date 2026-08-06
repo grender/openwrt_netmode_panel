@@ -67,7 +67,26 @@ type Fake struct {
 	// Код, а не готовая ошибка, — по той же причине, что и у
 	// ApplyExitCodes: он проходит через ту же таблицу upstreamSentinels,
 	// что и на роутере.
+	//
+	// ОТРИЦАТЕЛЬНОЕ значение означает «процесс снят сигналом»: именно -1
+	// отдаёт ExitCode() у настоящего *exec.ExitError, когда кода возврата не
+	// было вовсе (дедлайн, OOM-killer, kill по ssh). Отдельного поля-флага
+	// для этого нет намеренно — иначе разбор «кода нет» жил бы у фейка своей
+	// жизнью, а он обязан идти той же воронкой upstreamErrorForCode.
 	UpstreamExitCode int
+
+	// Panics — вызовы, на которых фейк ПАНИКУЕТ (ключ как в Calls/reads,
+	// значение — текст паники).
+	//
+	// Нужен ровно для одного класса проверок: что паника в теле джоба доедет
+	// до владельца причиной, а не только состоянием failed. Внедрить её
+	// иначе нельзя — паниковать умеет только код, а весь код между демоном и
+	// системой проходит через этот интерфейс.
+	//
+	// Паника бросается ПОСЛЕ снятия замка (см. fail/record): брось её под
+	// замком, и следующий вызов фейка встал бы навсегда на mu.Lock, а тест
+	// умер бы по общему таймауту, ничего не объяснив.
+	Panics map[string]string
 
 	// Calls — журнал изменяющих вызовов в порядке поступления.
 	Calls []string
@@ -107,6 +126,7 @@ func NewFake() *Fake {
 		Errors:         map[string]error{},
 		ErrorsBySuffix: map[string]error{},
 		ApplyExitCodes: map[string]int{},
+		Panics:         map[string]string{},
 		stagedOps:      map[string][]string{},
 		base:           map[string][]byte{},
 		foreign:        map[string]string{},
@@ -171,6 +191,11 @@ func (f *Fake) record(call string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, call)
+
+	// Паника внедряется сразу после журналирования: вызов уже виден тесту, а
+	// всё, что ниже, до него не доходит — ровно так же на роутере не доходит
+	// до конца операция, рухнувшая на середине.
+	f.panicLocked(call)
 
 	if err := f.injectedLocked(call); err != nil {
 		return err
@@ -281,7 +306,21 @@ func (f *Fake) fail(call string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reads = append(f.reads, call)
+	f.panicLocked(call)
 	return f.injectedLocked(call)
+}
+
+// panicLocked паникует, если вызов внесён в Panics.
+//
+// Замок при этом удерживается, и это безопасно ровно потому, что оба
+// вызывающих (record и fail) снимают его через defer, а defer отрабатывает и
+// на раскрутке паники. Сними кто-нибудь из них замок вручную в конце функции
+// — и первая же внедрённая паника оставила бы фейк заблокированным навсегда,
+// а тест умер бы по общему таймауту, ничего не объяснив.
+func (f *Fake) panicLocked(call string) {
+	if msg, ok := f.Panics[call]; ok {
+		panic("фейк: " + msg + " (вызов " + call + ")")
+	}
 }
 
 // injectedLocked ищет внедрённую ошибку сначала по точному описанию вызова,
@@ -400,6 +439,12 @@ func (f *Fake) UCISet(ctx context.Context, pkg, section, option, value string) e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Та же функция, что и в реальной реализации: фейк, принимающий
+	// disabled=true, учил бы тесты писать значение, которое uci прочитает
+	// как ВКЛЮЧЕНО (ADR-0004).
+	if err := forbidDisabledValue(pkg, option, value); err != nil {
+		return err
+	}
 	for kind, s := range map[string]string{"пакет": pkg, "секция": section, "опция": option} {
 		if err := validateName(kind, s); err != nil {
 			return err
@@ -413,6 +458,12 @@ func (f *Fake) UCISet(ctx context.Context, pkg, section, option, value string) e
 
 func (f *Fake) UCIDelete(ctx context.Context, pkg, section, option string) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Запрет ADR-0026 держится той же функцией, что и в реальной реализации.
+	// Фейк, разрешающий запрещённое, учит тесты неправде: зелёный тест
+	// доказывал бы путь, которого на роутере не существует.
+	if err := forbidDeleteDisabled(pkg, option); err != nil {
 		return err
 	}
 	target := pkg + "." + section
@@ -512,6 +563,14 @@ func (f *Fake) ApplyUpstream(ctx context.Context, t UpstreamTarget) error {
 	// Текст повторяет форму того, что соберёт реальная реализация: имя
 	// скрипта, аргумент, код возврата.
 	cause := fmt.Errorf("netmode-wifi %s: exit status %d", t.Radio, code)
+	if code < 0 {
+		// Отрицательного КОДА у настоящего процесса не бывает: -1 отдаёт
+		// ExitCode() ровно тогда, когда процесс сняли сигналом и кода не
+		// было вовсе. Текст обязан выглядеть так же, иначе тест доказывал бы
+		// разбор строки «exit status -1», которой на роутере не напечатает
+		// никто.
+		cause = fmt.Errorf("netmode-wifi %s: signal: killed", t.Radio)
+	}
 	return upstreamErrorForCode(code, cause)
 }
 

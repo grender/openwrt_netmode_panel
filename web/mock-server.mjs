@@ -54,17 +54,75 @@ const SCENARIOS = {
 	'job-fail-short': 'status-job-failed.json',
 	'job-fail-long': 'status-job-failed.json',
 	'job-fail-vanish': 'status-job-failed.json',
-	// Переключение внешней сети (POST /api/upstream). База у всех пяти —
+	// Переключение внешней сети (POST /api/upstream). База у всех шести —
 	// status-single.json: mode nikki, configured_ssid == associated_ssid ==
 	// John24, wireless_fingerprint sha256:1f0c9a3b7d2e4a58 — то же значение,
 	// что fingerprint в wifi-networks.json, иначе If-Match проверить нечем.
 	// Исход решает POST-обработчик через overlay, а не отдельная фикстура на
-	// сценарий: до нажатия кнопки все пять неотличимы.
+	// сценарий: до нажатия кнопки все шесть неотличимы.
+	//
+	// Исход каждого лежит в UPSTREAM_REASON ниже, и это не формальность:
+	// upstream-busy был зарегистрирован ЗДЕСЬ, но в той таблице отсутствовал,
+	// а отсутствие там означает успех. Сценарий с именем «занято» двадцать
+	// секунд показывал удачное переключение — и на нём нельзя было ни
+	// посмотреть текст про занятое радио, ни поймать регрессию в нём.
 	'upstream-ok': 'status-single.json',
 	'upstream-fail-stale': 'status-single.json',
 	'upstream-fail-nokey': 'status-single.json',
 	'upstream-no-ipv4': 'status-single.json',
 	'upstream-busy': 'status-single.json',
+	// Застрявший черновик UCI (ADR-0028). Единственный исход, где совет —
+	// не «повторите», а ssh и `uci revert wireless`: смотреть надо именно на
+	// текст карточки, кнопка здесь не поможет.
+	'upstream-stale-draft': 'status-single.json',
+	// Исходы переключения, достижимые СРАЗУ ПРИ ЗАГРУЗКЕ — сменой сценария,
+	// а не нажатием кнопки.
+	//
+	// Пять сценариев выше показывают исход только через двадцатисекундный джоб,
+	// и мерить на них геометрию нельзя: замер приходится на гонку с таймером,
+	// а перезагрузка страницы стирает результат. Здесь исход лежит в фикстуре
+	// и виден с первого кадра, сколько на него ни смотри.
+	//
+	// Пары «короткий/длинный» существуют ради одного и того же измерения:
+	// ssid ровно в 32 байта — предел стандарта (internal/httpapi/wifiwrite.go,
+	// validateNetwork) и худший случай для вёрстки. Что именно ломается,
+	// видно только рядом с базой сравнения, поэтому короткий вариант — тоже
+	// сценарий, а не «просто single».
+	'upstream-fail-seen': 'status-upstream-fail.json',
+	'upstream-fail-long': 'status-upstream-fail-long.json',
+	// База сравнения для длинных состояний, и существует она только ради
+	// замера (scripts/measure-geometry.mjs, критерии C3/C4). Фикстура —
+	// побайтовая копия status-upstream-fail-long.json с last_fail: null,
+	// то есть отличается от неё РОВНО блоком провала и ничем больше.
+	//
+	// Без такой базы длинные состояния приходилось сравнивать с single, а он
+	// отличается сразу двумя признаками — и провалом, и длиной ssid в шапке
+	// и баннере. Разница по двум переменным не измеряет ни одну из них.
+	'single-long': 'status-single-long.json',
+	'upstream-job-long': 'status-job-upstream-long.json',
+	// Три кнопки в ряду у сети с длинным именем: статус обычный, длина живёт
+	// в списке (LISTS ниже), а не в статусе.
+	'upstream-long-list': 'status-single.json',
+};
+
+// Какой файл списка сетей отдаётся в сценарии. Умолчание — wifi-networks.json.
+//
+// Таблица, а не лесенка условий: файлов уже три, и каждое следующее состояние
+// добавляло бы к выражению ещё одну ветку в месте, где решение принимается
+// одно — «какой файл». Рядом с SCENARIOS видно и вторую половину пары: чем
+// сценарий отличается по статусу и чем по списку.
+const LISTS = {
+	ambiguous: 'wifi-networks-ambiguous.json',
+	'upstream-fail-long': 'wifi-networks-long.json',
+	'upstream-job-long': 'wifi-networks-long.json',
+	'upstream-long-list': 'wifi-networks-long.json',
+	// Тот же список, что у upstream-fail-long, и это обязательно: список
+	// задаёт высоту карточки Wi-Fi, а значит и subTop под ней. Оставь здесь
+	// умолчание — и база разошлась бы с измеряемым состоянием ещё и по
+	// содержимому списка, то есть по второй переменной, ради устранения
+	// которой она и заведена. Заодно совпадёт fingerprint: у длинной фикстуры
+	// он sha256:5c2ea8d417b60f93, как в wifi-networks-long.json.
+	'single-long': 'wifi-networks-long.json',
 };
 
 // SLOW_START_SEC — сколько секунд служба режима не слушает свой порт ПОСЛЕ
@@ -121,7 +179,28 @@ const SERVICE_UP = {
 // весь джоб целиком — и заголовок провала, и текст ошибки. Мок обязан уметь
 // то же самое: провал, который висит вечно, — состояние, которого на роутере
 // нет, и мерить на нём читаемость значит мерить не то.
+//
+// Значение одно на обоих пользователей константы: и на джобы из фикстур
+// (state.jobUntil), и на джобы, которые мок запускает сам (startJob).
 const JOB_KEEP_MS = 5000;
+
+// Сдвиг часов «роутера» относительно часов машины, где открыт браузер.
+//
+// ЗАЧЕМ. Все метки времени в контракте — router time: generated_at, started_at,
+// last_fail.at. На ноутбуке разработчика мок и браузер живут на одних часах,
+// поэтому ЛЮБАЯ ошибка вида «местное время минус метка роутера» здесь даёт
+// верный ответ и не воспроизводится ни одним прогоном. На коробке без RTC,
+// у которой не поднялся upstream, расхождение — часы и больше, и ровно такую
+// коробку панель и обслуживает. Знак важен обеих: отстающий роутер и
+// опережающий ломают разное.
+//
+// Задаётся при запуске (MOCK_SKEW_SEC=-3600 node web/mock-server.mjs 8090)
+// либо на ходу: curl 'http://localhost:PORT/__clock?skew=3600'.
+let skewMs = Number(process.env.MOCK_SKEW_SEC || 0) * 1000;
+// Единственный источник времени мока. Всё, что уезжает в ответ меткой,
+// обязано идти отсюда: метка, снятая мимо сдвига, рассинхронизировала бы
+// «роутер» сам с собой, и проверялось бы не то.
+const nowISO = () => new Date(Date.now() + skewMs).toISOString();
 
 // Текст провалившейся операции — под замер геометрии баннера.
 //
@@ -161,6 +240,17 @@ const state = {
 	// Изменения, накопленные POST-ами: мок не переписывает фикстуры, а
 	// накладывает поверх — так исходные данные остаются эталоном.
 	overlay: {},
+	// Сети, созданные через POST /api/wifi/networks. Держать их обязательно:
+	// панель после сохранения читает networks ИЗ ОТВЕТА на запись и находит
+	// свою запись ДИФФОМ ПО id — вычитает множество id, снятое до записи, из
+	// списка после неё (поиск по ssid снят: дубли имён штатны, ADR-0005).
+	// Мок, забывающий созданную сеть, отдал бы разность пустой, и составное
+	// действие «Сохранить и подключиться» стало бы непроверяемым: список
+	// схлопывается обратно к фикстуре сразу после закрытия формы.
+	created: [],
+	// Правки существующих сетей: id → изменённые поля. Фикстуру не трогаем
+	// по той же причине, что и везде, — она эталон.
+	edits: {},
 	job: null,
 	// Окно молчания службы: upEngine — чей порт молчит, upAt — момент (мс),
 	// с которого он начинает отвечать. Ноль означает «окна нет»: движок виден
@@ -184,6 +274,51 @@ const readJSON = async (name) => JSON.parse(await fs.readFile(path.join(EX, name
 // Текущий статус сценария. Вынесен отдельно, потому что от него зависят
 // и /api/status, и согласованность побочных списков.
 const currentStatus = () => readJSON(SCENARIOS[state.scenario] || SCENARIOS.single);
+
+// Список сохранённых сетей — ровно то тело, что отдаёт GET /api/wifi/networks.
+//
+// Вынесен отдельно, потому что читателей у него три и все обязаны видеть ОДИН
+// список: сам GET, ответ на запись (по контракту тело то же) и поиск секции
+// в POST /api/upstream. Прежде третий читал файл напрямую, и переключиться на
+// только что созданную сеть было нельзя — её в файле нет, а значит 404.
+//
+// Отпечаток берётся из статуса, а не из файла, и это не подгонка. Демон
+// считает оба значения от одного и того же `uci show wireless`
+// (internal/httpapi/respondNetworks и status.go), поэтому разойтись они на
+// роутере не могут в принципе. В моке разойтись могли: панель шлёт в If-Match
+// отпечаток из списка, а POST /api/upstream сверяет его с отпечатком статуса,
+// и любая пара фикстур, собранная порознь, давала бы fingerprint_mismatch на
+// первом же нажатии «Подключить».
+const currentNetworks = async () => {
+	const d = await readJSON(LISTS[state.scenario] || 'wifi-networks.json');
+	const s = { ...(await currentStatus()), ...state.overlay };
+	// Список сетей обязан согласовываться со сценарием. Мок, у которого
+	// баннер говорит «сохранённых сетей нет», а список показывает две, —
+	// хуже отсутствующего: он учит неправде о собственном интерфейсе.
+	d.selection_state = s.selection_state;
+	d.fingerprint = s.wireless_fingerprint;
+	if (state.scenario === 'empty') {
+		d.networks = [];
+	} else if (state.scenario === 'all-disabled') {
+		d.networks = d.networks.map((n) => ({ ...n, enabled: false, editable: true }));
+	} else if (s.selection_state === 'single' && s.configured_ssid) {
+		// Какая секция включена — знает статус, и список обязан говорить то же
+		// самое. Это одинаково верно и для фикстуры, где переключение уже
+		// состоялось (configured_ssid не John24), и для успешного POST
+		// /api/upstream, положившего новый ssid в overlay: иначе панель,
+		// перечитавшая список по расхождению fingerprint, увидела бы список,
+		// который сам себе противоречит.
+		d.networks = d.networks.map((n) => {
+			const enabled = n.ssid === s.configured_ssid;
+			return { ...n, enabled, editable: !enabled, switchable: !enabled };
+		});
+	}
+	// Созданные — в конец: uci add дописывает секцию в файл, а порядок в
+	// ответе тот же, что в файле.
+	d.networks = [...d.networks, ...state.created]
+		.map((n) => (state.edits[n.id] ? { ...n, ...state.edits[n.id] } : n));
+	return d;
+};
 
 // arm открывает окно молчания движка: столько-то секунд порт не отвечает,
 // потом движок поднимается сам. Пустой engine закрывает окно вовсе.
@@ -355,7 +490,7 @@ const startJob = (kind, arg, label, sec, finish) => {
 	state.job = {
 		id: 'j-' + Math.random().toString(16).slice(2, 8),
 		kind, arg, label,
-		started_at: new Date().toISOString(),
+		started_at: nowISO(),
 		finished_at: null,
 		eta_sec: sec,
 		state: 'running',
@@ -363,25 +498,38 @@ const startJob = (kind, arg, label, sec, finish) => {
 	};
 	// Таймеры привязаны к своему джобу по id. Без этого таймер завершившейся
 	// операции догонял уже следующую и гасил её: доиграл первый джоб — и через
-	// полторы секунды из статуса пропадал второй, только что запущенный.
+	// окно показа из статуса пропадал второй, только что запущенный.
 	const id = state.job.id;
 	const mine = () => state.job && state.job.id === id;
 	setTimeout(() => {
 		if (mine()) {
 			if (finish) finish(); else state.job.state = 'done';
-			state.job.finished_at = new Date().toISOString();
+			state.job.finished_at = nowISO();
 		}
-		setTimeout(() => { if (mine()) state.job = null; }, 1500);
+		// Завершённый джоб держится JOB_KEEP_MS — столько же, сколько у демона.
+		// Здесь стояло 1500, и мок расходился с контрактом ровно в том окне,
+		// на которое опирается панель: «новый джоб успевает стартовать, пока
+		// в статусе лежит доигранный» (web/app.js, разбор засева) на моке
+		// не воспроизводилось вовсе, а исход операции успевал уйти с экрана
+		// втрое раньше, чем уйдёт на роутере.
+		setTimeout(() => { if (mine()) state.job = null; }, JOB_KEEP_MS);
 	}, sec * 1000);
 };
 
 // Причина неудачи переключения по имени сценария. Отсутствие в таблице —
 // успех. Строки те же, что в закрытом наборе LastFail.reason
 // (docs/api/openapi.yaml) и в internal/httpapi/upstreamhandler.go.
+//
+// Мок вправе знать НЕ ВСЕ девять причин — он сценарный, а не справочник.
+// Но выдумывать десятую нельзя: код, которого нет в allReasons, с роутера
+// не придёт никогда, и панель отрисовала бы на моке то, чего не бывает.
+// Подмножество стережёт scripts/check-fail-reasons.sh.
 const UPSTREAM_REASON = {
 	'upstream-fail-stale': 'stayed_on_previous',
 	'upstream-fail-nokey': 'not_associated',
 	'upstream-no-ipv4': 'no_ipv4',
+	'upstream-busy': 'busy',
+	'upstream-stale-draft': 'stale_draft',
 };
 
 // Текст job.error — дословно из internal/httpapi/upstreamhandler.go
@@ -395,6 +543,19 @@ const upstreamFailText = (reason, ssid, prevSsid) => {
 	if (reason === 'no_ipv4') {
 		return `станция подключилась к «${ssid}», но внешний канал так и не получил ` +
 			'адрес IPv4 — сеть подключена, интернета нет';
+	}
+	if (reason === 'busy') {
+		// Форма сентинела из internal/executor/executor.go: errorForCode
+		// заворачивает ErrUpstreamBusy и stderr скрипта одним «%w: %w».
+		return 'netmode-wifi: занято: не удалось взять блокировку — ' +
+			'радио настраивает другой процесс';
+	}
+	if (reason === 'stale_draft') {
+		// Две новости одной строкой, как в switchUpstream, шаг 5:
+		// «%w; отменить не удалось: %w». Первая половина — почему свернулись,
+		// вторая — почему черновик остался лежать.
+		return 'запись секций не удалась; отменить не удалось: ' +
+			'uci revert wireless вернул ошибку — черновик остался в конфигурации';
 	}
 	return `станция не подключилась к «${ssid}» за отведённое время`;
 };
@@ -413,7 +574,7 @@ async function handleAPI(req, res, u) {
 	// --- статус ---
 	if (p === '/api/status' && method === 'GET') {
 		const base = await currentStatus();
-		const s = { ...base, ...state.overlay, links: linksFor(req), generated_at: new Date().toISOString() };
+		const s = { ...base, ...state.overlay, links: linksFor(req), generated_at: nowISO() };
 		if (state.job) s.job = state.job;
 		if (s.online) s.online = { ...s.online, checked_at: s.generated_at };
 		// Движки: инвариант роутера плюс окно молчания. mode здесь уже новый
@@ -483,8 +644,10 @@ async function handleAPI(req, res, u) {
 				'Список сетей изменился с тех пор, как вы его открыли — перечитайте и повторите');
 		}
 
-		const netsFile = state.scenario === 'ambiguous' ? 'wifi-networks-ambiguous.json' : 'wifi-networks.json';
-		const target = (await readJSON(netsFile)).networks.find((n) => n.id === body.id);
+		// Секция ищется в том же списке, что видит панель, — вместе с только
+		// что созданными: второй шаг «Сохранить и подключиться» приходит именно
+		// с таким id, и файла за ним нет.
+		const target = (await currentNetworks()).networks.find((n) => n.id === body.id);
 		if (!target) return fail(res, 404, 'not_found', 'Сеть с таким id не найдена');
 		if (!target.switchable) {
 			return fail(res, 409, 'already_selected', 'Эта сеть уже единственная включённая');
@@ -505,7 +668,7 @@ async function handleAPI(req, res, u) {
 				// сейчас, last_fail для того, кто вернётся позже.
 				state.job.state = 'failed';
 				state.job.error = upstreamFailText(reason, ssid, prevSsid);
-				state.overlay.last_fail = { ssid, reason, at: new Date().toISOString() };
+				state.overlay.last_fail = { ssid, reason, at: nowISO() };
 			} else {
 				state.job.state = 'done';
 				state.overlay.configured_ssid = ssid;
@@ -525,34 +688,12 @@ async function handleAPI(req, res, u) {
 		return send(res, 200, await readJSON('wifi-scan.json'));
 	}
 	if (p === '/api/wifi/networks' && method === 'GET') {
-		if (state.scenario === 'ambiguous') {
-			// Обе включены — это и есть конфликт: править и добавлять нельзя
-			// ни одну (editable: false у обеих), а переключить — можно
-			// (switchable: true у обеих, ADR-0026) — выход из неоднозначности
-			// и есть единственная разрешённая на ней операция.
-			return send(res, 200, await readJSON('wifi-networks-ambiguous.json'));
-		}
-		const d = await readJSON('wifi-networks.json');
-		// Список сетей обязан согласовываться со сценарием. Мок, у которого
-		// баннер говорит «сохранённых сетей нет», а список показывает две, —
-		// хуже отсутствующего: он учит неправде о собственном интерфейсе.
-		d.selection_state = (await currentStatus()).selection_state;
-		if (state.scenario === 'empty') {
-			d.networks = [];
-		} else if (state.scenario === 'all-disabled') {
-			d.networks = d.networks.map((n) => ({ ...n, enabled: false, editable: true }));
-		} else if (state.overlay.configured_ssid) {
-			// Успешное переключение upstream поменяло, какая секция включена.
-			// Список обязан согласоваться со status.configured_ssid и с новым
-			// отпечатком — иначе панель, перечитавшая список по расхождению
-			// fingerprint, увидела бы список, который сам себе противоречит.
-			d.fingerprint = state.overlay.wireless_fingerprint;
-			d.networks = d.networks.map((n) => {
-				const enabled = n.ssid === state.overlay.configured_ssid;
-				return { ...n, enabled, editable: !enabled, switchable: !enabled };
-			});
-		}
-		return send(res, 200, d);
+		// При ambiguous обе сети включены — это и есть конфликт: править и
+		// добавлять нельзя ни одну (editable: false у обеих), а переключить —
+		// можно (switchable: true у обеих, ADR-0026) — выход из
+		// неоднозначности и есть единственная разрешённая на ней операция.
+		// Отдельной ветки это не требует: раскладка лежит в самой фикстуре.
+		return send(res, 200, await currentNetworks());
 	}
 	if (p === '/api/wifi/networks' && method === 'POST') {
 		if (state.scenario === 'ambiguous') {
@@ -560,11 +701,53 @@ async function handleAPI(req, res, u) {
 				'В конфигурации включено несколько сетей — запись запрещена');
 		}
 		const body = await readBody(req);
-		if (body.id === 'wifinet0') {
-			return fail(res, 409, 'enabled_network_readonly',
-				'Активную сеть в этой фазе менять нельзя');
+		if (body.id) {
+			const target = (await currentNetworks()).networks.find((n) => n.id === body.id);
+			if (!target) return fail(res, 404, 'not_found', 'Сеть с таким id не найдена');
+			// Запрет постоянный, а не «до конца фазы» (ADR-0026, «Что
+			// сохраняется из ADR-0009 дословно»): смена ssid или пароля
+			// активной сети рвёт ассоциацию при ближайшем применении, а
+			// применение теперь вызываем в том числе мы. Порядок для
+			// владельца — сначала переключиться, потом править.
+			if (target.enabled) {
+				return fail(res, 409, 'enabled_network_readonly',
+					'Активную внешнюю сеть менять нельзя: сначала переключитесь на другую');
+			}
+			state.edits[body.id] = { ...state.edits[body.id] };
+			if (body.ssid) state.edits[body.id].ssid = body.ssid;
+			if (body.encryption) state.edits[body.id].encryption = body.encryption;
+			if (typeof body.key === 'string') state.edits[body.id].has_key = body.key !== '';
+		} else {
+			// Имя секции — netmode_<8 hex>, как у демона (newSectionName,
+			// internal/httpapi/wifiwrite.go). Именованная, а не анонимная:
+			// анонимную нельзя адресовать стабильно (ADR-0005), а вторым шагом
+			// панель адресует именно её.
+			//
+			// Создаётся ВЫКЛЮЧЕННОЙ всегда: отсутствие disabled означает
+			// «включена», и создать включённую станционную секцию демон не
+			// вправе (ADR-0009, сохранено ADR-0026). Отсюда же editable и
+			// switchable: выключенную можно и править, и включить.
+			state.created.push({
+				id: 'netmode_' + crypto.randomBytes(4).toString('hex'),
+				ssid: String(body.ssid || ''),
+				encryption: body.encryption || 'psk2',
+				has_key: typeof body.key === 'string' && body.key !== '',
+				network: 'wwan',
+				enabled: false,
+				editable: true,
+				switchable: true,
+			});
 		}
-		return send(res, 200, { ok: true });
+		// Запись изменила /etc/config/wireless — значит изменился и отпечаток.
+		// Он один на статус и на список (см. currentNetworks), поэтому кладётся
+		// в overlay: панель тут же шлёт его в If-Match следующим запросом.
+		state.overlay.wireless_fingerprint = nextFingerprint();
+		// Тело ответа на запись — тот же список, что у GET (openapi: «Записано.
+		// Тело — обновлённый список, как у GET»). Прежде здесь лежало
+		// { ok: true }, и панель, читающая r.networks вторым шагом составного
+		// действия, не находила ничего: проверить «Сохранить и подключиться»
+		// в моке было нечем.
+		return send(res, 200, await currentNetworks());
 	}
 
 	// --- Nikki: адрес веб-морды ---
@@ -672,6 +855,8 @@ const server = http.createServer(async (req, res) => {
 		if (name && SCENARIOS[name]) {
 			state.scenario = name;
 			state.overlay = {};
+			state.created = [];
+			state.edits = {};
 			state.job = null;
 			// Окно молчания и срок показа провала отсчитываются от переключения
 			// сценария: оба состояния кратковременны, и наблюдать их надо
@@ -680,6 +865,18 @@ const server = http.createServer(async (req, res) => {
 			state.jobUntil = name === 'job-fail-vanish' ? Date.now() + JOB_KEEP_MS : 0;
 		}
 		return send(res, 200, { scenario: state.scenario, available: Object.keys(SCENARIOS) });
+	}
+
+	// Подмена часов «роутера» — служебный маршрут мока, вне контракта.
+	//
+	// Сценарием это быть не может: сдвиг ортогонален состоянию роутера и
+	// проверяется вместе с любым из них. Секунды, а не миллисекунды: интересны
+	// величины от минут (дрейф) до часов (коробка без RTC), и в миллисекундах
+	// такие числа только неудобно набирать.
+	if (u.pathname === '/__clock') {
+		const v = Number(u.searchParams.get('skew'));
+		if (Number.isFinite(v)) skewMs = v * 1000;
+		return send(res, 200, { skew_sec: skewMs / 1000, router_now: nowISO() });
 	}
 
 	if (u.pathname.startsWith('/api/')) {

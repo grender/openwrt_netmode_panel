@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"netmoded/internal/executor"
@@ -14,12 +15,29 @@ import (
 	"netmoded/internal/wireless"
 )
 
-// Таксономия неудач переключения — РОВНО эти восемь строк.
+// FailReason — машинный код причины неудачного переключения.
+//
+// Именованный тип, а не string, и это не косметика. У failStore.Set два
+// соседних строковых параметра (ssid и причина), переставить их местами
+// компилятор не мешал бы ни секунды, а владелец увидел бы в панели «сеть
+// no_ipv4 не подключилась» — доклад, по которому нечего делать. Тот же довод
+// уже принят для UpstreamTarget в executor: именованное делает подмену видимой
+// в точке вызова.
+//
+// Закрытой суммы Go не даёт, и притворяться, что даёт, здесь нечем: любая
+// строка приводится к FailReason. Тип даёт две другие вещи — воронку
+// (switchFailed, где проверяется принадлежность таксономии) и одно-единственное
+// перечисление allReasons вместо трёх разъезжающихся копий.
+type FailReason string
+
+// Таксономия неудач переключения.
 //
 // Список закрыт и менять его нельзя в одиночку: те же строки переводит
 // панель (web/i18n.js) и описывает docs/api/openapi.yaml. Новая причина,
-// добавленная только здесь, приедет к владельцу непереведённым машинным
-// кодом — то есть худшим видом доклада: похожим на ошибку демона.
+// добавленная только здесь, приедет к владельцу через запасной ключ
+// wifi.fail.unknown — «причина неизвестна, обновите панель», — и панель при
+// этом уже обновлена. Поэтому у каждой новой строки отсюда есть обязательный
+// хвост: перевод в web/i18n.js и enum в openapi.
 //
 // Границу между двумя самыми близкими стоит назвать явно, иначе её проведут
 // заново и по-другому:
@@ -29,34 +47,83 @@ import (
 //     систему при этом известно всё, что нужно: она осталась прежней;
 //   - unverifiable — применение состоялось, а прочитать исход не удалось:
 //     ubus или iwinfo молчали всё окно ожидания. Мы не знаем, переключилось
-//     ли, и говорим именно это, а не «не переключилось».
+//     ли, и говорим именно это, а не «не переключилось»;
+//   - stale_draft — записанное осталось НЕОПУБЛИКОВАННЫМ черновиком, а
+//     отменить его не вышло. От apply_failed отличается тем, что делать
+//     владельцу: там повторить, здесь идти по ssh и выполнить
+//     `uci revert wireless`, иначе следующий запрос вечно будет получать
+//     foreign_staged_changes с текстом про открытый LuCI, которого нет.
 //
 // Слить их значило бы объявить неудачей то, что могло удаться, — и владелец
 // пошёл бы чинить работающую сеть.
 const (
-	reasonApplyFailed      = "apply_failed"
-	reasonBusy             = "busy"
-	reasonPrereqMissing    = "prereq_missing"
-	reasonStayedOnPrevious = "stayed_on_previous"
-	reasonOtherSSID        = "other_ssid"
-	reasonNotAssociated    = "not_associated"
-	reasonNoIPv4           = "no_ipv4"
-	reasonUnverifiable     = "unverifiable"
+	reasonApplyFailed      FailReason = "apply_failed"
+	reasonBusy             FailReason = "busy"
+	reasonPrereqMissing    FailReason = "prereq_missing"
+	reasonStayedOnPrevious FailReason = "stayed_on_previous"
+	reasonOtherSSID        FailReason = "other_ssid"
+	reasonNotAssociated    FailReason = "not_associated"
+	reasonNoIPv4           FailReason = "no_ipv4"
+	reasonUnverifiable     FailReason = "unverifiable"
+	reasonStaleDraft       FailReason = "stale_draft"
 )
+
+// allReasons — ЕДИНСТВЕННОЕ перечисление таксономии.
+//
+// Раньше список существовал трижды: константы здесь, рукописный массив в
+// тесте таксономии и словарь панели. Девятую причину можно было добавить
+// так, что промолчали бы и компилятор, и go vet, и тест — он проверял свою
+// собственную копию из восьми строк и новой в ней просто не видел.
+//
+// Отсюда правило: причина, не попавшая в этот срез, для демона не
+// существует. Тест сверяется с ним, switchFailed сверяется с ним, и
+// расхождение с панелью остаётся ровно одно — то, которое можно только
+// прокричать в журнал (см. switchFailed).
+var allReasons = []FailReason{
+	reasonApplyFailed,
+	reasonBusy,
+	reasonPrereqMissing,
+	reasonStayedOnPrevious,
+	reasonOtherSSID,
+	reasonNotAssociated,
+	reasonNoIPv4,
+	reasonUnverifiable,
+	reasonStaleDraft,
+}
+
+// knownReason — принадлежит ли причина таксономии.
+//
+// Линейный поиск по девяти строкам вместо карты намеренно: карта была бы
+// вторым перечислением, которое можно забыть пополнить, а именно этого мы
+// здесь и избегаем. Цена — девять сравнений на одну неудачу в час.
+func knownReason(r FailReason) bool {
+	for _, known := range allReasons {
+		if r == known {
+			return true
+		}
+	}
+	return false
+}
 
 // Пороги ожидания — ПЕРЕМЕННЫЕ пакета, а не константы.
 //
 // Прецедент и довод те же, что у job.Manager.timeout: проверить вердикт на
-// истёкшем окне иначе значило бы держать тест двадцать секунд на каждую из
-// восьми причин, то есть не проверять их вовсе. Тест, который слишком долго
-// идёт, однажды помечают //nolint или удаляют, и это худший исход, чем
+// истёкшем окне иначе значило бы держать тест двадцать секунд на каждую
+// причину таксономии, то есть не проверять их вовсе. Тест, который слишком
+// долго идёт, однажды помечают //nolint или удаляют, и это худший исход, чем
 // изменяемая переменная.
 //
 // Значения выведены из замера с кратным запасом (ADR-0025): ассоциация
 // измерена в 2–4 с, IPv4 — в 5–13 с. Ждать ровно измеренное нельзя — замер
-// сделан на одной сети с одним уровнем сигнала, — поэтому окно втрое шире, а
-// истечение окна докладывается как «не ассоциировалась», а не как ошибка
-// демона.
+// сделан на одной сети с одним уровнем сигнала.
+//
+// Запас НЕ одинаков у двух окон, и одного множителя, описывающего оба, не
+// существует: 20 с против верхних 4 — это 5×, 30 с против верхних 13 — уже
+// ≈2,3×. Диапазон запаса, считая по верхней границе замера, — от 2,3× до 5×.
+// Прежняя формулировка «окно втрое шире» не описывала ни одно из двух.
+//
+// Истечение любого из окон докладывается как «не ассоциировалась» /
+// «нет адреса», а не как ошибка демона.
 //
 // Отсчёт upstreamIPv4Timeout начинается ПОСЛЕ ассоциации, а не от начала
 // операции: аренда DHCP запрашивается только после того, как станция
@@ -70,7 +137,7 @@ var (
 	// с 512 МБ, а реже — врать владельцу о длительности.
 	upstreamPollInterval = 500 * time.Millisecond
 	// upstreamETASec — что показать в панели как ожидаемую длительность.
-	// Ассоциация плюс адрес по замеру укладываются в 4–13 с; двадцать —
+	// Ассоциация плюс адрес по замеру укладываются в 5–13 с; двадцать —
 	// честная верхняя оценка, а не среднее: полоса, добежавшая до конца
 	// раньше события, пугает сильнее медленной.
 	upstreamETASec = 20
@@ -214,6 +281,38 @@ type switchPlan struct {
 // значит сделать светодиод неоднозначным, а он единственный доклад, видимый
 // без панели.
 func (s *Server) switchUpstream(ctx context.Context, p switchPlan) error {
+	// 0. Паника обязана доехать до владельца ПРИЧИНОЙ, а не только
+	//    состоянием failed.
+	//
+	// job.Manager перехватывает панику сам (safe.Do) и ставит джобу failed,
+	// но слот last_fail остаётся пустым: панель показывает «причина ещё не
+	// доехала, подождите» — а она не доедет никогда, потому что писать её
+	// уже некому. Отсюда перехват здесь, ровно ради одной записи в слот.
+	//
+	// Причина — unverifiable, и это единственная честная из девяти:
+	// где именно рухнуло, мы не знаем, а значит не знаем и того, тронута ли
+	// живая система. apply_failed утверждал бы, что не тронута.
+	//
+	// Паника пробрасывается дальше НЕПРЕМЕННО: стек и текст в job.error —
+	// работа safe.Do, и проглотить панику здесь значило бы отдать владельцу
+	// джоб в состоянии done после падения.
+	defer func() {
+		if r := recover(); r != nil {
+			s.switchFailed(p.ssid, reasonUnverifiable,
+				fmt.Errorf("переключение рухнуло на середине (%v) — состояние роутера неизвестно, сверьтесь со статусом", r))
+			panic(r)
+		}
+	}()
+
+	// 0-бис. Прошлая неудача стирается ПЕРВОЙ строкой, до всякой работы.
+	//
+	// Слот взводится десятком путей, а стирался одним — успехом нашего же
+	// переключения. Владелец, починивший DHCP на той стороне, видел красный
+	// блок «подключилась, но без адреса» рядом с работающей сетью до
+	// перезапуска демона: доклад о том, чего уже нет. Здесь мы хотя бы
+	// гарантируем, что новая попытка не показывает вердикт старой, пока идёт.
+	s.fails.Clear()
+
 	// 1. Прежний SSID — ДО записи и до применения.
 	//
 	// Только здесь его ещё можно узнать. Прочитанный после применения, он
@@ -222,7 +321,20 @@ func (s *Server) switchUpstream(ctx context.Context, p switchPlan) error {
 	// «ассоциирована не с тем, что просили». Это две разные новости —
 	// первая означает, что переключение не произошло вовсе, вторая — что
 	// произошло не туда.
-	prev, _ := s.stationSSID(ctx, p.radio)
+	//
+	// Второе значение НЕ выбрасывается. Без него prev == "" означало бы
+	// сразу три разные вещи: не прочитали, интерфейса нет, станция честно не
+	// ассоциирована. Дороже всех первая: не прочитав прежнюю сеть, мы теряем
+	// право отличить «осталась на прежней» от «ушла на третью» — и вердикт
+	// уверенно уезжал в other_ssid («проверьте эфир»), тогда как верный
+	// совет был «повторите нажатие».
+	prev, prevOK, err := s.stationSSID(ctx, p.radio)
+	if err != nil {
+		// Единственный шанс объяснить будущую осторожность вердикта: дальше
+		// эта ошибка нигде не всплывёт, а владелец в logread увидит только
+		// «исход неизвестен» — ту же тавтологию, что и в панели.
+		s.logf("переключение на «%s»: прежняя сеть не прочитана (%v) — вердикт будет вынесен без неё", p.ssid, err)
+	}
 
 	// 2. Повторная сверка отпечатка.
 	//
@@ -257,7 +369,19 @@ func (s *Server) switchUpstream(ctx context.Context, p switchPlan) error {
 		// (ADR-0028). Хуже того: чужой uci commit опубликовал бы половину
 		// нашей партии, то есть возможную конфигурацию с двумя
 		// включёнными секциями или с нулём.
-		s.revertSwitch(ctx, written)
+		if rerr := s.revertSwitch(ctx, written); rerr != nil {
+			// Отмена не удалась — и это ДРУГАЯ новость, а не подробность
+			// первой. Наш черновик остался в стейджинге, значит следующий
+			// запрос получит foreign_staged_changes с текстом «вероятно,
+			// открыт LuCI» — а там пусто, черновик наш. Два сообщения
+			// противоречили бы друг другу, и оба были бы неверны.
+			//
+			// Молчать здесь нельзя тем более: без ssh панель заперта
+			// навсегда, а единственная строка в журнале не доходит до того,
+			// кто смотрит в браузер.
+			return s.switchFailed(p.ssid, reasonStaleDraft,
+				fmt.Errorf("%w; отменить не удалось: %w", err, rerr))
+		}
 		return s.switchFailed(p.ssid, reasonApplyFailed, err)
 	}
 
@@ -280,7 +404,25 @@ func (s *Server) switchUpstream(ctx context.Context, p switchPlan) error {
 	//    `network` нет в allowedUbusObjects и добавлять его сюда нельзя:
 	//    это выдало бы демону универсальный `network restart` отовсюду.
 	if err := s.ex.ApplyUpstream(ctx, executor.UpstreamTarget{Radio: p.radio}); err != nil {
-		return s.switchFailed(p.ssid, applyReason(err), err)
+		// Класс отказа и ОТСУТСТВИЕ класса — разные вещи, и обходятся с ними
+		// по-разному.
+		//
+		// Скрипт, доложивший класс (busy, prereq, «оба глагола отказали»),
+		// сказал про живую систему всё, что нужно, — верификации там нечего
+		// делать. Скрипт, снятый сигналом, не доложил ничего: кода возврата
+		// не было вовсе (executor.ErrUpstreamUnknown), а `reconf` мог
+		// отработать за первые сотые доли секунды — и станция уже на целевой
+		// сети. Объявить это apply_failed значило бы показать текст «оба
+		// способа применения отказали» поверх работающего переключения.
+		//
+		// Это единственное место во всей фазе, где код возврата мог бы
+		// закрыть дорогу к верификации, — а вся она построена на обратном
+		// (ADR-0025).
+		if !errors.Is(err, executor.ErrUpstreamUnknown) {
+			return s.switchFailed(p.ssid, applyReason(err), err)
+		}
+		s.logf("переключение на «%s»: чем кончилось применение, неизвестно (%v) — "+
+			"вердикт выносим по ассоциации, как и на успешном пути", p.ssid, err)
 	}
 
 	// 8. Вердикт — по ассоциации, НИКОГДА по коду возврата.
@@ -289,7 +431,7 @@ func (s *Server) switchUpstream(ctx context.Context, p switchPlan) error {
 	// rc=0 приходит и когда не сделано ничего, и когда станция вернулась на
 	// старую сеть (ADR-0025, «мина»). Судить по коду здесь — это в точности
 	// тот класс ошибок, ради закрытия которого написан весь ADR.
-	return s.verifySwitch(ctx, p, prev)
+	return s.verifySwitch(ctx, p, prev, prevOK)
 }
 
 // writeSwitch пишет партию: все прочие станционные — «выключено», целевая —
@@ -346,24 +488,41 @@ func (s *Server) writeSwitch(ctx context.Context, cfg *uci.Config, p switchPlan)
 // отказом. Наши адреса известны точно — мы их только что записали
 // (ADR-0028).
 //
-// Отказ самой отмены ответа не меняет и второй попытки не вызывает: клиент
-// уже получил 202, джоб всё равно завершится неудачей, а повторный revert
-// по тому же адресу — это ровно та инициатива демона, которой здесь быть не
-// должно. Строка в журнал — всё, что тут можно честно сделать.
-func (s *Server) revertSwitch(ctx context.Context, sections []string) {
+// Вторая попытка отмены не делается и здесь: повторный revert по тому же
+// адресу — ровно та инициатива демона, которой тут быть не должно. Но и
+// молчать нельзя: неотменённый черновик запирает панель до ssh, поэтому отказ
+// возвращается вызывающему и доезжает до владельца отдельной причиной
+// (reasonStaleDraft), а не остаётся строкой в журнале, которую никто не
+// откроет.
+func (s *Server) revertSwitch(ctx context.Context, sections []string) error {
+	var stuck []string
+	var last error
 	for _, name := range sections {
 		if err := s.ex.UCIRevert(ctx, "wireless", name); err != nil {
 			s.logf("переключение: не удалось отменить черновик секции %s — %v", name, err)
+			stuck = append(stuck, name)
+			last = err
 		}
 	}
+	if len(stuck) == 0 {
+		return nil
+	}
+	// Команда названа целиком и по-человечески: владелец с этой строкой идёт
+	// в ssh, и «отмените черновик» ему там не поможет.
+	return fmt.Errorf("в /etc/config/wireless остался неопубликованный черновик (секции: %s): %w — "+
+		"пока он там, панель будет считать его чужой правкой; выполните по ssh `uci revert wireless`",
+		strings.Join(stuck, ", "), last)
 }
 
 // verifySwitch ждёт ассоциации, затем адреса, и выносит вердикт.
-func (s *Server) verifySwitch(ctx context.Context, p switchPlan, prev string) error {
-	if reason := s.awaitAssociation(ctx, p, prev); reason != "" {
-		return s.switchFailed(p.ssid, reason, associationError(reason, p.ssid, prev))
+//
+// prevOK едет сюда вместе с prev и не сливается с ним: пустой прочитанный
+// prev и непрочитанный prev дают РАЗНЫЕ вердикты (см. awaitAssociation).
+func (s *Server) verifySwitch(ctx context.Context, p switchPlan, prev string, prevOK bool) error {
+	if r := s.awaitAssociation(ctx, p, prev, prevOK); !r.ok {
+		return s.switchFailed(p.ssid, r.reason, r.detail)
 	}
-	if reason := s.awaitIPv4(ctx); reason != "" {
+	if reason, ok := s.awaitIPv4(ctx); !ok {
 		// Текст обязан следовать за причиной: awaitIPv4 возвращает не
 		// только no_ipv4, но и unverifiable — если состояние wwan
 		// прочитать не удалось ни разу. Одна формулировка на оба случая
@@ -383,23 +542,53 @@ func (s *Server) verifySwitch(ctx context.Context, p switchPlan, prev string) er
 	return nil
 }
 
+// assocResult — исход ожидания ассоциации: код для панели и текст для
+// человека, собранные ОДНОЙ функцией.
+//
+// Раньше код возвращала awaitAssociation, а текст подбирал по одному этому
+// коду отдельный associationError, — и они разъезжались молча: у unverifiable
+// поводов два («не прочитали вообще ничего» и «не прочитали прежнюю сеть»),
+// а текст был один и в половине случаев утверждал не то. Здесь оба
+// собираются там, где известны все факты, и разойтись им негде.
+type assocResult struct {
+	// ok — станция ассоциирована с ЗАПРОШЕННОЙ сетью. Только при ok поля
+	// ниже пусты; отдельного «успешного» значения в таксономии нет и быть не
+	// должно — она перечисляет неудачи.
+	ok     bool
+	reason FailReason
+	detail error
+}
+
 // awaitAssociation ждёт, пока станция подключится к запрошенной сети.
 //
-// Пустая строка — успех; иначе причина из таксономии. Вердикт выносится
-// ПОСЛЕ истечения окна, а не при первом же несовпадении: сразу после
-// применения станция несколько секунд остаётся на прежней сети, и ранний
-// приговор объявлял бы неудачей нормальный ход переключения.
-func (s *Server) awaitAssociation(ctx context.Context, p switchPlan, prev string) string {
+// Вердикт выносится ПОСЛЕ истечения окна, а не при первом же несовпадении:
+// сразу после применения станция несколько секунд остаётся на прежней сети, и
+// ранний приговор объявлял бы неудачей нормальный ход переключения.
+//
+// prevOK — прочитали ли мы прежнюю сеть ДО применения. Без него вердикт
+// «ассоциирована не с тем» уверенно уезжал в other_ssid, чей совет владельцу —
+// «проверьте эфир поблизости»: он шёл искать несуществующую третью точку,
+// тогда как верный совет был «повторите нажатие».
+func (s *Server) awaitAssociation(ctx context.Context, p switchPlan, prev string, prevOK bool) assocResult {
 	deadline := time.Now().Add(upstreamAssocTimeout)
 	var last string
 	var everRead bool
+	// Неудачи чтения копятся, а печатаются один раз при выходе. Печать в
+	// цикле означала бы до сорока строк за одно окно ожидания в syslog
+	// роутера, который пишет на overlay-флеш; образец дедупликации —
+	// StatusReader.noteLocked.
+	var readErr error
+	var readErrs int
 
 	for {
-		ssid, ok := s.stationSSID(ctx, p.radio)
+		ssid, ok, err := s.stationSSID(ctx, p.radio)
+		if err != nil {
+			readErr, readErrs = err, readErrs+1
+		}
 		if ok {
 			everRead, last = true, ssid
 			if ssid == p.ssid {
-				return ""
+				return assocResult{ok: true}
 			}
 		}
 		if time.Now().After(deadline) || !sleepCtx(ctx, upstreamPollInterval) {
@@ -407,20 +596,43 @@ func (s *Server) awaitAssociation(ctx context.Context, p switchPlan, prev string
 		}
 	}
 
+	if readErr != nil {
+		// Без этой строки владелец, которому панель сказала «проверить
+		// результат не удалось», находил в logread ровно ту же тавтологию.
+		s.logf("переключение на «%s»: ассоциацию не удалось прочитать %d раз(а), последняя причина — %v",
+			p.ssid, readErrs, readErr)
+	}
+
 	switch {
 	case !everRead:
 		// Ни одного успешного чтения за всё окно: про исход нам неизвестно
 		// ничего. Сказать «не переключилось» было бы выдумкой.
-		return reasonUnverifiable
+		return assocResult{reason: reasonUnverifiable, detail: errors.New(
+			"применение выполнено, но состояние станции прочитать не удалось — " +
+				"переключилась ли она, неизвестно; сверьтесь со статусом")}
 	case last == "":
-		return reasonNotAssociated
-	case prev != "" && last == prev:
+		return assocResult{reason: reasonNotAssociated, detail: errors.New(
+			"станция не подключилась к «" + p.ssid + "» за отведённое время")}
+	case prevOK && last == prev:
 		// Самый важный из исходов: глагол вернул 0, а станция осталась там
 		// же. Ровно это измерено в ADR-0025 и ровно поэтому вердикт не
 		// выносится по коду возврата.
-		return reasonStayedOnPrevious
+		return assocResult{reason: reasonStayedOnPrevious, detail: errors.New(
+			"станция осталась на прежней сети «" + prev + "» — переключение на «" + p.ssid +
+				"» не состоялось, хотя применение прошло без ошибки")}
+	case !prevOK:
+		// Станция ассоциирована не с тем, что просили, а с чем она была
+		// связана до нажатия — мы не знаем. Значит не знаем и того, какая из
+		// двух новостей верна: «осталась на прежней» (повторить) или «ушла
+		// на третью» (искать в эфире). Уверенный other_ssid здесь отправлял
+		// владельца искать точку доступа, которой может не быть вовсе.
+		return assocResult{reason: reasonUnverifiable, detail: errors.New(
+			"станция подключена не к «" + p.ssid + "», а к другой сети; какой она была до " +
+				"переключения, прочитать не удалось — осталась ли она на прежней (тогда есть смысл " +
+				"повторить) или ушла на третью, неизвестно")}
 	default:
-		return reasonOtherSSID
+		return assocResult{reason: reasonOtherSSID, detail: errors.New(
+			"станция подключилась не к той сети: просили «" + p.ssid + "»")}
 	}
 }
 
@@ -432,17 +644,34 @@ func (s *Server) awaitAssociation(ctx context.Context, p switchPlan, prev string
 // Отсутствие адреса — неудача, а не предупреждение: сеть без адреса и
 // маршрута по умолчанию интернета не даёт, а панель, показавшая успех, увела
 // бы владельца искать причину в движках обхода.
-func (s *Server) awaitIPv4(ctx context.Context) string {
+// Второе значение — «адрес получен», по образцу stationSSID рядом. Пустая
+// строка успехом больше не считается: она была девятым безымянным значением
+// набора, и любая новая ветка норовила бы вернуть её случайно.
+func (s *Server) awaitIPv4(ctx context.Context) (FailReason, bool) {
 	deadline := time.Now().Add(upstreamIPv4Timeout)
 	var everRead bool
+	// Ошибка ubus и ошибка разбора копятся одинаково и печатаются один раз
+	// при выходе: за окно ожидания их набирается до сорока, и печать в цикле
+	// утопила бы syslog роутера.
+	var readErr error
+	var readErrs int
 
 	for {
 		b, err := s.ex.UbusCall(ctx, "network.interface."+upstreamIf, "status", nil)
-		if err == nil {
-			if st, perr := netif.ParseStatus(b); perr == nil {
+		switch {
+		case err != nil:
+			readErr, readErrs = err, readErrs+1
+		default:
+			st, perr := netif.ParseStatus(b)
+			switch {
+			case perr != nil:
+				// Неразобранный ответ — такое же слепое чтение, как и
+				// неполученный, и в журнале обязан выглядеть так же.
+				readErr, readErrs = perr, readErrs+1
+			default:
 				everRead = true
 				if st.Online() {
-					return ""
+					return "", true
 				}
 			}
 		}
@@ -451,10 +680,15 @@ func (s *Server) awaitIPv4(ctx context.Context) string {
 		}
 	}
 
-	if !everRead {
-		return reasonUnverifiable
+	if readErr != nil {
+		s.logf("переключение: состояние %s не удалось прочитать %d раз(а), последняя причина — %v",
+			upstreamIf, readErrs, readErr)
 	}
-	return reasonNoIPv4
+
+	if !everRead {
+		return reasonUnverifiable, false
+	}
+	return reasonNoIPv4, false
 }
 
 // stationSSID читает, к какой сети подключена станция ПРЯМО СЕЙЧАС.
@@ -473,31 +707,37 @@ func (s *Server) awaitIPv4(ctx context.Context) string {
 // сразу после reconf интерфейс на секунды исчезает из статуса, и считать это
 // неудачей чтения значило бы объявлять unverifiable ровно в тот момент,
 // когда всё идёт по плану.
-func (s *Server) stationSSID(ctx context.Context, radio string) (string, bool) {
+//
+// Третье значение — ПРИЧИНА неудачи чтения, и оно не для решений, а для
+// журнала: все четыре выхода с ok=false раньше выбрасывали err, и владелец,
+// которому панель сказала «проверить результат не удалось», находил в logread
+// ровно ту же фразу. Решение принимается по ok, объяснение печатает
+// вызывающий — один раз на этап, а не на каждый опрос.
+func (s *Server) stationSSID(ctx context.Context, radio string) (string, bool, error) {
 	b, err := s.ex.UbusCall(ctx, "network.wireless", "status", nil)
 	if err != nil {
-		return "", false
+		return "", false, fmt.Errorf("ubus network.wireless status: %w", err)
 	}
 	st, err := wireless.ParseStatus(b)
 	if err != nil {
-		return "", false
+		return "", false, fmt.Errorf("разбор network.wireless status: %w", err)
 	}
 	ifname := wireless.IfnameForMode(st, radio, "sta")
 	if ifname == "" {
-		return "", true
+		return "", true, nil
 	}
 	ib, err := s.ex.UbusCall(ctx, "iwinfo", "info", map[string]any{"device": ifname})
 	if err != nil {
-		return "", false
+		return "", false, fmt.Errorf("ubus iwinfo info %s: %w", ifname, err)
 	}
 	info, err := wireless.ParseInfo(ib)
 	if err != nil {
-		return "", false
+		return "", false, fmt.Errorf("разбор iwinfo info %s: %w", ifname, err)
 	}
 	if !info.Associated {
-		return "", true
+		return "", true, nil
 	}
-	return info.SSID, true
+	return info.SSID, true, nil
 }
 
 // applyReason переводит исход netmode-wifi в причину для доклада.
@@ -510,7 +750,11 @@ func (s *Server) stationSSID(ctx context.Context, radio string) (string, bool) {
 // Неизвестный код и незапустившийся скрипт попадают в apply_failed: это
 // самый безопасный из трёх диагнозов — он не обещает ни того, что повтор
 // поможет, ни того, что система не тронута.
-func applyReason(err error) string {
+// ErrUpstreamUnknown сюда не попадает и попасть не должен: «исход неизвестен»
+// не причина неудачи, а повод пойти проверить ассоциацию (см. switchUpstream,
+// шаг 7). Вызов applyReason на нём вернул бы apply_failed — тот самый
+// уверенный диагноз, ради ухода от которого исход и заведён.
+func applyReason(err error) FailReason {
 	switch {
 	case errors.Is(err, executor.ErrUpstreamBusy):
 		return reasonBusy
@@ -521,34 +765,26 @@ func applyReason(err error) string {
 	}
 }
 
-// associationError — текст для job.error по причине.
-//
-// Отдельно от кода намеренно: reason читает панель, текст читает человек в
-// логе и в поле error. Оба нужны, и оба обязаны говорить одно и то же.
-func associationError(reason, want, prev string) error {
-	switch reason {
-	case reasonStayedOnPrevious:
-		return errors.New("станция осталась на прежней сети «" + prev + "» — " +
-			"переключение на «" + want + "» не состоялось, хотя применение прошло без ошибки")
-	case reasonOtherSSID:
-		return errors.New("станция подключилась не к той сети: просили «" + want + "»")
-	case reasonUnverifiable:
-		return errors.New("применение выполнено, но состояние станции прочитать не удалось — " +
-			"переключилась ли она, неизвестно; сверьтесь со статусом")
-	default:
-		return errors.New("станция не подключилась к «" + want + "» за отведённое время")
-	}
-}
-
 // switchFailed записывает доклад и возвращает ошибку джобу.
 //
 // Две дороги у одного факта, и обе нужны: job.error виден, пока открыта
 // вкладка, last_fail — когда владелец вернулся через минуту и джоба в
 // статусе уже нет (ADR-0025, «Честный доклад»).
-func (s *Server) switchFailed(ssid, reason string, err error) error {
-	if s.fails != nil {
-		s.fails.Set(ssid, reason, time.Now())
+//
+// Здесь же — воронка таксономии. Через switchFailed проходят ВСЕ причины без
+// исключения, и это единственное место, где расхождение с allReasons ещё
+// можно заметить до владельца: у панели на неизвестный код есть запасной
+// текст «причина неизвестна, обновите панель», и он врёт — панель уже
+// обновлена, разошёлся демон. Поэтому расхождение кричит в журнал, а доклад
+// всё равно записывается: сказать владельцу хоть что-то честнее, чем не
+// сказать ничего.
+func (s *Server) switchFailed(ssid string, reason FailReason, err error) error {
+	if !knownReason(reason) {
+		s.logf("ВНИМАНИЕ: причина %q вне таксономии (allReasons в upstreamhandler.go) — "+
+			"панель покажет её как «причина неизвестна, обновите панель»; "+
+			"добавьте строку в allReasons, в web/i18n.js и в enum docs/api/openapi.yaml", reason)
 	}
+	s.fails.Set(ssid, reason, time.Now())
 	s.logf("переключение на «%s» не удалось (%s): %v", ssid, reason, err)
 	return err
 }

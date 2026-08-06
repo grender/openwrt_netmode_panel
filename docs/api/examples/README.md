@@ -72,6 +72,7 @@
 | `wifi-scan.json` | BSSID и набор сетей | форма подтверждена фикстурой `raw/23-ubus-iwinfo-scan.json`; BSSID заменены плейсхолдерами |
 | `status-*.json` → `ap.clients` | всегда `null` | неизвестно, наполняется ли `stations` в `network.wireless status`. **NEEDS RECON:** `ubus call iwinfo assoclist '{"device":"<ifname AP>"}'` |
 | `status-*.json` → `associated_ssid` | нет, значение подтверждено | `raw/24-ubus-iwinfo-info.json` → `ssid: "John24"`, разбирается `wireless.ParseInfo` |
+| `*-long.json` → ssid в 32 байта | имена сетей целиком | таких сетей у нас нет; фикстуры сделаны под замер вёрстки, и синтетична здесь не форма, а сам факт — 32 байта это предел стандарта, а не наблюдение |
 | `logs.json` | строки лога | формат задан SPEC §9 (`ts`, `nodes`, `status`, `err`) |
 | `status-job-failed.json` → `job.id`, времена | синтетические, как и во всех `status-*` | — |
 | `status-*.json` → `links.luci` | **нет, адрес подтверждён разведкой** | `raw/72-luci-probe.txt`: `lua_prefix='/cgi-bin/luci=…'`, проба этого пути дала `403` с `x-luci-login-required: yes` (отвечает LuCI, нужен вход), `redirect_https='0'`, uhttpd слушает 80. Синтетичен только хост — он и во всех остальных ссылках взят из `Host: 192.168.9.1` |
@@ -97,7 +98,11 @@
 | `status-online-unknown.json` | `GET /api/status` | `ubus network.interface.wwan status` не ответил: `online.checked: false` — состояние канала **неизвестно**, а не «оффлайн» |
 | `status-job-upstream.json` | `GET /api/status` | идёт переключение upstream: `job.kind: "upstream"`, **`job.arg` это ssid (`ATOM`), а не имя секции** — панель строит подпись сама, `wifinet2` человеку не говорит ничего. UCI уже закоммичен, поэтому `configured_ssid: "ATOM"`, а станция ещё на прежней сети (`associated_ssid: "John24"`) и `pending_apply: true` |
 | `status-upstream-fail.json` | `GET /api/status` | переключение не состоялось: `last_fail.reason: "stayed_on_previous"` — глагол вернул `0`, а станция осталась на `John24` (ADR-0025, «мина»). `job: null` намеренно: это и есть тот случай, ради которого `last_fail` заведено — владелец вернулся в панель позже, чем джоб пропал из показа. `online.ok: true` — роутер в сети, просто не в той |
+| `status-job-upstream-long.json` | `GET /api/status` | то же переключение, но на сеть с **предельным ssid: 32 байта без пробелов** (`Beeline_Home_5GHz_Guest_2024_ext`). Длина стоит и в `job.arg`, и в `job.label` — панель подписывает джоб сама по `kind`+`arg`, а `label` читает человек в syslog, и переполниться могут оба. Пара к `status-job-upstream.json`: отличие ровно одно, и оно измеримо |
+| `status-upstream-fail-long.json` | `GET /api/status` | тот же провал, что в `status-upstream-fail.json`, но с предельным ssid в `last_fail.ssid` **и** в `ap.ssid`: строка провала и обещание «ваши устройства не отвалятся» называют сети по имени, и длинными они бывают одновременно. `configured_ssid` равен `last_fail.ssid` — как и в коротком варианте: UCI закоммичен на цель, станция осталась на прежней сети |
+| `status-single-long.json` | `GET /api/status` | побайтовая копия `status-upstream-fail-long.json` с `last_fail: null` — то есть та же страница **минус ровно блок провала**. Существует как база сравнения для замера (`scripts/measure-geometry.mjs`, критерии C3/C4): длинное состояние можно сравнивать только с длинной базой, иначе разность считает и провал, и длину ssid сразу и не измеряет ни одного из них |
 | `wifi-networks.json` | `GET /api/wifi/networks` | список из разведки; у активной `editable: false` и `switchable: false` (переключать не на что), у выключенной оба `true` |
+| `wifi-networks-long.json` | `GET /api/wifi/networks` | те же две сети плюс третья с предельным ssid в 32 байта, `enabled: false` — то есть со всеми тремя кнопками в ряду (изменить, удалить, подключить). Её `id` имеет форму `netmode_<8 hex>`: сеть заведена нашей же панелью, а не досталась от прежней настройки |
 | `wifi-networks-ambiguous.json` | `GET /api/wifi/networks` | две включённые станционные секции: у обеих `editable: false`, но `switchable: true` — правка при `ambiguous` запрещена, а переключение разрешено и есть единственный выход из неоднозначности (ADR-0026). Единственный пример, где два признака расходятся |
 | `wifi-scan.json` | `GET /api/wifi/scan` | станция снимка на 2.4 ГГц, поэтому в списке только он; `band` и `note` выведены, а не зашиты (ADR-0019) |
 | `b4-sets.json` | `GET /api/b4/sets` | включён ровно один — наша эксклюзивность соблюдена |
@@ -105,10 +110,42 @@
 | `logs.json` | `GET /api/logs` | новые строки первыми, среди них одна `fail` |
 
 В `links` **три поля, и порядок их значим**: `nikki`, `b4`, `luci` — как в
-Go-структуре и в `openapi.yaml`. В остальных девяти файлах они равны
+Go-структуре и в `openapi.yaml`. В остальных двенадцати файлах они равны
 `http://192.168.9.1:9090/ui/`, `http://192.168.9.1:7000/` и
 `http://192.168.9.1/cgi-bin/luci` — то есть ответ на запрос с
 `Host: 192.168.9.1:8088`.
+
+## Отпечаток в паре «статус + список»
+
+`status-*.json` → `wireless_fingerprint` и `wifi-networks*.json` →
+`fingerprint` — это **одно и то же значение**, а не два похожих. Демон считает
+их от одного `uci show wireless` (`internal/httpapi/status.go` и
+`respondNetworks` в `wifiwrite.go`), поэтому разойтись на роутере они не могут.
+
+Держать это в голове приходится ровно потому, что цена расхождения не видна
+глазами: панель шлёт в `If-Match` отпечаток **из списка**, а `POST
+/api/upstream` сверяет его с отпечатком **статуса**. Пара фикстур, собранная
+порознь, отдаёт `409 fingerprint_mismatch` на первом же нажатии «Подключить» —
+и сценарий, ради которого фикстуры заводились, оказывается непроверяемым.
+Поэтому `status-upstream-fail-long.json`, `status-job-upstream-long.json` и
+`wifi-networks-long.json` несут один отпечаток `sha256:5c2ea8d417b60f93`, а мок
+на всякий случай выдаёт списку отпечаток статуса (`web/mock-server.mjs`,
+`currentNetworks`).
+
+## Предельный ssid
+
+Четыре фикстуры (`*-long.json`) существуют ради одного измерения: **32 байта без
+пробелов** — предел стандарта (`validateNetwork` в `wifiwrite.go` меряет именно
+байты) и худший случай для вёрстки, потому что переносить строку негде.
+Значения — `Beeline_Home_5GHz_Guest_2024_ext` для внешней сети и
+`grenderNet_5GHz_Guest_Extended_1` для домашней точки доступа; оба синтетические
+и правдоподобны только по длине. Короткие оригиналы (`status-upstream-fail.json`,
+`status-job-upstream.json`, `wifi-networks.json`) остаются базой сравнения:
+что именно ломается от длины, видно только рядом с тем, что от неё не ломается.
+
+Отсюда же `status-single-long.json`: как только длину сравнивают с длиной,
+базой не может быть короткий `status-single.json` — он отличается от длинных
+состояний сразу двумя признаками. Длинная база отличается ровно одним.
 
 В `links.nikki` **нет и не будет секрета**: там адрес без параметров, а полный
 (с `?secret=`) отдаёт `GET /api/nikki/panel` по клику — фикстуры под него нет

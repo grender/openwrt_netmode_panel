@@ -865,3 +865,153 @@ func TestExecUCINotFoundMapping(t *testing.T) {
 		t.Error("настоящий сбой проглочен")
 	}
 }
+
+// ─────────── рантайм-половина механических запретов ───────────
+//
+// У обоих запретов есть статическая половина — правила R1 и R2 в
+// scripts/check-wireless-write.sh. Она ловит ЛИТЕРАЛ в исходнике и в принципе
+// не видит вычисленного: `opt := "dis" + "abled"` для грепа обычная строка, а
+// `strconv.FormatBool(true)` — тем более. Рантайм видит ровно значение, откуда
+// бы оно ни взялось, и не видит написанного. Половины закрывают разное, и ни
+// одна не лишняя.
+//
+// Тесты постоянные, а не «проверили руками при добавлении»: рантайм-половина
+// без теста гниёт так же тихо, как греп без самотеста, — с той разницей, что
+// её пропажу не покажет даже дифф гварда.
+
+// Удаление wireless.*.disabled запрещено всегда: секция БЕЗ disabled
+// считается включённой (ADR-0004), то есть удаление — это включение
+// станционной сети способом, который в диффе не выглядит как включение
+// (ADR-0026, правило 2).
+func TestDeleteOfDisabledIsRefusedEverywhere(t *testing.T) {
+	ctx := context.Background()
+
+	var got []string
+	e := New()
+	e.commandRunner = captureRunner(&got, []byte("ok"), nil)
+	err := e.UCIDelete(ctx, "wireless", "wifinet2", "disabled")
+	if !errors.Is(err, ErrDeleteDisabled) {
+		t.Errorf("реальная реализация: ошибка %v, ожидался ErrDeleteDisabled", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("до запуска uci дело дошло: %v", got)
+	}
+
+	// Фейк обязан отказывать той же функцией. Разреши он запрещённое —
+	// тесты фазы 2, которые почти все идут через него, доказывали бы
+	// поведение, которого на роутере не существует.
+	f := NewFake()
+	err = f.UCIDelete(ctx, "wireless", "wifinet2", "disabled")
+	if !errors.Is(err, ErrDeleteDisabled) {
+		t.Errorf("фейк: ошибка %v, ожидался ErrDeleteDisabled", err)
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("фейк записал запрещённое удаление: %v", f.Calls)
+	}
+}
+
+// Запрет УЗКИЙ, и это половина его смысла: расширенный «до кучи» на соседние
+// адреса, он сломал бы правку сетей (удаление ключа при переходе на открытую
+// сеть) и удаление секции целиком.
+func TestDeleteOfNeighbouringAddressesStillWorks(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name             string
+		pkg, sec, option string
+		want             []string
+	}{
+		{"пароль той же секции", "wireless", "wifinet2", "key",
+			[]string{"/sbin/uci", "delete", "wireless.wifinet2.key"}},
+		{"секция целиком", "wireless", "wifinet2", "",
+			[]string{"/sbin/uci", "delete", "wireless.wifinet2"}},
+		{"disabled в ЧУЖОМ пакете", "network", "lan", "disabled",
+			[]string{"/sbin/uci", "delete", "network.lan.disabled"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var got []string
+			e := New()
+			e.commandRunner = captureRunner(&got, []byte("ok"), nil)
+			if err := e.UCIDelete(ctx, c.pkg, c.sec, c.option); err != nil {
+				t.Fatalf("отказ на разрешённом адресе: %v", err)
+			}
+			if strings.Join(got, " ") != strings.Join(c.want, " ") {
+				t.Errorf("команда %v, ожидалась %v", got, c.want)
+			}
+
+			f := NewFake()
+			if err := f.UCIDelete(ctx, c.pkg, c.sec, c.option); err != nil {
+				t.Errorf("фейк отказал на разрешённом адресе: %v", err)
+			}
+		})
+	}
+}
+
+// Область значений disabled — только "0" и "1" (ADR-0004). `disabled=true`
+// секцию НЕ выключает: uci прочтёт «true» как непонятное значение, а netifd —
+// как включено. Пропущенное сюда значение гасит не то, что просили, и молча.
+func TestDisabledValueOutsideDomainIsRefusedEverywhere(t *testing.T) {
+	ctx := context.Background()
+	// "true"/"false" — то, что даёт strconv.FormatBool; "" — забытая
+	// переменная; "01" и " 1" — опечатки, которые uci проглотит.
+	for _, value := range []string{"true", "false", "", "01", " 1", "да", "2"} {
+		var got []string
+		e := New()
+		e.commandRunner = captureRunner(&got, []byte("ok"), nil)
+		err := e.UCISet(ctx, "wireless", "wifinet2", "disabled", value)
+		if !errors.Is(err, ErrDisabledValue) {
+			t.Errorf("реальная реализация, значение %q: ошибка %v, ожидался ErrDisabledValue", value, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("значение %q дошло до запуска uci: %v", value, got)
+		}
+		// Само значение обязано быть в тексте: без него владелец и
+		// разработчик видят «запрещено» и не видят, что именно записывали.
+		if err != nil && value != "" && !strings.Contains(err.Error(), value) {
+			t.Errorf("значение %q не названо в тексте отказа: %v", value, err)
+		}
+
+		f := NewFake()
+		if err := f.UCISet(ctx, "wireless", "wifinet2", "disabled", value); !errors.Is(err, ErrDisabledValue) {
+			t.Errorf("фейк, значение %q: ошибка %v, ожидался ErrDisabledValue", value, err)
+		} else if len(f.Calls) != 0 {
+			t.Errorf("фейк записал запрещённое значение %q: %v", value, f.Calls)
+		}
+	}
+}
+
+// И обратная сторона: разрешённое обязано проходить. Обе цифры нужны обеим
+// реализациям — партия переключения пишет и "1" (погасить прочие), и "0"
+// (включить цель), — а соседние опции запрет не касается вовсе.
+func TestDisabledDomainDoesNotBlockLegitimateWrites(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name                    string
+		pkg, sec, option, value string
+	}{
+		{"погасить", "wireless", "wifinet0", "disabled", "1"},
+		{"включить", "wireless", "wifinet2", "disabled", "0"},
+		{"ssid с пробелом", "wireless", "wifinet2", "ssid", "Сеть с пробелом"},
+		{"пароль со спецсимволами", "wireless", "wifinet2", "key", "p@ss w0rd!!"},
+		{"disabled в чужом пакете", "network", "lan", "disabled", "true"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var got []string
+			e := New()
+			e.commandRunner = captureRunner(&got, []byte("ok"), nil)
+			if err := e.UCISet(ctx, c.pkg, c.sec, c.option, c.value); err != nil {
+				t.Fatalf("отказ на законной записи: %v", err)
+			}
+			want := []string{"/sbin/uci", "set", c.pkg + "." + c.sec + "." + c.option + "=" + c.value}
+			if strings.Join(got, " ") != strings.Join(want, " ") {
+				t.Errorf("команда %v, ожидалась %v", got, want)
+			}
+
+			f := NewFake()
+			if err := f.UCISet(ctx, c.pkg, c.sec, c.option, c.value); err != nil {
+				t.Errorf("фейк отказал на законной записи: %v", err)
+			}
+		})
+	}
+}

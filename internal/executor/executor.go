@@ -133,12 +133,41 @@ var (
 	// ErrUpstreamPrereq — нет предусловия (flock, ubus). Чинится доставкой
 	// пакета, а не повтором.
 	ErrUpstreamPrereq = errors.New("netmode-wifi: нет предусловия на роутере")
+
+	// ErrUpstreamUnknown — чем кончился скрипт, мы НЕ УЗНАЛИ.
+	//
+	// Это не класс отказа, а его отсутствие, и разница здесь дороже, чем
+	// кажется. Процесс, снятый сигналом (дедлайн UpstreamApplyTimeout,
+	// OOM-killer, kill по ssh), кода возврата не имеет вовсе:
+	// ExitError.ExitCode() отдаёт -1, и это не «неизвестный код скрипта», а
+	// «кода не было». Отнести такой исход к ErrUpstreamApply значило бы
+	// сказать «оба глагола отказали, конфигурация не применялась», хотя
+	// `network reload` и `reconf` могли отработать за первые же
+	// сотые секунды (применение измерено в 0.01–0.04 с, ADR-0025/raw/27) —
+	// то есть станция уже могла уйти на целевую сеть.
+	//
+	// Вызывающий обязан обращаться с этим исходом ровно так, как со всей
+	// фазой: не судить по коду возврата, а посмотреть на ассоциацию. Это
+	// единственное место, где код возврата иначе закрывал бы дорогу к
+	// верификации, — а на обратном построен весь ADR-0025.
+	ErrUpstreamUnknown = errors.New("netmode-wifi: исход применения неизвестен")
 )
 
 // upstreamSentinels — таблица «код возврата netmode-wifi → исход».
 //
-// Копия таблицы из шапки files/usr/local/bin/netmode-wifi и из
-// docs/contracts/executor.md; три места обязаны меняться вместе (ADR-0027).
+// Мест ПЯТЬ, и они обязаны меняться вместе (ADR-0027):
+//
+//	files/usr/local/bin/netmode-wifi      шапка скрипта
+//	internal/executor/executor.go         этот срез
+//	docs/contracts/executor.md            таблица
+//	docs/adr/0027-netmode-wifi-exit-codes.md  таблица
+//	scripts/check-netmode-wifi.sh         сценарии S1–S13
+//
+// Синхронность НЕ проверяет никто. У таксономии причин провала сторож есть —
+// scripts/check-fail-reasons.sh сверяет пять её источников и валит сборку. У
+// ЭТОЙ таблицы такого гварда нет: check-netmode-wifi.sh проверяет коды живым
+// запуском скрипта, то есть стережёт пару «скрипт ↔ сценарии», а Go, контракт
+// и ADR остаются на дисциплине. Добавляете код — правьте все пять руками.
 var upstreamSentinels = map[int]error{
 	3: ErrUpstreamBusy,
 	4: ErrUpstreamApply,
@@ -171,7 +200,20 @@ func applyErrorForCode(code int, cause error) error {
 	return errorForCode(applySentinels, code, cause)
 }
 
+// upstreamErrorForCode — исход netmode-wifi по коду возврата.
+//
+// Отрицательный код (у *exec.ExitError он означает «процесс снят сигналом»)
+// разбирается ОТДЕЛЬНО и до таблицы: кода возврата в этом случае нет вовсе,
+// и искать его в таблице значило бы обещать ответ там, где вопрос не был
+// задан. См. ErrUpstreamUnknown — там же и цена ошибки.
+//
+// Живёт рядом с таблицей, а не в classifyUpstreamError, чтобы через ту же
+// воронку проходил и фейк: разбор «-1 → исход неизвестен» обязан быть один на
+// роутер и на тесты, иначе тест проверял бы вторую копию саму против себя.
 func upstreamErrorForCode(code int, cause error) error {
+	if code < 0 {
+		return fmt.Errorf("%w: %w", ErrUpstreamUnknown, cause)
+	}
 	return errorForCode(upstreamSentinels, code, cause)
 }
 
@@ -328,6 +370,63 @@ var allowedUbusObjects = map[string]bool{
 func validateUbusObject(object string) error {
 	if !allowedUbusObjects[object] {
 		return fmt.Errorf("объект ubus %q не подтверждён разведкой (docs/recon/evidence.json)", object)
+	}
+	return nil
+}
+
+// ErrDeleteDisabled — попытка удалить опцию `disabled` в пакете wireless.
+//
+// Запрет абсолютный и без исключений (ADR-0026, правило 2 инварианта записи):
+// секция БЕЗ `disabled` считается ВКЛЮЧЁННОЙ (ADR-0004), то есть удаление
+// опции — это включение станционной сети способом, который в диффе не
+// выглядит как включение. Включать разрешено только записью литерала "0" на
+// пути переключения upstream.
+//
+// Отдельный сентинел, а не текст на месте: вызывающему может понадобиться
+// отличить нарушение инварианта от отказа uci — первое чинится правкой кода,
+// второе не чинится вовсе.
+var ErrDeleteDisabled = errors.New(
+	`uci delete wireless.*.disabled запрещён (ADR-0026, правило 2): секция без ` +
+		`disabled считается включённой (ADR-0004) — включайте записью литерала "0"`)
+
+// forbidDeleteDisabled — рантайм-половина запрета из ADR-0026.
+//
+// Статическая половина — правило R1 в scripts/check-wireless-write.sh — ловит
+// ЛИТЕРАЛ "disabled" в строке вызова. Вычисленное имя опции проходит мимо неё
+// в принципе: греп не исполняет код, и `opt := "dis" + "abled"` для него
+// обычная строка. Здесь же видно ЗНАЧЕНИЕ, откуда бы оно ни взялось.
+//
+// Тот же приём, что с allowedUbusObjects: скрипт стережёт написанное,
+// рантайм — сделанное. Ни одна из половин не покрывает область другой.
+//
+// Функция общая для Exec и Fake намеренно: фейк, разрешающий запрещённое,
+// учит тесты неправде — они доказывали бы поведение, которого на роутере не
+// будет.
+func forbidDeleteDisabled(pkg, option string) error {
+	if pkg == "wireless" && option == "disabled" {
+		return ErrDeleteDisabled
+	}
+	return nil
+}
+
+// ErrDisabledValue — попытка записать в wireless.*.disabled что-то кроме "0"
+// и "1" (ADR-0026, правило 1; область значений — ADR-0004).
+var ErrDisabledValue = errors.New(
+	`uci set wireless.*.disabled принимает только "0" и "1" (ADR-0026, правило 1)`)
+
+// forbidDisabledValue — рантайм-половина правила R2.
+//
+// Держит ОБЛАСТЬ ЗНАЧЕНИЙ, а не «литеральность»: откуда взялась строка, в
+// рантайме не видно в принципе, и притворяться, что видно, было бы хуже
+// молчания. Зато `strconv.FormatBool` даёт "true"/"false", а `Sprintf("%d")`
+// — что угодно, и оба до uci не доходят: `disabled=true` секцию не выключает,
+// её выключает "1" (ADR-0004), а "true" тихо читается как ВКЛЮЧЕНО.
+//
+// Литеральность записи — предмет грепа (R2, R3, R4) и только его. Это ровно
+// тот случай, когда две половины закрывают разное и ни одна не лишняя.
+func forbidDisabledValue(pkg, option, value string) error {
+	if pkg == "wireless" && option == "disabled" && value != "0" && value != "1" {
+		return fmt.Errorf("%w: получено %q", ErrDisabledValue, value)
 	}
 	return nil
 }
@@ -541,6 +640,9 @@ func (e *Exec) UCIAddNamed(ctx context.Context, pkg, name, sectionType string) e
 }
 
 func (e *Exec) UCISet(ctx context.Context, pkg, section, option, value string) error {
+	if err := forbidDisabledValue(pkg, option, value); err != nil {
+		return err
+	}
 	for kind, s := range map[string]string{"пакет": pkg, "секция": section, "опция": option} {
 		if err := validateName(kind, s); err != nil {
 			return err
@@ -560,6 +662,12 @@ func (e *Exec) UCISet(ctx context.Context, pkg, section, option, value string) e
 }
 
 func (e *Exec) UCIDelete(ctx context.Context, pkg, section, option string) error {
+	// Инвариант ДО валидации имён: он не про синтаксис адреса, а про смысл
+	// операции, и на невалидном имени секции нарушение осталось бы
+	// нарушением.
+	if err := forbidDeleteDisabled(pkg, option); err != nil {
+		return err
+	}
 	for kind, s := range map[string]string{"пакет": pkg, "секция": section} {
 		if err := validateName(kind, s); err != nil {
 			return err
@@ -668,16 +776,25 @@ func (e *Exec) ApplyUpstream(ctx context.Context, t UpstreamTarget) error {
 	return classifyUpstreamError(err)
 }
 
-// classifyByExitCode переводит код возврата скрипта в исход по таблице.
+// classifyByExitCode переводит код возврата скрипта в исход.
 //
 // run уже заворачивает *exec.ExitError через %w — код достаётся errors.As
 // без переделки run, и в тексте уже лежит stderr скрипта (die_code пишет
 // аварийные сообщения именно туда, а run собирает stderr в собственный
 // ограниченный буфер и подставляет его в текст ошибки).
 //
-// Не ExitError — процесс не запустился вовсе (нет файла, права, таймаут
-// контекста). Кода возврата не существует, классифицировать нечего.
-func classifyByExitCode(table map[int]error, err error) error {
+// Параметром идёт ФУНКЦИЯ разбора, а не таблица: у netmode-wifi разбор шире
+// таблицы — отрицательный код он читает как «исход неизвестен»
+// (upstreamErrorForCode), и через ту же функцию обязан проходить фейк.
+// Передай сюда таблицу — и у фейка появилась бы вторая, более бедная копия
+// разбора, то есть тест, проверяющий не то, что случится на роутере.
+//
+// Не ExitError — процесс не запустился вовсе: нет файла, нет прав, контекст
+// умер до старта. Кода возврата не существует и в этом случае, но разница с
+// «сняли на полпути» принципиальная: незапущенный скрипт системы не касался,
+// а снятый — мог успеть всё. Поэтому здесь ошибка возвращается как есть, а
+// сигнал разбирается ниже по коду -1.
+func classifyByExitCode(outcome func(code int, cause error) error, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -685,15 +802,15 @@ func classifyByExitCode(table map[int]error, err error) error {
 	if !errors.As(err, &ee) {
 		return err
 	}
-	return errorForCode(table, ee.ExitCode(), err)
+	return outcome(ee.ExitCode(), err)
 }
 
 func classifyApplyError(err error) error {
-	return classifyByExitCode(applySentinels, err)
+	return classifyByExitCode(applyErrorForCode, err)
 }
 
 func classifyUpstreamError(err error) error {
-	return classifyByExitCode(upstreamSentinels, err)
+	return classifyByExitCode(upstreamErrorForCode, err)
 }
 
 func (e *Exec) UpdateSubscription(ctx context.Context) ([]byte, error) {

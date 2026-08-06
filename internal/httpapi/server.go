@@ -318,8 +318,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// владелец скорее полезет в морду b4 именно тогда, когда b4 нам не
 	// отвечает». Он опровергнут: он предполагал, что API и веб-морда — разные
 	// слушатели, а у обоих движков слушатель ОДИН (b4 — ":::7000",
-	// docs/recon/evidence.json:8; nikki — «отдельного слушателя нет:
-	// external-controller '[::]:9090' единственный», там же:266). При
+	// docs/recon/evidence.json, ключ b4_api.listen_observed; nikki —
+	// «отдельного слушателя нет: external-controller '[::]:9090'
+	// единственный», там же, ключ nikki.panel.port). При
 	// available:false ссылка вела в connection refused в 100% случаев.
 	//
 	// Поле осталось независимым по другой причине, и она сильная: обнулив его

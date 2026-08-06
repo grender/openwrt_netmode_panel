@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // wifiStub — копия netmode-wifi с заданным кодом возврата.
@@ -282,5 +283,95 @@ func TestErrorForCodeKeepsBothLayers(t *testing.T) {
 	}
 	if got := errorForCode(upstreamSentinels, 42, cause); got != cause {
 		t.Errorf("неизвестный код обёрнут: %v", got)
+	}
+}
+
+// wifiKilled — скрипт, снимающий сам себя сигналом.
+//
+// Настоящий сигнал, а не подставленная ошибка: только так *exec.ExitError
+// отдаёт ExitCode() == -1, и только этот путь пройдёт демон, когда скрипт
+// снимут по дедлайну UpstreamApplyTimeout или OOM-killer'ом. Стаб с готовой
+// ошибкой проверял бы нашу догадку о форме исхода саму против себя.
+func wifiKilled(t *testing.T) *Exec {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "netmode-wifi")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nkill -9 $$\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := New()
+	e.wifiBin = path
+	return e
+}
+
+// Снятый скрипт кода возврата не имеет, и это НЕ «оба глагола отказали».
+//
+// Отнести его к ErrUpstreamApply значило бы сказать владельцу «конфигурация
+// не применялась», хотя `reconf` мог отработать за сотые доли секунды и
+// станция уже на целевой сети. Вызывающий обязан пойти и посмотреть на
+// ассоциацию — на этом построен весь ADR-0025.
+func TestApplyUpstreamKilledScriptHasNoOutcome(t *testing.T) {
+	err := wifiKilled(t).ApplyUpstream(context.Background(), UpstreamTarget{Radio: "wlanx"})
+	if err == nil {
+		t.Fatal("снятый скрипт объявлен успехом")
+	}
+	if !errors.Is(err, ErrUpstreamUnknown) {
+		t.Errorf("исход %v, ожидался ErrUpstreamUnknown", err)
+	}
+	for _, sentinel := range []error{ErrUpstreamBusy, ErrUpstreamApply, ErrUpstreamPrereq} {
+		if errors.Is(err, sentinel) {
+			t.Errorf("отсутствие кода возврата выдано за класс отказа %v", sentinel)
+		}
+	}
+}
+
+// Фейк обязан разбирать «кода не было» ТОЙ ЖЕ воронкой: иначе тесты демона
+// проверяли бы вторую копию разбора саму против себя.
+func TestFakeUnknownOutcomeUsesSameFunnel(t *testing.T) {
+	f := NewFake()
+	f.UpstreamExitCode = -1
+	err := f.ApplyUpstream(context.Background(), UpstreamTarget{Radio: "wlanx"})
+	if !errors.Is(err, ErrUpstreamUnknown) {
+		t.Errorf("исход %v, ожидался ErrUpstreamUnknown", err)
+	}
+	if errors.Is(err, ErrUpstreamApply) {
+		t.Errorf("фейк отнёс отсутствие кода к отказу применения: %v", err)
+	}
+	// Попытка видна в журнале и здесь: на роутере скрипт запускался.
+	if len(f.CallsContaining("apply-upstream")) != 1 {
+		t.Errorf("запуск скрипта не попал в журнал: %v", f.Calls)
+	}
+}
+
+// Паника фейка не оставляет его заблокированным: внедряется она под замком,
+// а снимает его defer вызывающего. Без этого свойства первый же тест на
+// панику в теле джоба вешал бы весь пакет по общему таймауту, ничего не
+// объясняя.
+func TestFakePanicLeavesFakeUsable(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake()
+	f.Panics["commit wireless"] = "внезапно"
+
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("внедрённая паника не сработала")
+			}
+		}()
+		_ = f.UCICommit(ctx, "wireless")
+	}()
+
+	// Замок свободен: следующий вызов проходит, а не висит навсегда.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = f.UCISet(ctx, "wireless", "up_x", "ssid", "После паники")
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("фейк остался заблокированным после паники")
+	}
+	if len(f.CallsContaining("commit wireless")) != 1 {
+		t.Errorf("вызов, на котором рвануло, не попал в журнал: %v", f.Calls)
 	}
 }
