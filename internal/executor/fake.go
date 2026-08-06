@@ -38,6 +38,15 @@ type Fake struct {
 	// Без этого нельзя проверить деградацию, которой требует SPEC §10.
 	Errors map[string]error
 
+	// ErrorsBySuffix — внедрение ошибки по ХВОСТУ описания вызова.
+	//
+	// Нужно там, где адрес записи заранее неизвестен: имя новой секции
+	// генерируется случайным (ADR-0005), и точный ключ в тесте не написать.
+	// Сломать при этом надо КОНКРЕТНЫЙ шаг — «запись encryption», — а не
+	// первую попавшуюся команду: отказ на первом же шаге не оставляет
+	// черновика и потому ничего не доказывает про его отмену.
+	ErrorsBySuffix map[string]error
+
 	// ApplyExitCodes — код возврата netmode-apply по режиму ("nikki",
 	// "b4", "off"). Отсутствие ключа или 0 — успех.
 	//
@@ -48,6 +57,18 @@ type Fake struct {
 	// роутере, — второй копии соответствия «код → исход» нет.
 	ApplyExitCodes map[string]int
 
+	// UpstreamExitCode — код возврата netmode-wifi. 0 (значение по
+	// умолчанию) — «применение выполнено».
+	//
+	// Одно число, а не карта по радио: станционное радио на роутере одно, и
+	// ключ по нему заставил бы каждый тест повторять выведенное имя — то
+	// есть хардкодить ровно то, что ADR-0019 велит выводить.
+	//
+	// Код, а не готовая ошибка, — по той же причине, что и у
+	// ApplyExitCodes: он проходит через ту же таблицу upstreamSentinels,
+	// что и на роутере.
+	UpstreamExitCode int
+
 	// Calls — журнал изменяющих вызовов в порядке поступления.
 	Calls []string
 
@@ -55,6 +76,26 @@ type Fake struct {
 	// иначе проверить «что именно демон изменил» станет нельзя, журнал
 	// утонет в чтениях статуса.
 	reads []string
+
+	// Три поля ниже нужны ровно для UCIRevert. Без них revert был бы
+	// записью в журнал и ничем больше: следующее `uci show` возвращало бы
+	// отменённую правку, и тест «отказ в середине не оставил черновика»
+	// проходил бы, не проверяя ничего.
+
+	// stagedOps — НАШИ операции по пакетам в порядке поступления. Отдельно
+	// от Staged потому, что revert обязан снять только своё: в Staged может
+	// лежать чужой черновик, подставленный тестом напрямую.
+	stagedOps map[string][]string
+	// base — снимок `uci show pkg` до первой нашей правки. Revert
+	// восстанавливает состояние, перепроигрывая оставшиеся операции поверх
+	// него: адресно вычесть одну правку из текста `uci show` нельзя, а
+	// пересборка с нуля повторяет то, что делает настоящий uci.
+	base map[string][]byte
+	// foreign — чужой стейджинг, каким он был до первой нашей правки.
+	foreign map[string]string
+
+	// fixtureQueue — ответы, меняющиеся от вызова к вызову (QueueFixture).
+	fixtureQueue map[string][][]byte
 }
 
 // NewFake возвращает пустой фейк.
@@ -64,7 +105,12 @@ func NewFake() *Fake {
 		UCIValues:      map[string]string{},
 		Staged:         map[string]string{},
 		Errors:         map[string]error{},
+		ErrorsBySuffix: map[string]error{},
 		ApplyExitCodes: map[string]int{},
+		stagedOps:      map[string][]string{},
+		base:           map[string][]byte{},
+		foreign:        map[string]string{},
+		fixtureQueue:   map[string][][]byte{},
 	}
 }
 
@@ -126,7 +172,7 @@ func (f *Fake) record(call string) error {
 	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, call)
 
-	if err := f.Errors[call]; err != nil {
+	if err := f.injectedLocked(call); err != nil {
 		return err
 	}
 
@@ -134,13 +180,85 @@ func (f *Fake) record(call string) error {
 	// сразу, как и у настоящего uci.
 	if pkg, ok := strings.CutPrefix(call, "commit "); ok {
 		delete(f.Staged, pkg)
+		delete(f.stagedOps, pkg)
+		delete(f.base, pkg)
+		delete(f.foreign, pkg)
+		return nil
+	}
+	if addr, ok := strings.CutPrefix(call, "revert "); ok {
+		f.revertSection(addr)
 		return nil
 	}
 	if pkg := pkgOf(call); pkg != "" {
+		f.snapshot(pkg)
 		f.applyStaged(pkg, call)
+		f.stagedOps[pkg] = append(f.stagedOps[pkg], call)
 		f.Staged[pkg] += call + "\n"
 	}
 	return nil
+}
+
+// snapshot запоминает состояние пакета до ПЕРВОЙ нашей правки.
+func (f *Fake) snapshot(pkg string) {
+	if _, ok := f.base[pkg]; ok {
+		return
+	}
+	f.base[pkg] = append([]byte(nil), f.Fixtures["uci show "+pkg]...)
+	f.foreign[pkg] = f.Staged[pkg]
+}
+
+// revertSection отменяет наши правки ОДНОЙ секции, оставляя остальные.
+//
+// Повторяет семантику `uci revert pkg.section`: чужой черновик и наши
+// правки других секций остаются на месте. Именно это свойство проверяет
+// граница ADR-0028 — снос по пакету выглядел бы в тестах так же, пока
+// однажды не унёс бы чужую работу.
+func (f *Fake) revertSection(addr string) {
+	pkg, section, ok := strings.Cut(addr, ".")
+	if !ok || section == "" {
+		return
+	}
+	if _, tracked := f.base[pkg]; !tracked {
+		// Своих правок не было — отменять нечего. Чужое не трогаем.
+		return
+	}
+
+	kept := make([]string, 0, len(f.stagedOps[pkg]))
+	for _, op := range f.stagedOps[pkg] {
+		if opSection(op) != section {
+			kept = append(kept, op)
+		}
+	}
+	f.stagedOps[pkg] = kept
+
+	f.Fixtures["uci show "+pkg] = append([]byte(nil), f.base[pkg]...)
+	f.Staged[pkg] = f.foreign[pkg]
+	for _, op := range kept {
+		f.applyStaged(pkg, op)
+		f.Staged[pkg] += op + "\n"
+	}
+	if f.Staged[pkg] == "" {
+		delete(f.Staged, pkg)
+	}
+}
+
+// opSection выхватывает имя секции из описания операции.
+//
+// Формы: "add-named pkg.name=type", "set pkg.sec.opt=val",
+// "delete pkg.sec[.opt]". Имя секции — второй компонент адреса.
+func opSection(call string) string {
+	_, addr, ok := strings.Cut(call, " ")
+	if !ok {
+		return ""
+	}
+	_, rest, ok := strings.Cut(addr, ".")
+	if !ok {
+		return ""
+	}
+	if i := strings.IndexAny(rest, ".="); i >= 0 {
+		return rest[:i]
+	}
+	return rest
 }
 
 // pkgOf выхватывает имя пакета из описания вызова.
@@ -163,7 +281,22 @@ func (f *Fake) fail(call string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reads = append(f.reads, call)
-	return f.Errors[call]
+	return f.injectedLocked(call)
+}
+
+// injectedLocked ищет внедрённую ошибку сначала по точному описанию вызова,
+// потом по хвосту. Точное совпадение главнее: иначе широкий хвост, забытый в
+// соседнем подтесте, молча перекрыл бы адресный ключ.
+func (f *Fake) injectedLocked(call string) error {
+	if err := f.Errors[call]; err != nil {
+		return err
+	}
+	for suffix, err := range f.ErrorsBySuffix {
+		if strings.HasSuffix(call, suffix) {
+			return err
+		}
+	}
+	return nil
 }
 
 // Reads возвращает журнал читающих вызовов. Нужен, чтобы доказать, что
@@ -175,9 +308,34 @@ func (f *Fake) Reads() []string {
 	return append([]string(nil), f.reads...)
 }
 
+// QueueFixture задаёт ПОСЛЕДОВАТЕЛЬНОСТЬ ответов на один и тот же вызов:
+// первый элемент уходит первому вызову, последний — всем остальным.
+//
+// Нужен там, где смысл проверки — в РАЗНИЦЕ между двумя чтениями одного
+// источника. Пример, ради которого он и заведён: «прежний ssid» снимается
+// до записи, «нынешний» — в ожидании после применения, и вердикт
+// stayed_on_previous отличается от other_ssid ровно тем, совпали они или
+// нет. С одним неподвижным ответом обе ветки неразличимы, и тест на них
+// проверял бы только то, что код не паникует.
+//
+// Последний элемент липнет намеренно: опрос идёт до истечения окна, число
+// итераций зависит от планировщика, и очередь, кончающаяся пустотой,
+// сделала бы исход зависимым от того, сколько раз успели спросить.
+func (f *Fake) QueueFixture(key string, bodies ...[]byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fixtureQueue[key] = bodies
+}
+
 func (f *Fake) fixture(key string) []byte {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if q := f.fixtureQueue[key]; len(q) > 0 {
+		if len(q) > 1 {
+			f.fixtureQueue[key] = q[1:]
+		}
+		return q[0]
+	}
 	return f.Fixtures[key]
 }
 
@@ -271,6 +429,21 @@ func (f *Fake) UCICommit(ctx context.Context, pkg string) error {
 	return f.record("commit " + pkg)
 }
 
+func (f *Fake) UCIRevert(ctx context.Context, pkg, section string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Имя секции проверяется той же функцией, что и в реальной реализации:
+	// пустое имя обязано отвергаться и здесь, иначе тест доказывал бы
+	// границу ADR-0028 на фейке, который её не держит.
+	for kind, s := range map[string]string{"пакет": pkg, "секция": section} {
+		if err := validateName(kind, s); err != nil {
+			return err
+		}
+	}
+	return f.record("revert " + pkg + "." + section)
+}
+
 func (f *Fake) UbusCall(ctx context.Context, object, method string, args map[string]any) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -313,6 +486,33 @@ func (f *Fake) ApplyMode(ctx context.Context, mode string) error {
 	// имя скрипта, аргумент, код возврата.
 	cause := fmt.Errorf("netmode-apply %s: exit status %d", mode, code)
 	return applyErrorForCode(code, cause)
+}
+
+func (f *Fake) ApplyUpstream(ctx context.Context, t UpstreamTarget) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Та же проверка, что и в реальной реализации: фейк, принимающий имя,
+	// которое роутер отвергнет кодом 1, врал бы ровно там, где тест ищет
+	// правду.
+	if err := validateRadioName(t.Radio); err != nil {
+		return err
+	}
+	// Вызов журналируется до отказа: на роутере скрипт тоже запускается, и
+	// тест обязан видеть попытку, а не только её результат.
+	if err := f.record("apply-upstream " + t.Radio); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	code := f.UpstreamExitCode
+	f.mu.Unlock()
+	if code == 0 {
+		return nil
+	}
+	// Текст повторяет форму того, что соберёт реальная реализация: имя
+	// скрипта, аргумент, код возврата.
+	cause := fmt.Errorf("netmode-wifi %s: exit status %d", t.Radio, code)
+	return upstreamErrorForCode(code, cause)
 }
 
 func (f *Fake) UpdateSubscription(ctx context.Context) ([]byte, error) {

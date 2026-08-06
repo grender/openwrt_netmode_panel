@@ -330,6 +330,29 @@ function App() {
 		if (mode === 'nikki') again('nikki', nikkiUp, nikki, loadNikki);
 	}, [status, mode, b4Up, nikkiUp, sets, nikki]);
 
+	// Список сохранённых сетей перечитывается по отпечатку wireless.
+	//
+	// status.wireless_fingerprint — то же значение, что fingerprint в ответе
+	// /api/wifi/networks (openapi), и опрос приносит его раз в секунду. Панель
+	// это поле не читала вовсе: список тянулся при монтировании и после
+	// собственных записей, поэтому после успешного переключения строка
+	// «Активная» оставалась на прежней сети до F5. Побочно чинится давняя
+	// мелочь — правка из LuCI видна без перезагрузки страницы.
+	//
+	// Ключ в seenFp: грузим по СМЕНЕ значения, а не по факту расхождения.
+	// Расхождение бывает стойким (список отдал отказ, nets === null), и
+	// «грузить, пока не сойдётся» означало бы запрос каждую секунду навсегда —
+	// тот же дефект, что лечит retryAt выше, и лечится он так же.
+	const wfp = status && status.wireless_fingerprint;
+	const seenFp = useRef(null);
+	useEffect(() => {
+		if (!wfp) return;
+		if (nets && nets.fingerprint === wfp) { seenFp.current = wfp; return; }
+		if (seenFp.current === wfp) return;
+		seenFp.current = wfp;
+		loadNets();
+	}, [wfp, nets]);
+
 	// extra добавляет к тосту запасную ссылку (href + cta). Она попадает
 	// в состояние вместе с секретом, поэтому живёт ровно до таймаута тоста
 	// или до клика по ней — см. dropToast ниже.
@@ -479,6 +502,81 @@ function App() {
 		nikki: svcState('nikki', nikkiUp, job, stale),
 	};
 
+	// ── переключение внешней сети ──
+
+	// Один вызов на обе точки входа — кнопку в строке и вторую кнопку формы.
+	//
+	// Отпечаток приходит аргументом, а не берётся из nets: у «сохранить и
+	// подключиться» он из ответа на создание и на коммит свежее того, что
+	// лежит в nets. Замка act внутри нет намеренно: сохранение с переключением
+	// идёт одним действием, и второй замок отбил бы сам себя.
+	const postUpstream = async (id, fp) => {
+		try {
+			const r = await api('/api/upstream', {
+				method: 'POST',
+				headers: { 'If-Match': fp },
+				body: JSON.stringify({ id }),
+			}, T_MODE);
+			// Засев из 202 — то же, что у onMode: полоска обязана появиться на
+			// первом кадре, а не через секунду, когда о джобе узнает опрос.
+			if (r && r.job) { seedRef.current = r.job; setSeed(r.job); }
+		} catch (e) {
+			// Три кода значат одно: список, по которому нажали, устарел. Их
+			// тексты обещают «список обновлён» — обещание надо выполнить,
+			// иначе повтор шлёт тот же мёртвый отпечаток бесконечно.
+			if (STALE_CODES.has(e.code)) await loadNets();
+			throw e;
+		}
+	};
+
+	// Домашняя сеть названа по имени: обещание «ваши устройства не отвалятся»
+	// проверяемо, только если сказано, про какую сеть оно. Прочерк при
+	// неизвестном ssid — пустое место в середине фразы читается как обрыв.
+	const confirmSwitch = (ssid) => confirm(
+		t('wifi.confirm.switch', { ssid, home: (status.ap && status.ap.ssid) || '—' }));
+
+	// Создание/правка сети. Возвращает обновлённый список (ответ 200 на запись
+	// — тот же, что у GET, с новым fingerprint) либо null, если запись не
+	// прошла: тогда ошибка уже лежит в форме, и форма остаётся открытой.
+	const saveNetwork = async (body, setErr) => {
+		try {
+			// Отпечаток обязателен: без него демон отвечает 409. Он же ловит
+			// правки, сделанные в LuCI, пока форма была открыта.
+			return await api('/api/wifi/networks', {
+				method: 'POST',
+				headers: { 'If-Match': nets && nets.fingerprint },
+				body: JSON.stringify(body),
+			});
+		} catch (e) {
+			// Ошибка формы докладывается ровно один раз — строкой в самой
+			// форме. Раньше отсюда шёл ещё throw, и act добавлял вторую копию
+			// тостом, другими словами.
+			//
+			// Расхождение отпечатка чинится обновлением списка, а не повтором
+			// вслепую: иначе перезапишем чужое. Перечитать обязательно — иначе
+			// wifi.err.stale («список обновлён») врёт.
+			if (e.code === 'fingerprint_mismatch') { await loadNets(); setErr(t('wifi.err.stale')); }
+			else if (e.code === 'foreign_staged_changes') setErr(t('wifi.err.foreign'));
+			else setErr(describe(e, t));
+			return null;
+		}
+	};
+
+	// Провал переключения — ровно один блок на одну неудачу, хотя каналов
+	// доклада два (см. UpstreamFailNote). Машинную причину знает только
+	// last_fail, поэтому заголовок идёт оттуда; job.error добавляет
+	// подробность и только пока джоб виден в статусе.
+	//
+	// Провалившийся джоб без last_fail — не выдумка: поле живёт в памяти
+	// демона и обнуляется его перезапуском, а панель может быть и старее
+	// демона. Тогда причина честно неизвестна, и ssid берётся из job.arg.
+	const upFailed = failed && failed.kind === 'upstream' ? failed : null;
+	// Пока идёт НОВЫЙ upstream-джоб, прошлая неудача скрыта целиком: иначе на
+	// двадцать секунд рядом висят «идёт переключение» и «переключение не
+	// вышло» — возможно, про разные сети.
+	const upFail = running && running.kind === 'upstream' ? null
+		: status.last_fail || (upFailed && { ssid: upFailed.arg, reason: '' });
+
 	return html`
 		<${Top} s=${status} t=${t} lang=${lang} setLang=${setLang} onNikkiOpen=${onNikkiOpen} />
 		<${Banner} s=${status} t=${t} svc=${svc} running=${running} failed=${failed} busy=${busy} locked=${locked}
@@ -500,8 +598,13 @@ function App() {
 			     .note — то место, где сообщения в этой панели уже живут: 14px
 			     на --bad-bg во всю ширину, и растёт оно вниз, никуда не толкая
 			     карточки. Заголовок остаётся в баннере, прямо над этой
-			     строкой, — вместе они читаются как одно сообщение. -->
-			${failed && failed.error && html`
+			     строкой, — вместе они читаются как одно сообщение.
+			     У upstream этот блок пропускается: его причину показывает
+			     UpstreamFailNote ниже, рядом с карточкой сети, и текст демона
+			     уходит туда же вторым планом. Здесь он был бы второй копией
+			     одной и той же неудачи, да ещё и посреди страницы nikki/b4,
+			     никак не рядом с тем, что её вызвало. -->
+			${failed && failed.error && failed.kind !== 'upstream' && html`
 				<div class="note err full"><p>${failed.error}</p></div>`}
 
 			<${SelectionNote} s=${status} t=${t} />
@@ -519,9 +622,13 @@ function App() {
 				<div class="card"><h2>${t('mode.off')}</h2>
 					<p class="hint">${t('sub.off')}</p></div>`}
 
-			<${WifiCard} nets=${nets} scan=${scan} t=${t} busy=${busy} status=${status}
+			<${WifiCard} nets=${nets} scan=${scan} t=${t} busy=${busy} locked=${locked} status=${status}
 				onScan=${() => act('scan', async () => setScan(await api('/api/wifi/scan', null, T_SCAN)))}
 				onOpenSheet=${(s) => setSheet(s)}
+				onConnect=${(n) => {
+					if (!confirmSwitch(n.ssid)) return;
+					act('switch:' + n.id, () => postUpstream(n.id, nets && nets.fingerprint));
+				}}
 				onDelete=${(n) => {
 					if (!confirm(t('wifi.confirm.delete', { ssid: n.ssid }))) return;
 					act('del:' + n.id, () => api('/api/wifi/networks/' + encodeURIComponent(n.id), {
@@ -529,6 +636,12 @@ function App() {
 						headers: { 'If-Match': nets.fingerprint },
 					}), loadNets);
 				}} />
+
+			<!-- Ниже WifiCard, а не выше: причина провала обязана стоять рядом
+			     с тем местом, где нажимали. Позицию первой карточки этот блок
+			     не двигает вовсе — он идёт после неё. -->
+			${upFail && html`
+				<${UpstreamFailNote} fail=${upFail} detail=${upFailed && upFailed.error} t=${t} />`}
 
 			<${SubCard} s=${status} logs=${logs} t=${t} lang=${lang} busy=${busy}
 				onUpdate=${() => act('sub', async () => {
@@ -541,38 +654,42 @@ function App() {
 
 		${sheet && html`
 			<${NetworkSheet} sheet=${sheet} t=${t} busy=${busy} locked=${locked}
+				savedSsids=${new Set(((nets && nets.networks) || []).map((n) => n.ssid))}
 				onClose=${() => setSheet(null)}
 				onSave=${(body, setErr) => act('save', async () => {
-					try {
-						// Отпечаток обязателен: без него демон отвечает 409.
-						// Он же ловит правки, сделанные в LuCI, пока форма
-						// была открыта.
-						await api('/api/wifi/networks', {
-							method: 'POST',
-							headers: { 'If-Match': nets && nets.fingerprint },
-							body: JSON.stringify(body),
-						});
+					if (await saveNetwork(body, setErr)) setSheet(null);
+				}, loadNets)}
+				onSaveConnect=${(body, setErr) => {
+					// Спрашиваем ДО записи: отказ не должен оставить половину
+					// сделанного. Отмена — просто выход, без ошибок, как
+					// у отмены удаления.
+					if (!confirmSwitch(body.ssid)) return;
+					// Составной операции на сервере нет — это два штатных
+					// вызова подряд, оба под одним замком act: между ними
+					// чужой джоб влезть не должен.
+					act('save', async () => {
+						const r = await saveNetwork(body, setErr);
+						// Сохранить не вышло — включать нечего. Форма открыта,
+						// ошибка уже в ней.
+						if (!r) return;
+						// Форма сделала своё дело: сеть сохранена и видна
+						// в списке. Ошибки второго шага показывать в ней уже
+						// негде — они уходят тостом.
 						setSheet(null);
-					} catch (e) {
-						// Ошибка формы докладывается ровно один раз — строкой
-						// в самой форме. Раньше отсюда шёл ещё throw, и act
-						// добавлял вторую копию тостом, другими словами.
-						//
-						// Расхождение отпечатка чинится обновлением списка,
-						// а не повтором вслепую: иначе перезапишем чужое.
-						// Перечитать обязательно — иначе wifi.err.stale
-						// («список обновлён») врёт, и повтор шлёт тот же
-						// устаревший отпечаток бесконечно.
-						if (e.code === 'fingerprint_mismatch') {
-							await loadNets();
-							setErr(t('wifi.err.stale'));
-						} else if (e.code === 'foreign_staged_changes') {
-							setErr(t('wifi.err.foreign'));
-						} else {
-							setErr(describe(e, t));
-						}
-					}
-				}, loadNets)} />`}
+						// Ответ на запись — тот же список, что у GET, и с новым
+						// отпечатком (openapi): промежуточный GET не нужен,
+						// а брать fingerprint из nets нельзя — он устарел ровно
+						// на этот коммит.
+						if (Array.isArray(r.networks)) setNets(r);
+						// Ровно одно совпадение по ssid — или не гадаем.
+						// Дублирующиеся имена штатны (ADR-0005), и включить
+						// не ту сеть хуже, чем не включить никакую: у второй
+						// записи может быть другой пароль.
+						const hit = (r.networks || []).filter((n) => n.id && n.ssid === body.ssid);
+						if (hit.length !== 1) { flash(t('wifi.saved.pick', { ssid: body.ssid }), 'warn'); return; }
+						await postUpstream(hit[0].id, r.fingerprint);
+					}, loadNets);
+				}} />`}
 
 		<${Foot} s=${status} t=${t} lang=${lang} stale=${stale} />
 	`;
@@ -594,6 +711,13 @@ const ERR_KEY = {
 	fingerprint_mismatch: 'wifi.err.stale',
 	fingerprint_required: 'wifi.err.stale',
 	foreign_staged_changes: 'wifi.err.foreign',
+	// Немедленные отказы POST /api/upstream. already_selected означает не
+	// «нельзя», а «список, по которому нажали, устарел»: switchable считает
+	// сервер, и кнопки на такой строке панель не рисует вовсе — значит запрос
+	// мог родиться только из устаревшего списка. Лечится тем же приёмом, что
+	// fingerprint_mismatch, — перечитыванием (см. onConnect).
+	already_selected: 'wifi.err.already_selected',
+	network_incomplete: 'wifi.err.network_incomplete',
 	// Сообщение демона русское (оно же уходит в syslog), поэтому даже там,
 	// где текст совпадает по смыслу, панель берёт свой перевод.
 	nikki_unavailable: 'srv.down',
@@ -621,6 +745,11 @@ const ERR_KEY = {
 // вовсе. Красный остаётся таймаутам и 500, иначе цвет перестаёт значить.
 const WHY_CODES = new Set(['host_unknown', 'nikki_unconfigured', 'panel_missing']);
 
+// Отказы POST /api/upstream, которые лечатся перечитыванием списка. Все три
+// означают одно: строка, по которой нажали, описывает уже не то, что лежит
+// в конфигурации. Тексты у них разные, а лекарство одно.
+const STALE_CODES = new Set(['already_selected', 'fingerprint_mismatch', 'fingerprint_required']);
+
 // Сообщение об ошибке объясняет причину, а не показывает код: коды 409
 // в этой панели означают три разные вещи, и «409» пользователю не говорит
 // ничего.
@@ -637,7 +766,8 @@ function describe(e, t, fallback) {
 	// вроде 'constructor' достало бы из прототипа функцию вместо ключа.
 	const key = e.code && ERR_KEY[e.code];
 	if (typeof key === 'string') return t(key);
-	if (e.status === 501) return t('wifi.switch.soon');
+	// Ветки на 501 здесь больше нет: её единственным поставщиком был
+	// POST /api/upstream фазы 1, а он теперь работает (openapi.yaml).
 	// Запасной вариант для 503 с незнакомым кодом — нейтральный: конкретика
 	// здесь была бы догадкой.
 	if (e.status === 503) return t('err.unavailable');
@@ -651,6 +781,11 @@ function describe(e, t, fallback) {
 function jobText(job, t) {
 	if (job.kind === 'mode' && ['nikki', 'b4', 'off'].includes(job.arg)) return t('job.mode.' + job.arg);
 	if (job.kind === 'subscription') return t('job.subscription');
+	// У upstream arg — ssid целевой сети (openapi, Job.arg), и подставляется
+	// он как данные, а не как часть ключа: набор ssid открыт, ключа под каждый
+	// не заведёшь. Пустой arg сюда прийти не должен, но если придёт — общая
+	// подпись честнее, чем «Переключаю на » с оборванным хвостом.
+	if (job.kind === 'upstream' && job.arg) return t('job.upstream', { ssid: job.arg });
 	return t('job.working');
 }
 
@@ -770,7 +905,11 @@ function Top({ s, t, lang, setLang, onNikkiOpen }) {
 // t('job.fail.' + kind): makeT при промахе возвращает сам ключ, и заявленный
 // контрактом kind «upstream» напечатал бы в интерфейсе строку job.fail.upstream.
 const failText = (j, t) => (j.kind === 'mode' ? t('job.fail.mode', { mode: j.arg })
-	: j.kind === 'subscription' ? t('job.fail.subscription') : t('job.fail'));
+	: j.kind === 'subscription' ? t('job.fail.subscription')
+		// Заголовок здесь нарочно общий и без ssid: подробности провала
+		// переключения живут в UpstreamFailNote рядом с карточкой сети — там,
+		// где нажимали, и там же переведённая машинная причина.
+		: j.kind === 'upstream' ? t('job.fail.upstream') : t('job.fail'));
 
 function Banner({ s, t, svc, running, failed, busy, locked, onMode }) {
 	const m = ['nikki', 'b4', 'off'].includes(s.mode) ? s.mode : 'unknown';
@@ -900,6 +1039,11 @@ function SelectionNote({ s, t }) {
 			<div class="note err full">
 				<h3>${t('sel.ambiguous.title')}</h3>
 				<p>${t('sel.ambiguous.text')}</p>
+				<!-- Второй абзац стоит ДО команды ssh намеренно: сперва что не
+				     так, потом что можно нажать прямо сейчас, и только потом
+				     обход через терминал. В обратном порядке читатель уходит
+				     в ssh, не заметив работающей кнопки перед глазами. -->
+				<p>${t('sel.ambiguous.switch')}</p>
 				<code>${t('sel.ambiguous.cmd', { host: s.hostname || 'router' })}</code>
 			</div>`;
 	}
@@ -908,6 +1052,36 @@ function SelectionNote({ s, t }) {
 		<div class="note warn full">
 			<h3>${t(key + '.title')}</h3>
 			<p>${t(key + '.text')}</p>
+		</div>`;
+}
+
+// ─────────── исход переключения внешней сети ───────────
+
+// Закрытый набор причин из контракта (LastFail.reason). Нужен ровно затем,
+// чтобы отличить известную причину от незнакомой: makeT при промахе вернёт
+// сам ключ, и в интерфейсе напечаталось бы «wifi.fail.plasma.title».
+const REASONS = new Set(['apply_failed', 'busy', 'prereq_missing', 'stayed_on_previous',
+	'other_ssid', 'not_associated', 'no_ipv4', 'unverifiable']);
+
+// Провал переключения — один блок, а не два, хотя каналов доклада два.
+//
+// Демон рапортует и джобом (failed + job.error — тому, кто смотрит сейчас),
+// и status.last_fail (тому, кто вернулся позже и пропустил пятисекундное окно
+// keepFinished). Одна неудача двумя карточками читается как две, поэтому
+// каналы сведены: заголовок — из МАШИННОЙ причины (её знает только
+// last_fail), сырой текст демона вторым планом и только пока джоб виден.
+// Заголовком job.error быть не может: он русский (тот же текст в syslog), и
+// в английском интерфейсе это утечка бэкенда — против неё и заведён ERR_KEY.
+//
+// Форма h3+p взята у SelectionNote: пара «короткий заголовок / длинное
+// объяснение» здесь та же, а у верхнего .note заголовка нет вовсе.
+function UpstreamFailNote({ fail, detail, t }) {
+	const key = REASONS.has(fail.reason) ? fail.reason : 'unknown';
+	return html`
+		<div class="note err full">
+			<h3>${t('wifi.fail.' + key + '.title', { ssid: fail.ssid })}</h3>
+			<p>${t('wifi.fail.' + key + '.text', { ssid: fail.ssid })}</p>
+			${detail && html`<p class="detail">${detail}</p>`}
 		</div>`;
 }
 
@@ -1037,7 +1211,7 @@ function bandNote(scan, t) {
 	return html`<p class="hint tight">${t('wifi.band', { band: band === '2g' ? '2.4' : '5', other })}</p>`;
 }
 
-function WifiCard({ nets, scan, t, busy, status, onScan, onOpenSheet, onDelete }) {
+function WifiCard({ nets, scan, t, busy, locked, status, onScan, onOpenSheet, onDelete, onConnect }) {
 	const saved = (nets && nets.networks) || [];
 	const found = (scan && scan.networks) || [];
 	const savedSsids = new Set(saved.map((n) => n.ssid));
@@ -1048,8 +1222,12 @@ function WifiCard({ nets, scan, t, busy, status, onScan, onOpenSheet, onDelete }
 	// UCI сигнала нет, он есть только у эфира.
 	const sig = new Map(found.filter((f) => f.ssid).map((f) => [f.ssid, f.signal_dbm]));
 
-	// При неоднозначной конфигурации запись запрещена целиком — показываем
-	// это заранее, а не отказом после нажатия.
+	// При неоднозначной конфигурации ПРАВКА запрещена целиком — показываем
+	// это заранее, а не отказом после нажатия. Переключения frozen не
+	// касается вовсе (ADR-0026): оно и есть выход из неоднозначности, и
+	// запереть его вместе с остальным значило бы запереть панель насмерть.
+	// Асимметрию объясняет sel.ambiguous.switch в SelectionNote — рядом,
+	// на том же экране, потому что без объяснения она читается как дефект.
 	const frozen = status.selection_state === 'ambiguous';
 
 	return html`
@@ -1074,17 +1252,37 @@ function WifiCard({ nets, scan, t, busy, status, onScan, onOpenSheet, onDelete }
 						<span class="tag">${n.enabled ? t('wifi.active') : t('wifi.saved')}</span>
 						${sig.has(n.ssid) && html`
 							<span class="ms ${signalClass(sig.get(n.ssid))}">${sig.get(n.ssid)} dBm</span>`}
-						${n.editable
-							? html`
-								<button class="mini" title=${t('wifi.edit')} disabled=${!!busy}
-									onClick=${() => onOpenSheet({ mode: 'edit', id: n.id, ssid: n.ssid, encryption: n.encryption })}
-									>${t('wifi.key')}</button>
-								<button class="mini danger icon"
-									title=${on(busy, 'del', n.id) ? t('wifi.deleting') : t('wifi.delete')}
-									disabled=${!!busy} aria-busy=${on(busy, 'del', n.id)}
-									onClick=${() => onDelete(n)}
-									>${on(busy, 'del', n.id) ? html`<${Spin} />` : '✕'}</button>`
-							: html`<span class="mark" title=${n.enabled ? t('wifi.locked') : t('sel.ambiguous.title')}>🔒</span>`}
+						<!-- Кнопки в одной группе: ряд переносится (app.css .row),
+						     и поодиночке флекс уносил вниз ровно последний
+						     элемент — одинокий «✕» под сжатым именем.
+						     Показывать ли «Подключить», решает сервер полем
+						     switchable; своей копии правила тут нет, иначе она
+						     разъедется с ADR-0026. У активной сети оно false —
+						     и кнопки нет вовсе, серых заглушек тут не бывает
+						     (ADR-0024). Заперта своим busy и чужим running:
+						     джоб сериализуется глобально, очереди нет, и кнопка
+						     с гарантированным 409 job_busy — мёртвое нажатие.
+						     На frozen НЕ смотрит: переключение и есть выход. -->
+						<span class="acts">
+							${n.switchable && html`
+								<button class="mini"
+									title=${on(busy, 'switch', n.id) ? t('wifi.connecting') : t('wifi.connect.title')}
+									disabled=${locked} aria-busy=${on(busy, 'switch', n.id)}
+									onClick=${() => onConnect(n)}
+									>${on(busy, 'switch', n.id)
+										? html`<${Spin} /> ${t('wifi.connecting')}` : t('wifi.connect')}</button>`}
+							${n.editable
+								? html`
+									<button class="mini" title=${t('wifi.edit')} disabled=${!!busy}
+										onClick=${() => onOpenSheet({ mode: 'edit', id: n.id, ssid: n.ssid, encryption: n.encryption })}
+										>${t('wifi.key')}</button>
+									<button class="mini danger icon"
+										title=${on(busy, 'del', n.id) ? t('wifi.deleting') : t('wifi.delete')}
+										disabled=${!!busy} aria-busy=${on(busy, 'del', n.id)}
+										onClick=${() => onDelete(n)}
+										>${on(busy, 'del', n.id) ? html`<${Spin} />` : '✕'}</button>`
+								: html`<span class="mark" title=${n.enabled ? t('wifi.locked') : t('sel.ambiguous.title')}>🔒</span>`}
+						</span>
 					</div>`)}
 			</div>`}
 
@@ -1104,13 +1302,12 @@ function WifiCard({ nets, scan, t, busy, status, onScan, onOpenSheet, onDelete }
 				<p class="hint tight">${t('wifi.hidden')} · ${hidden.length} — ${t('wifi.hidden.cant')}</p>`}
 
 			${bandNote(scan, t)}
-			<p class="hint tight">${t('wifi.switch.soon')}</p>
 		</div>`;
 }
 
 // ─────────── форма сети ───────────
 
-function NetworkSheet({ sheet, t, busy, locked, onSave, onClose }) {
+function NetworkSheet({ sheet, t, busy, locked, savedSsids, onSave, onSaveConnect, onClose }) {
 	const editing = sheet.mode === 'edit';
 	const [ssid, setSsid] = useState(sheet.ssid || '');
 	const [enc, setEnc] = useState(sheet.encryption || 'psk2');
@@ -1120,7 +1317,10 @@ function NetworkSheet({ sheet, t, busy, locked, onSave, onClose }) {
 
 	const needsKey = enc !== 'none';
 
-	const submit = () => {
+	// Валидация у обеих кнопок одна: «сохранить и подключиться» — это то же
+	// сохранение плюс второе действие, а не другая запись. Разойдись правила,
+	// одна из кнопок начала бы принимать то, что вторая отвергает.
+	const submit = (connect) => {
 		if (!editing && !ssid.trim()) { setErr(t('wifi.err.ssid')); return; }
 		// При правке пустой пароль означает «не менять» — так же, как
 		// в API: отсутствие поля и пустая строка это разные вещи.
@@ -1131,8 +1331,15 @@ function NetworkSheet({ sheet, t, busy, locked, onSave, onClose }) {
 		if (editing) body.id = sheet.id;
 		else { body.ssid = ssid.trim(); body.encryption = enc; }
 		if (key !== '') body.key = key;
-		onSave(body, setErr);
+		(connect ? onSaveConnect : onSave)(body, setErr);
 	};
+
+	// Дубль имени — штатный случай (ADR-0005): два профиля одной сети с разными
+	// паролями бывают, и uniqueness демон не проверяет. Поэтому подсказка, а не
+	// запрет, и обновляется она по мере ввода. Сравнение точное: SSID
+	// регистрозависим по стандарту, и «ATOM» с «atom» — разные сети технически;
+	// утверждать обратное панель не вправе.
+	const dup = !editing && ssid.trim() && savedSsids.has(ssid.trim());
 
 	return html`
 		<div class="sheet-bg" onClick=${(e) => e.target === e.currentTarget && onClose()}>
@@ -1144,6 +1351,7 @@ function NetworkSheet({ sheet, t, busy, locked, onSave, onClose }) {
 						<span>${t('wifi.field.ssid')}</span>
 						<input value=${ssid} onInput=${(e) => { setSsid(e.target.value); setErr(''); }}
 							autocomplete="off" spellcheck="false" />
+						${dup && html`<p class="hint tight">${t('wifi.hint.dup', { ssid: ssid.trim() })}</p>`}
 					</label>
 					<label class="field">
 						<span>${t('wifi.field.enc')}</span>
@@ -1174,8 +1382,21 @@ function NetworkSheet({ sheet, t, busy, locked, onSave, onClose }) {
 					<!-- Сохранение — мутация, поэтому запирается и чужим джобом
 					     тоже: раньше оно смотрело только на busy, и форму можно
 					     было отправить посреди смены режима. -->
-					<button class="wide primary" disabled=${!!busy || locked} aria-busy=${on(busy, 'save')} onClick=${submit}>
+					<button class="wide primary" disabled=${!!busy || locked} aria-busy=${on(busy, 'save')}
+						onClick=${() => submit(false)}>
 						${on(busy, 'save') ? html`<${Spin} /> ${t('wifi.saving')}` : t('wifi.save')}</button>
+					<!-- Вторая кнопка — намеренно НЕ primary и намеренно вторая.
+					     «Сохранить» дешевле и чаще: сеть дачи добавляют заранее,
+					     не собираясь туда сегодня. «Сохранить и подключиться» —
+					     то же самое плюс необратимое переключение, надмножество
+					     по риску; делать его действием по умолчанию значило бы
+					     угадывать намерение за владельца.
+					     В режиме edit кнопки нет: правка разрешена только
+					     выключенной сети, и «заодно подключиться» там не единое
+					     действие, а два разных повода. -->
+					${!editing && html`
+						<button class="wide" disabled=${!!busy || locked} onClick=${() => submit(true)}>
+							${t('wifi.sheet.saveconnect')}</button>`}
 					<!-- «Отмена» не блокируется никогда: это выход, а не действие.
 					     Запирать выход из формы из-за постороннего действия — как
 					     раз то, во что превращался disabled в роли мьютекса. -->

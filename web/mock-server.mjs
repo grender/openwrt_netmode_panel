@@ -16,6 +16,7 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import url from 'node:url';
+import crypto from 'node:crypto';
 
 const HERE = path.dirname(url.fileURLToPath(import.meta.url));
 const WEB = HERE;
@@ -53,6 +54,17 @@ const SCENARIOS = {
 	'job-fail-short': 'status-job-failed.json',
 	'job-fail-long': 'status-job-failed.json',
 	'job-fail-vanish': 'status-job-failed.json',
+	// Переключение внешней сети (POST /api/upstream). База у всех пяти —
+	// status-single.json: mode nikki, configured_ssid == associated_ssid ==
+	// John24, wireless_fingerprint sha256:1f0c9a3b7d2e4a58 — то же значение,
+	// что fingerprint в wifi-networks.json, иначе If-Match проверить нечем.
+	// Исход решает POST-обработчик через overlay, а не отдельная фикстура на
+	// сценарий: до нажатия кнопки все пять неотличимы.
+	'upstream-ok': 'status-single.json',
+	'upstream-fail-stale': 'status-single.json',
+	'upstream-fail-nokey': 'status-single.json',
+	'upstream-no-ipv4': 'status-single.json',
+	'upstream-busy': 'status-single.json',
 };
 
 // SLOW_START_SEC — сколько секунд служба режима не слушает свой порт ПОСЛЕ
@@ -332,7 +344,14 @@ const readBody = (req) => new Promise((resolve) => {
 // из-за которого поведение панели в самый интересный момент не проверялось.
 const busyJob = () => !!state.job && state.job.state === 'running';
 
-const startJob = (kind, arg, label, sec) => {
+// finish — необязательный колбэк, которому решать, как джоб завершится:
+// молча проставить state:"done" (по умолчанию, как у mode и subscription)
+// либо самому дописать state:"failed"/error и подвинуть что-то в overlay
+// (upstream: успех меняет ssid и отпечаток, провал взводит last_fail).
+// Общая для всех операций механика — секунды ожидания, потом ещё немного
+// показа исхода, — не дублируется: upstream отличается только тем, ЧТО
+// происходит по истечении sec, а не КОГДА.
+const startJob = (kind, arg, label, sec, finish) => {
 	state.job = {
 		id: 'j-' + Math.random().toString(16).slice(2, 8),
 		kind, arg, label,
@@ -348,10 +367,44 @@ const startJob = (kind, arg, label, sec) => {
 	const id = state.job.id;
 	const mine = () => state.job && state.job.id === id;
 	setTimeout(() => {
-		if (mine()) { state.job.state = 'done'; state.job.finished_at = new Date().toISOString(); }
+		if (mine()) {
+			if (finish) finish(); else state.job.state = 'done';
+			state.job.finished_at = new Date().toISOString();
+		}
 		setTimeout(() => { if (mine()) state.job = null; }, 1500);
 	}, sec * 1000);
 };
+
+// Причина неудачи переключения по имени сценария. Отсутствие в таблице —
+// успех. Строки те же, что в закрытом наборе LastFail.reason
+// (docs/api/openapi.yaml) и в internal/httpapi/upstreamhandler.go.
+const UPSTREAM_REASON = {
+	'upstream-fail-stale': 'stayed_on_previous',
+	'upstream-fail-nokey': 'not_associated',
+	'upstream-no-ipv4': 'no_ipv4',
+};
+
+// Текст job.error — дословно из internal/httpapi/upstreamhandler.go
+// (associationError и verifySwitch): панель и мок обязаны показывать
+// человеку одну и ту же историю про один и тот же код.
+const upstreamFailText = (reason, ssid, prevSsid) => {
+	if (reason === 'stayed_on_previous') {
+		return `станция осталась на прежней сети «${prevSsid}» — переключение на ` +
+			`«${ssid}» не состоялось, хотя применение прошло без ошибки`;
+	}
+	if (reason === 'no_ipv4') {
+		return `станция подключилась к «${ssid}», но внешний канал так и не получил ` +
+			'адрес IPv4 — сеть подключена, интернета нет';
+	}
+	return `станция не подключилась к «${ssid}» за отведённое время`;
+};
+
+// Отпечаток /etc/config/wireless меняется вместе с содержимым: успешное
+// переключение переписало disabled у двух секций, и старое значение стало
+// неправдой. Демон считает sha256 от вывода uci show; мок этого не читает,
+// но обязан отдать значение той же формы — панель сверяет строку, а не
+// пересчитывает hash сама.
+const nextFingerprint = () => 'sha256:' + crypto.randomBytes(8).toString('hex');
 
 async function handleAPI(req, res, u) {
 	const p = u.pathname;
@@ -400,10 +453,70 @@ async function handleAPI(req, res, u) {
 		return send(res, 202, { job: state.job });
 	}
 
-	// --- upstream: во второй фазе ---
+	// --- upstream: переключение внешней сети (джоб) ---
+	//
+	// Порядок проверок повторяет internal/httpapi/upstreamhandler.go: тело
+	// разбирается первым (400), отпечаток — вторым (409), затем секция
+	// ищется по id (404) и проверяется на switchable (409 already_selected —
+	// единственный код из этой ветки, для которого в фикстурах есть данные),
+	// и только тогда, уже беря джоб, отбивается job_busy. busyJob() стоит не
+	// первым: занятый джоб в реальности проверяется при попытке его СТАРТА,
+	// то есть после того, как остальное уже сошлось.
 	if (p === '/api/upstream' && method === 'POST') {
-		return fail(res, 501, 'not_implemented',
-			'Переключение внешней сети появится во второй фазе');
+		const body = await readBody(req);
+		const keys = Object.keys(body);
+		if (keys.some((k) => k !== 'id')) {
+			return fail(res, 400, 'unsupported_field', 'В теле разрешено только поле id');
+		}
+		if (!body.id || typeof body.id !== 'string') {
+			return fail(res, 400, 'bad_request', 'Нужно указать id сохранённой сети');
+		}
+
+		const ifMatch = req.headers['if-match'];
+		const fp = state.overlay.wireless_fingerprint || (await currentStatus()).wireless_fingerprint;
+		if (!ifMatch) {
+			return fail(res, 409, 'fingerprint_required',
+				'Нужен заголовок If-Match с текущим отпечатком wireless');
+		}
+		if (ifMatch !== fp) {
+			return fail(res, 409, 'fingerprint_mismatch',
+				'Список сетей изменился с тех пор, как вы его открыли — перечитайте и повторите');
+		}
+
+		const netsFile = state.scenario === 'ambiguous' ? 'wifi-networks-ambiguous.json' : 'wifi-networks.json';
+		const target = (await readJSON(netsFile)).networks.find((n) => n.id === body.id);
+		if (!target) return fail(res, 404, 'not_found', 'Сеть с таким id не найдена');
+		if (!target.switchable) {
+			return fail(res, 409, 'already_selected', 'Эта сеть уже единственная включённая');
+		}
+
+		if (busyJob()) return fail(res, 409, 'job_busy', 'Уже идёт другая операция. Дождитесь её завершения.');
+
+		const ssid = target.ssid;
+		const st = await currentStatus();
+		const prevSsid = state.overlay.associated_ssid || st.associated_ssid;
+		const reason = UPSTREAM_REASON[state.scenario];
+
+		startJob('upstream', ssid, `Переключение внешней сети на ${ssid}`, 20, () => {
+			if (reason) {
+				// Провал приходит уже ПОСЛЕ коммита UCI (шаги 6–8 демона):
+				// конфигурация записана, а станция не подтвердила её делом.
+				// Оба канала доклада — job.error для того, кто смотрит
+				// сейчас, last_fail для того, кто вернётся позже.
+				state.job.state = 'failed';
+				state.job.error = upstreamFailText(reason, ssid, prevSsid);
+				state.overlay.last_fail = { ssid, reason, at: new Date().toISOString() };
+			} else {
+				state.job.state = 'done';
+				state.overlay.configured_ssid = ssid;
+				state.overlay.associated_ssid = ssid;
+				state.overlay.wireless_fingerprint = nextFingerprint();
+				// Успех стирает прошлую неудачу (verifySwitch делает то же
+				// самое через s.fails.Clear()).
+				state.overlay.last_fail = null;
+			}
+		});
+		return send(res, 202, { job: state.job });
 	}
 
 	// --- WiFi ---
@@ -412,6 +525,13 @@ async function handleAPI(req, res, u) {
 		return send(res, 200, await readJSON('wifi-scan.json'));
 	}
 	if (p === '/api/wifi/networks' && method === 'GET') {
+		if (state.scenario === 'ambiguous') {
+			// Обе включены — это и есть конфликт: править и добавлять нельзя
+			// ни одну (editable: false у обеих), а переключить — можно
+			// (switchable: true у обеих, ADR-0026) — выход из неоднозначности
+			// и есть единственная разрешённая на ней операция.
+			return send(res, 200, await readJSON('wifi-networks-ambiguous.json'));
+		}
 		const d = await readJSON('wifi-networks.json');
 		// Список сетей обязан согласовываться со сценарием. Мок, у которого
 		// баннер говорит «сохранённых сетей нет», а список показывает две, —
@@ -421,9 +541,16 @@ async function handleAPI(req, res, u) {
 			d.networks = [];
 		} else if (state.scenario === 'all-disabled') {
 			d.networks = d.networks.map((n) => ({ ...n, enabled: false, editable: true }));
-		} else if (state.scenario === 'ambiguous') {
-			// Обе включены — это и есть конфликт. Править нельзя ни одну.
-			d.networks = d.networks.map((n) => ({ ...n, enabled: true, editable: false }));
+		} else if (state.overlay.configured_ssid) {
+			// Успешное переключение upstream поменяло, какая секция включена.
+			// Список обязан согласоваться со status.configured_ssid и с новым
+			// отпечатком — иначе панель, перечитавшая список по расхождению
+			// fingerprint, увидела бы список, который сам себе противоречит.
+			d.fingerprint = state.overlay.wireless_fingerprint;
+			d.networks = d.networks.map((n) => {
+				const enabled = n.ssid === state.overlay.configured_ssid;
+				return { ...n, enabled, editable: !enabled, switchable: !enabled };
+			});
 		}
 		return send(res, 200, d);
 	}

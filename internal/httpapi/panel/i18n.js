@@ -49,6 +49,9 @@ export const DICT = {
 		'job.mode.nikki': 'Переключаю на Nikki',
 		'job.mode.b4': 'Переключаю на b4',
 		'job.mode.off': 'Выключаю обход',
+		// arg здесь — ssid целевой сети, а не имя секции: netmode_1a2b3c4d
+		// человеку не говорит ничего (openapi, Job.arg).
+		'job.upstream': 'Переключаю на {ssid}',
 		'job.subscription': 'Обновляю подписку',
 		'job.working': 'Идёт операция',
 		// Провал виден пять секунд — ровно столько демон держит завершённую
@@ -59,6 +62,9 @@ export const DICT = {
 		// для показа.
 		'job.fail.mode': 'Не удалось переключиться на {mode}',
 		'job.fail.subscription': 'Подписка не обновилась',
+		// Заголовок в слоте баннера. Причину и подробности несёт блок у карточки
+		// сети — там, где нажимали: см. UpstreamFailNote в app.js.
+		'job.fail.upstream': 'Переключение сети не выполнено',
 		'job.fail': 'Операция не удалась',
 
 		// Тексты ошибок по машинному коду от демона. Сообщение самого демона
@@ -78,9 +84,15 @@ export const DICT = {
 		'sel.empty.title': 'Сохранённых сетей нет',
 		'sel.empty.text': 'Свежая установка выглядит именно так. Добавьте сеть — она сохранится выключенной.',
 		'sel.alldisabled.title': 'Внешняя сеть не выбрана',
-		'sel.alldisabled.text': 'Сети сохранены, но ни одна не включена. Включить можно в LuCI или по ssh — переключение из панели появится во второй фазе.',
+		'sel.alldisabled.text': 'Сети сохранены, но ни одна не включена. Нажмите «Подключить» у нужной сети ниже, чтобы сделать её активной.',
 		'sel.ambiguous.title': 'В конфигурации включено несколько сетей',
-		'sel.ambiguous.text': 'Демон не знает, какую из них поднимет netifd, и не исправляет это сам. Оставьте одну — через LuCI или по ssh. До этого запись в wireless запрещена.',
+		// «Запись в wireless запрещена» было верно до ADR-0026 и стало неточным
+		// после: переключение — как раз запись, и как раз разрешённая. Фраза
+		// сужена до того, что осталось правдой, — правки и удаления.
+		'sel.ambiguous.text': 'Демон не знает, какую из них поднимет netifd, и не исправляет это сам. До тех пор пока включено больше одной, править или удалять сохранённые сети нельзя — ни через панель, ни в обход её.',
+		// Почему одна кнопка в строке живая, а соседняя заперта. Без этого абзаца
+		// асимметрия читается как баг: кнопки стоят рядом и выглядят одинаково.
+		'sel.ambiguous.switch': 'Кнопка «Подключить» у сетей ниже работает и сейчас: выбрать одну из них — это и есть способ выйти из этой ситуации, поэтому она не заперта вместе с остальными. Изменить пароль или удалить сеть нельзя, пока включено больше одной, — правку в этом состоянии невозможно доказать безвредной.',
 		'sel.ambiguous.cmd': 'ssh root@{host} uci show wireless',
 
 		'srv.title': 'Сервер',
@@ -114,8 +126,19 @@ export const DICT = {
 		'wifi.band': 'Станция работает на {band} ГГц — сети {other} ГГц здесь не появятся.',
 		'wifi.saved': 'Сохранена',
 		'wifi.active': 'Активная',
-		'wifi.locked': 'Активную сеть в этой фазе менять нельзя',
-		'wifi.switch.soon': 'Переключение внешней сети появится во второй фазе.',
+		// Правило не фазовое, а постоянное (ADR-0026): правка включённой секции
+		// рвёт ассоциацию при ближайшем применении. Зато выход из него теперь
+		// есть, и он в этой же панели, — про него вторая фраза.
+		'wifi.locked': 'Активную сеть менять нельзя. Чтобы сменить её пароль, сначала переключитесь на другую сеть.',
+		'wifi.connect': 'Подключить',
+		'wifi.connect.title': 'Сделать эту сеть активной',
+		'wifi.connecting': 'Подключаю…',
+		// Диалог называет цену прямо: «интернета не будет» вместо «может быть
+		// недоступен». Отката нет (ADR-0006), и понимание этого — единственное,
+		// что здесь заменяет автоматическое восстановление. Про домашнюю сеть
+		// сказано «не отключит ваши устройства», а не «не потеряете ни пакета»:
+		// первое измерено (ADR-0025), второе — нет.
+		'wifi.confirm.switch': 'Переключить внешнюю сеть на {ssid}? Отката нет: если пароль окажется неверным или сеть не поднимется, интернета через роутер не будет, пока вы не переключитесь обратно сами. Панель останется доступна по локальной сети, а домашняя сеть {home} не отключит ваши устройства — это измерено.',
 		'wifi.hidden': '(скрытая сеть)',
 		'wifi.none': 'открытая',
 		'wifi.empty': 'Сканирование не запускалось.',
@@ -130,6 +153,13 @@ export const DICT = {
 		'wifi.deleting': 'Удаляю…',
 		'wifi.confirm.delete': 'Удалить сеть {ssid} и её пароль с роутера?',
 		'wifi.sheet.add': 'Новая сеть',
+		'wifi.sheet.saveconnect': 'Сохранить и подключиться',
+		// Дубль ssid — штатный случай (ADR-0005), а не ошибка ввода: два профиля
+		// одной сети с разными паролями бывают. Поэтому подсказка, а не запрет.
+		'wifi.hint.dup': 'Сеть с именем {ssid} уже сохранена — это будет вторая запись с тем же именем.',
+		// Форма сохранила сеть, но какую именно запись включать — не разобрала
+		// (совпадений по ssid не одно). Гадать нельзя: включится не та сеть.
+		'wifi.saved.pick': 'Сеть {ssid} сохранена. Какую именно запись включать, панель не определила однозначно — нажмите «Подключить» у нужной строки.',
 		'wifi.sheet.edit': 'Пароль сети {ssid}',
 		'wifi.field.ssid': 'Имя сети (SSID)',
 		'wifi.field.key': 'Пароль',
@@ -140,13 +170,45 @@ export const DICT = {
 		'wifi.cancel': 'Отмена',
 		'wifi.show': 'Показать',
 		'wifi.hide': 'Скрыть',
-		'wifi.keyhint': 'Пароль сохранится на роутере выключенной сетью. Домашняя сеть не пострадает: внешний канал в этой фазе не переключается.',
+		// Вторая фраза раньше обещала, что внешний канал не переключается вовсе;
+		// теперь он переключается с этого же экрана. Верным осталось то, что
+		// сохранение само по себе ничего не включает.
+		'wifi.keyhint': 'Пароль сохранится на роутере выключенной сетью. Домашняя сеть не пострадает: это отдельная запись, и пока вы не подключитесь к ней явно, она не используется.',
 		'wifi.keykept': 'Оставьте поле пустым, чтобы не менять пароль.',
 		'wifi.err.short': 'Пароль WiFi — от 8 до 63 символов',
 		'wifi.err.ssid': 'Укажите имя сети',
 		'wifi.err.stale': 'Конфигурация изменилась. Список обновлён — повторите.',
 		'wifi.err.foreign': 'В LuCI есть незакоммиченные правки. Примените или отмените их.',
+		'wifi.err.already_selected': 'Список устарел: эта сеть уже активна. Список обновлён — переключать больше не на что.',
+		'wifi.err.network_incomplete': 'Эту сеть нельзя сделать активной: в конфигурации не хватает данных (имени, пароля или сети). Проверьте её через «Пароль» или в LuCI.',
 		'wifi.hidden.cant': 'К скрытой сети нельзя подключиться из списка: имя неизвестно.',
+
+		// Исход переключения: заголовок и объяснение на каждую машинную причину.
+		// Одного текста на восемь причин не хватает — «не вышло» означает разное:
+		// заведомо не применилось (apply_failed, busy, prereq_missing),
+		// применилось не туда (stayed_on_previous, other_ssid), результат
+		// неизвестен (unverifiable), а no_ipv4 — не провал ассоциации вовсе.
+		'wifi.fail.apply_failed.title': 'Применить не удалось',
+		'wifi.fail.apply_failed.text': 'Роутер не смог включить сеть {ssid}: оба способа применения отказали. Конфигурация записана — попробуйте ещё раз или проверьте состояние по ssh.',
+		'wifi.fail.busy.title': 'Радио занято другим процессом',
+		'wifi.fail.busy.text': 'Кто-то ещё сейчас настраивает радио — например, из LuCI или по ssh. Подождите и повторите переключение на {ssid}.',
+		'wifi.fail.prereq_missing.title': 'На роутере не хватает нужных программ',
+		'wifi.fail.prereq_missing.text': 'Намерение записано, но переключение на {ssid} не выполнено: на роутере не нашлось flock или ubus. Это неполадка прошивки, не пароля — обратитесь по ssh.',
+		'wifi.fail.stayed_on_previous.title': 'Осталась на прежней сети',
+		'wifi.fail.stayed_on_previous.text': 'Роутер принял команду, но станция не перешла на {ssid} и осталась на прежней сети. Конфигурация уже записана — повторное нажатие «Подключить» имеет смысл.',
+		'wifi.fail.other_ssid.title': 'Подключилась к другой сети',
+		'wifi.fail.other_ssid.text': 'Станция ассоциировалась не с {ssid} и не с прежней сетью, а с какой-то третьей. Проверьте эфир поблизости и повторите.',
+		'wifi.fail.not_associated.title': 'Не подключилась к {ssid}',
+		'wifi.fail.not_associated.text': 'За отведённое время станция не ассоциировалась с сетью. Самая частая причина — неверный пароль, но могла быть и слабым сигналом или недоступностью точки доступа. Проверьте пароль и повторите.',
+		'wifi.fail.no_ipv4.title': 'Подключилась, но без адреса',
+		'wifi.fail.no_ipv4.text': 'Станция ассоциировалась с {ssid}, но не получила адрес по DHCP — интернета через эту сеть нет. Проверьте настройки этой сети или роутер, который её раздаёт.',
+		'wifi.fail.unverifiable.title': 'Исход неизвестен',
+		'wifi.fail.unverifiable.text': 'Роутер применил переключение на {ssid}, но не смог проверить результат: ubus не ответил или ответ не разобрался. Успех и провал одинаково возможны — откройте панель заново или проверьте состояние по ssh.',
+		// Запасной ключ. Набор reason закрыт на сервере, но это не гарантирует,
+		// что панель и демон одного дня: приписать чужой код одной из восьми
+		// известных формулировок было бы прямой ложью о том, что наблюдали.
+		'wifi.fail.unknown.title': 'Неизвестный исход',
+		'wifi.fail.unknown.text': 'Демон сообщил об исходе переключения на {ssid} кодом, которого эта версия панели не знает. Обновите панель или проверьте состояние по ssh.',
 
 		'sub.title': 'Подписка',
 		'sub.when': 'Обновлена {when}',
@@ -198,7 +260,9 @@ export const DICT = {
 		'boot': 'Читаю состояние роутера…',
 		'boot.down.title': 'Демон не отвечает',
 		'boot.down': 'Панель продолжает спрашивать и откроется, как только он ответит.',
-		'foot.phase': 'фаза 1: смена внешней сети отключена',
+		// Не про фазу, а про постоянное свойство операции: у переключения нет
+		// отката (ADR-0006), и напоминать об этом стоит не только в диалоге.
+		'foot.phase': 'смена внешней сети — без автоотката',
 	},
 
 	en: {
@@ -238,10 +302,12 @@ export const DICT = {
 		'job.mode.nikki': 'Switching to Nikki',
 		'job.mode.b4': 'Switching to b4',
 		'job.mode.off': 'Turning the bypass off',
+		'job.upstream': 'Switching to {ssid}',
 		'job.subscription': 'Updating the subscription',
 		'job.working': 'Operation in progress',
 		'job.fail.mode': 'Could not switch to {mode}',
 		'job.fail.subscription': 'The subscription did not update',
+		'job.fail.upstream': 'The network switch did not run',
 		'job.fail': 'The operation failed',
 
 		'err.generic': 'Error',
@@ -259,9 +325,10 @@ export const DICT = {
 		'sel.empty.title': 'No saved networks',
 		'sel.empty.text': 'A fresh install looks exactly like this. Add a network — it is saved disabled.',
 		'sel.alldisabled.title': 'No uplink selected',
-		'sel.alldisabled.text': 'Networks are saved but none is enabled. Enable one in LuCI or over ssh — switching from the panel arrives in phase 2.',
+		'sel.alldisabled.text': 'Networks are saved but none is enabled. Press “Connect” on the network you want below to make it active.',
 		'sel.ambiguous.title': 'Several networks are enabled at once',
-		'sel.ambiguous.text': 'The daemon cannot tell which one netifd will bring up, and does not fix it on its own. Leave one — via LuCI or ssh. Until then writing to wireless is refused.',
+		'sel.ambiguous.text': 'The daemon cannot tell which one netifd will bring up, and does not fix it on its own. While more than one is enabled, saved networks cannot be edited or deleted — neither through the panel nor around it.',
+		'sel.ambiguous.switch': 'The “Connect” button on the networks below still works right now: picking one of them is exactly how you get out of this situation, which is why it is not locked along with the rest. Changing a password or deleting a network is not possible while more than one is enabled — an edit cannot be shown safe in that state.',
 		'sel.ambiguous.cmd': 'ssh root@{host} uci show wireless',
 
 		'srv.title': 'Server',
@@ -291,8 +358,11 @@ export const DICT = {
 		'wifi.band': 'The station runs on {band} GHz — {other} GHz networks will not show up here.',
 		'wifi.saved': 'Saved',
 		'wifi.active': 'Active',
-		'wifi.locked': 'The active network cannot be edited in this phase',
-		'wifi.switch.soon': 'Switching the uplink arrives in phase 2.',
+		'wifi.locked': 'The active network cannot be edited. To change its password, switch to a different network first.',
+		'wifi.connect': 'Connect',
+		'wifi.connect.title': 'Make this network active',
+		'wifi.connecting': 'Connecting…',
+		'wifi.confirm.switch': 'Switch the uplink to {ssid}? There is no rollback: if the password turns out to be wrong or the network does not come up, there will be no internet through the router until you switch back yourself. The panel stays reachable on the local network, and the home network {home} will not disconnect your devices — this is measured.',
 		'wifi.hidden': '(hidden network)',
 		'wifi.none': 'open',
 		'wifi.empty': 'No scan has been run.',
@@ -304,6 +374,9 @@ export const DICT = {
 		'wifi.deleting': 'Deleting…',
 		'wifi.confirm.delete': 'Delete {ssid} and its password from the router?',
 		'wifi.sheet.add': 'New network',
+		'wifi.sheet.saveconnect': 'Save and connect',
+		'wifi.hint.dup': 'A network named {ssid} is already saved — this will be a second entry with the same name.',
+		'wifi.saved.pick': 'The network {ssid} is saved. The panel could not tell which entry to enable — press “Connect” on the row you want.',
 		'wifi.sheet.edit': 'Password for {ssid}',
 		'wifi.field.ssid': 'Network name (SSID)',
 		'wifi.field.key': 'Password',
@@ -314,13 +387,34 @@ export const DICT = {
 		'wifi.cancel': 'Cancel',
 		'wifi.show': 'Show',
 		'wifi.hide': 'Hide',
-		'wifi.keyhint': 'The password is stored on the router as a disabled network. Your home network is unaffected: the uplink is not switched in this phase.',
+		'wifi.keyhint': 'The password is stored on the router as a disabled network. Your home network is unaffected: this is a separate entry, and it is not used until you connect to it explicitly.',
 		'wifi.keykept': 'Leave the field empty to keep the current password.',
 		'wifi.err.short': 'WiFi password must be 8 to 63 characters',
 		'wifi.err.ssid': 'Enter the network name',
 		'wifi.err.stale': 'The configuration changed. The list has been refreshed — try again.',
 		'wifi.err.foreign': 'LuCI has uncommitted changes. Apply or discard them first.',
+		'wifi.err.already_selected': 'The list was stale: this network is already active. The list has been refreshed — there is nothing left to switch to.',
+		'wifi.err.network_incomplete': 'This network cannot be made active: the configuration is missing data (name, password, or network). Check it via “Password” or in LuCI.',
 		'wifi.hidden.cant': 'A hidden network cannot be joined from the list: its name is unknown.',
+
+		'wifi.fail.apply_failed.title': 'Could not apply',
+		'wifi.fail.apply_failed.text': 'The router could not switch to {ssid}: both apply methods failed. The configuration is saved — try again, or check over ssh.',
+		'wifi.fail.busy.title': 'Radio busy with another process',
+		'wifi.fail.busy.text': 'Something else is configuring the radio right now — from LuCI or over ssh, for example. Wait and try switching to {ssid} again.',
+		'wifi.fail.prereq_missing.title': 'The router is missing required tools',
+		'wifi.fail.prereq_missing.text': 'The intent is saved, but the switch to {ssid} did not run: the router is missing flock or ubus. This is a firmware problem, not the password — check over ssh.',
+		'wifi.fail.stayed_on_previous.title': 'Stayed on the previous network',
+		'wifi.fail.stayed_on_previous.text': 'The router accepted the command, but the station did not move to {ssid} and stayed on the previous network. The configuration is already saved — pressing Connect again makes sense.',
+		'wifi.fail.other_ssid.title': 'Connected to a different network',
+		'wifi.fail.other_ssid.text': 'The station associated with neither {ssid} nor the previous network, but with a third one. Check nearby networks and try again.',
+		'wifi.fail.not_associated.title': 'Did not connect to {ssid}',
+		'wifi.fail.not_associated.text': 'The station did not associate with the network within the allotted time. The most common cause is a wrong password, but a weak signal or an unreachable access point can also do this. Check the password and try again.',
+		'wifi.fail.no_ipv4.title': 'Connected, but without an address',
+		'wifi.fail.no_ipv4.text': 'The station associated with {ssid} but did not get an address over DHCP — there is no internet through this network. Check that network’s settings or the router providing it.',
+		'wifi.fail.unverifiable.title': 'Outcome unknown',
+		'wifi.fail.unverifiable.text': 'The router applied the switch to {ssid} but could not verify the result: ubus did not answer, or its answer did not parse. Success and failure are equally possible — reopen the panel or check over ssh.',
+		'wifi.fail.unknown.title': 'Unknown outcome',
+		'wifi.fail.unknown.text': 'The daemon reported an outcome for {ssid} with a code this panel version does not recognize. Update the panel or check over ssh.',
 
 		'sub.title': 'Subscription',
 		'sub.when': 'Updated {when}',
@@ -350,7 +444,7 @@ export const DICT = {
 		'boot': 'Reading the router state…',
 		'boot.down.title': 'The daemon does not answer',
 		'boot.down': 'The panel keeps asking and opens as soon as it does.',
-		'foot.phase': 'phase 1: uplink switching is disabled',
+		'foot.phase': 'uplink switching has no auto-rollback',
 	},
 };
 

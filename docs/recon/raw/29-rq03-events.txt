@@ -1,0 +1,116 @@
+# snapshot: grenderRouter, отметки этапов замера RQ-03, 2026-08-05T22:37:31Z
+
+225.86	phase	idle
+226.00	phase	scan:1
+231.44	ping	scan1 владелец=NA свидетель=NA шлюз=NA
+231.45	scan	1 rc=0 dur=2.38 n=23 ssid=grenderNet idhd NONONO uptime=146->151
+231.45	phase	scan:2
+236.89	ping	scan2 владелец=NA свидетель=NA шлюз=NA
+236.90	scan	2 rc=0 dur=2.36 n=26 ssid=grenderNet idhd NONONO uptime=151->156
+236.90	phase	scan:3
+242.39	ping	scan3 владелец=NA свидетель=NA шлюз=NA
+242.40	scan	3 rc=0 dur=2.42 n=26 ssid=grenderNet idhd NONONO uptime=156->162
+242.40	phase	idle
+242.42	phase	begin:ubus_reconf_dev:no
+242.43	begin	ubus_reconf_dev pre=no
+242.44	switch	wifinet3 -> wifinet0
+242.44	phase	apply:ubus_reconf_dev:no
+242.46	apply	ubus_reconf_dev pre=no rc=0 dur=0.02
+287.54	ping	ubus_reconf_dev/no/туда владелец=NA свидетель=NA шлюз=NA
+287.54	phase	settle:ubus_reconf_dev:no
+292.56	phase	revert:ubus_reconf_dev:no
+292.58	switch	wifinet0 -> wifinet3
+292.59	revert	ubus_reconf_dev pre=no rc=0 dur=0.01
+292.64	ping	ubus_reconf_dev/no/обратно владелец=NA свидетель=NA шлюз=NA
+292.65	phase	idle
+292.67	phase	begin:ubus_reconf_dev:yes
+292.68	begin	ubus_reconf_dev pre=yes
+292.69	switch	wifinet3 -> wifinet0
+292.69	phase	apply:ubus_reconf_dev:yes
+292.73	apply	ubus_reconf_dev pre=yes rc=0 dur=0.01
+298.10	ping	ubus_reconf_dev/yes/туда владелец=NA свидетель=NA шлюз=NA
+298.10	phase	settle:ubus_reconf_dev:yes
+303.12	phase	revert:ubus_reconf_dev:yes
+303.14	switch	wifinet0 -> wifinet3
+303.17	revert	ubus_reconf_dev pre=yes rc=0 dur=0.01
+307.42	ping	ubus_reconf_dev/yes/обратно владелец=NA свидетель=NA шлюз=NA
+307.44	phase	idle
+307.45	phase	begin:wifi_reconf_radio:no
+307.45	begin	wifi_reconf_radio pre=no
+307.47	switch	wifinet3 -> wifinet0
+307.47	phase	apply:wifi_reconf_radio:no
+307.52	apply	wifi_reconf_radio pre=no rc=0 dur=0.04
+314.94	ping	wifi_reconf_radio/no/туда владелец=NA свидетель=NA шлюз=NA
+314.94	phase	settle:wifi_reconf_radio:no
+319.96	phase	revert:wifi_reconf_radio:no
+319.98	switch	wifinet0 -> wifinet3
+320.02	revert	wifi_reconf_radio pre=no rc=0 dur=0.03
+326.46	ping	wifi_reconf_radio/no/обратно владелец=NA свидетель=NA шлюз=NA
+326.48	phase	idle
+326.49	phase	begin:wifi_reconf_radio:yes
+326.50	begin	wifi_reconf_radio pre=yes
+326.51	switch	wifinet3 -> wifinet0
+326.51	phase	apply:wifi_reconf_radio:yes
+326.57	apply	wifi_reconf_radio pre=yes rc=0 dur=0.04
+332.91	ping	wifi_reconf_radio/yes/туда владелец=NA свидетель=NA шлюз=NA
+332.91	phase	settle:wifi_reconf_radio:yes
+337.94	phase	revert:wifi_reconf_radio:yes
+337.95	switch	wifinet0 -> wifinet3
+338.00	revert	wifi_reconf_radio pre=yes rc=0 dur=0.03
+346.45	ping	wifi_reconf_radio/yes/обратно владелец=NA свидетель=NA шлюз=NA
+346.47	phase	idle
+346.48	phase	begin:ubus_downup_dev:no
+346.49	begin	ubus_downup_dev pre=no
+346.50	switch	wifinet3 -> wifinet0
+346.50	phase	apply:ubus_downup_dev:no
+346.53	apply	ubus_downup_dev pre=no rc=0 dur=0.02
+391.97	ping	ubus_downup_dev/no/туда владелец=NA свидетель=NA шлюз=NA
+391.97	phase	settle:ubus_downup_dev:no
+397.00	phase	revert:ubus_downup_dev:no
+397.01	switch	wifinet0 -> wifinet3
+397.03	revert	ubus_downup_dev pre=no rc=0 dur=0.02
+397.09	ping	ubus_downup_dev/no/обратно владелец=NA свидетель=NA шлюз=NA
+397.13	phase	idle
+397.14	phase	begin:ubus_downup_dev:yes
+397.15	begin	ubus_downup_dev pre=yes
+397.16	switch	wifinet3 -> wifinet0
+397.16	phase	apply:ubus_downup_dev:yes
+397.19	apply	ubus_downup_dev pre=yes rc=0 dur=0.01
+405.86	ping	ubus_downup_dev/yes/туда владелец=NA свидетель=NA шлюз=NA
+405.86	phase	settle:ubus_downup_dev:yes
+410.88	phase	revert:ubus_downup_dev:yes
+410.89	switch	wifinet0 -> wifinet3
+410.93	revert	ubus_downup_dev pre=yes rc=0 dur=0.02
+418.33	ping	ubus_downup_dev/yes/обратно владелец=NA свидетель=NA шлюз=NA
+418.36	phase	idle
+
+== probe.log ==
+[225.80] владелец: ip=192.168.9.188 mac=00:E0:4A:6A:45:AD (в neigh на br-lan: да); upstream-шлюз: 10.84.92.31; ping: yes
+[225.82] связь владельца: провод; свидетель на домашней точке: 6C:40:08:98:AA:18 (192.168.9.212); клиентов на точке при старте: 6C:40:08:98:AA:18
+[225.85] снимок: /root/rq03/wireless.orig, возврат: /root/rq03/restore.sh
+[225.86] сторож взведён (setsid)
+[225.87] слой 3: строка в crontab добавлена (* * * * * /root/rq03/guard.sh once)
+[225.88] сэмплер запущен, пишет /root/rq03/samples.tsv
+[225.91] клиенты домашней точки на старте: 6C:40:08:98:AA:18; поле connected_time: да
+[225.93] инвентаризация записана в /root/rq03/inventory.txt
+[225.95] ── RQ-04: скан при живой ассоциации
+[231.45] RQ-04 скан 1: rc=0 2.38s, сетей=23, ассоциация после: 'grenderNet idhd NONONO', uptime wwan 146 -> 151 (сброс: нет), потери до владельца: NA
+[236.89] RQ-04 скан 2: rc=0 2.36s, сетей=26, ассоциация после: 'grenderNet idhd NONONO', uptime wwan 151 -> 156 (сброс: нет), потери до владельца: NA
+[242.39] RQ-04 скан 3: rc=0 2.42s, сетей=26, ассоциация после: 'grenderNet idhd NONONO', uptime wwan 156 -> 162 (сброс: нет), потери до владельца: NA
+[242.42] ── кандидат: ubus_reconf_dev (network reload заранее: no)
+[292.66] ── кандидат ubus_reconf_dev: туда rc=0 (0.02s, ассоциация: нет), обратно rc=0 (0.01s, вернулась: да), клиенты AP как в начале: да, потери до владельца: NA / NA
+[292.67] ── кандидат: ubus_reconf_dev (network reload заранее: yes)
+[307.44] ── кандидат ubus_reconf_dev: туда rc=0 (0.01s, ассоциация: да), обратно rc=0 (0.01s, вернулась: да), клиенты AP как в начале: да, потери до владельца: NA / NA
+[307.45] ── кандидат: wifi_reconf_radio (network reload заранее: no)
+[326.48] ── кандидат wifi_reconf_radio: туда rc=0 (0.04s, ассоциация: да), обратно rc=0 (0.03s, вернулась: да), клиенты AP как в начале: да, потери до владельца: NA / NA
+[326.49] ── кандидат: wifi_reconf_radio (network reload заранее: yes)
+[346.47] ── кандидат wifi_reconf_radio: туда rc=0 (0.04s, ассоциация: да), обратно rc=0 (0.03s, вернулась: да), клиенты AP как в начале: да, потери до владельца: NA / NA
+[346.48] ── кандидат: ubus_downup_dev (network reload заранее: no)
+[397.13] ── кандидат ubus_downup_dev: туда rc=0 (0.02s, ассоциация: нет), обратно rc=0 (0.02s, вернулась: да), клиенты AP как в начале: да, потери до владельца: NA / NA
+[397.14] ── кандидат: ubus_downup_dev (network reload заранее: yes)
+Command failed: ubus call iwinfo info {"device":"phy0.0-sta0"} (Not found)
+[418.37] ── кандидат ubus_downup_dev: туда rc=0 (0.01s, ассоциация: да), обратно rc=0 (0.02s, вернулась: да), клиенты AP как в начале: да, потери до владельца: NA / NA
+[418.37] узкий кандидат сработал — грубые (wifi целиком, /etc/init.d/network reload) не меряем
+[418.38] финальный возврат конфигурации
+[418.43] restore.sh код 0
+[423.49] прогон закончен, код 0

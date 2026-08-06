@@ -184,6 +184,7 @@ type StatusReader struct {
 	nikki nikki.Client
 	jobs  *job.Manager
 	logs  *logs.Log
+	fails *failStore
 	now   func() time.Time
 	logf  func(string, ...any)
 
@@ -250,6 +251,16 @@ func (r *StatusReader) Read(ctx context.Context) (*Status, error) {
 	cp := *r.cached
 	if r.jobs != nil {
 		cp.Job = r.jobs.Current()
+	}
+	// last_fail читается ЗДЕСЬ, а не в build, по той же причине, что и
+	// джоб, но цена ошибки другая. Из кэша он приезжал бы дважды неверным:
+	// свежая неудача ждала бы до полусекунды (а панель в этот момент
+	// показывает пустой статус и «всё в порядке»), а стёртая успешным
+	// переключением ещё полсекунды висела бы рядом с уже работающей сетью.
+	// Оба случая — доклад о том, чего нет, а поле заведено ровно затем,
+	// чтобы докладывать честно (ADR-0025).
+	if r.fails != nil {
+		cp.LastFail = r.fails.Get()
 	}
 	return &cp, nil
 }

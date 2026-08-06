@@ -129,10 +129,27 @@
     "raw_iwinfo_scan": "raw/23-ubus-iwinfo-scan.json",
     "raw_iwinfo_info": "raw/24-ubus-iwinfo-info.json",
     "raw_wwan_status": "raw/26-ubus-network-interface-wwan.json",
+    "raw_apply_verbs": "raw/27-rq03-apply-verbs.txt",
+    "raw_apply_samples": "raw/28-rq03-samples.tsv",
+    "raw_apply_events": "raw/29-rq03-events.txt",
     "objects": {
       "network.wireless": "status -> per-radio {up, pending, config, interfaces[{section, config, ifname, stations}]}",
       "iwinfo": "devices{}, info{device}, scan{device}, assoclist{device,mac}, freqlist{device}, survey{device}, phyname{section}",
       "network.interface.wwan": "upstream L3 status"
+    },
+    "apply_verbs": {
+      "status": "verified",
+      "raw": "raw/27-rq03-apply-verbs.txt (разделы «доступность глаголов в этой сборке» и «inventory»), измерение — raw/28, raw/29, разбор — docs/recon/apply-verbs.md",
+      "observed_wireless_methods": "ubus -v list network.wireless: up{device}, down{device}, retry{device}, reconf{device}, status{device}, notify{device,command,interface,vlan,data}, get_validate{device}",
+      "observed_network_methods": "ubus -v list network: restart{}, reload{}, add_host_route{target,v6,interface,exclude}, get_proto_handlers{}, add_dynamic{name}, netns_updown{jail,start}",
+      "availability_snapshot": "reconf в network.wireless: есть, принимает device: да; up/down в network.wireless: есть, down принимает device: да; notify в network.wireless: есть; reload в network: есть; reconf в /sbin/wifi: есть",
+      "narrow_apply": "ubus call network reload; затем ubus call network.wireless reconf '{\"device\":\"<радио станции>\"}' — измерено на radio0, имя радио выводить, не хардкодить (radio_role_rule выше)",
+      "fallback_apply": "wifi reconf <радио станции> — сам зовёт ubus call network reload (raw/27, вывод grep по /sbin/wifi, строки 47-49)",
+      "last_resort_apply": "ubus call network reload; ubus call network.wireless down '{\"device\":\"<радио>\"}'; ubus call network.wireless up '{\"device\":\"<радио>\"}' — работает, но медленнее и интерфейс станции на время пропадает",
+      "reload_is_mandatory": "без ubus call network reload netifd не перечитывает UCI: reconf возвращает rc=0 и не делает НИЧЕГО (raw/28, фаза apply:ubus_reconf_dev:no — assoc_ssid держит прежний ssid все 870 строк, 45 с), down+up возвращается на СТАРУЮ сеть (фаза apply:ubus_downup_dev:no — ssid уходит в '-'/ERR и на t=348.43 возвращается прежний). Оба провала возвращают ноль.",
+      "rc_is_not_success": "код возврата глагола применения признаком успеха НЕ является — rc=0 во всех 12 вызовах, включая два, не сделавших ничего. Успех определяется наблюдением: ассоциация с ожидаемым ssid плюс живой L3 на wwan.",
+      "assoclist_connected_time": "iwinfo assoclist по интерфейсу домашней точки отдаёт connected_time — секунды с момента ассоциации клиента; сброс в малое значение = переассоциация",
+      "blunt_verbs_not_measured": "wifi целиком и /etc/init.d/network reload как кандидаты НЕ мерились — прогон остановился на узком (raw/29, [418.37]). Про wifi известно только то, что видно на финальном возврате: он роняет домашнюю точку (raw/28, t=418.41 ap_up=false, t=418.99 ap_clients=0)."
     },
     "scan_shape": {
       "root": "{results: [...]}",
@@ -405,26 +422,22 @@
     {
       "id": "RQ-03",
       "text": "БЛОКЕР ФАЗЫ 2: самый узкий глагол применения — остаётся ли grenderNet поднятой при применении только radio0?",
-      "blocks": [
-        "phase2-upstream"
-      ],
-      "answer": null
+      "blocks": [],
+      "answer": "ЗАКРЫТ. Домен перезагрузки ДЕЛИМ: общая phy0 не означает общий домен на уровне глаголов с аргументом device. Узкий глагол: ubus call network reload; затем ubus call network.wireless reconf '{\"device\":\"<радио станции>\"}' — вызов 0.01 с, ассоциация через 1.97 с, IPv4 через 5.28 с. Запасной: wifi reconf <радио> — сам зовёт network reload внутри (raw/27, grep по /sbin/wifi, строки 47-49), ассоциация 2.91 с, IPv4 5.65 с. Крайний случай: down+up того же device — работает, но ассоциация 4.82 с, IPv4 8.22 с, и интерфейс станции на время пропадает. ПРЕДУПРЕЖДЕНИЕ: rc=0 НЕ значит «применилось» — без предварительного network reload reconf возвращает ноль и не делает ничего (raw/28, фаза apply:ubus_reconf_dev:no: assoc_ssid держит прежний ssid во всех 870 строках за 45 с, net_ipv4 остаётся 10.84.92.1), а down+up возвращается на старую сеть (фаза apply:ubus_downup_dev:no: ssid уходит в '-'/ERR и на t=348.43 возвращается прежний). Оба провала дают rc=0; успех определять только наблюдением ассоциации и L3. ДОМАШНЯЯ ТОЧКА НЕ ПОСТРАДАЛА: ap_conn_time единственного клиента 6C:40:08:98:AA:18 рос монотонно с 37 (t=225.88) до 230 (t=418.86) — прирост 193 с за 192.98 с, НИ ОДНОГО уменьшения на 3421 числовом значении; ap_clients равен 1 в каждой строке до t=418.86, ap_up=true в каждой строке до t=418.41. Сброс connected_time означал бы переассоциацию клиента — её не было ни разу за шесть применений и шесть возвратов. ОТРИЦАТЕЛЬНЫЙ КОНТРОЛЬ: на финальном возврате, который выполняет тупой wifi целиком, тот же инструмент моргание УВИДЕЛ — t=418.41 ap_up=false, t=418.99 ap_clients=0 и ap_conn_time=NA, t=419.24 и далее ERR по всем колонкам точки. Значит отсутствие моргания у узких глаголов — результат измерения, а не слепое пятно. НЕ ДОКАЗАНО: фоновые пинги дали NA во всех замерах (дефект оснастки, починен) — утверждение «не потеряно ни пакета» доказательств не имеет; доказано только «клиент домашней точки не переассоциировался». Источники: raw/27-rq03-apply-verbs.txt, raw/28-rq03-samples.tsv, raw/29-rq03-events.txt; разбор — docs/recon/apply-verbs.md. Второй независимый прогон (проводной режим, --include-blunt) дал совпадающую таблицу кандидатов, но его артефакты на диск не попали — числа здесь только из raw/27-29."
     },
     {
       "id": "RQ-04",
       "text": "ФАЗА 2: рвёт ли iwinfo scan на phy0.0-sta0 активную ассоциацию?",
-      "blocks": [
-        "phase2-upstream"
-      ],
-      "answer": "косвенно: скан выполнен при активной ассоциации, ассоциация в raw/24 жива (uptime wwan 215 с в raw/26). Прямой проверки ping во время скана не было."
+      "blocks": [],
+      "answer": "ЗАКРЫТ. НЕ рвёт. Три подряд ubus call iwinfo scan '{\"device\":\"phy0.0-sta0\"}' при живой ассоциации: rc=0 все три, длительность 2.38 / 2.36 / 2.42 с, найдено 23 / 26 / 26 сетей, ssid после каждого — прежний 'grenderNet idhd NONONO'. uptime интерфейса wwan рос непрерывно 146->151->156->162 и ни разу не сбросился в ноль; сброс uptime был бы признаком переподнятия интерфейса. Подтверждено построчно в raw/28: фазы scan:1, scan:2, scan:3 (окно t=226.00..242.37) — 181 строка, в каждой assoc_ssid неизменен, net_up=true, net_ipv4=10.84.92.1. Для проектировщика: скан блокирует на 2.36-2.42 с — панель обязана показывать прогресс. Прежняя формулировка «косвенно» снята: проверка сделана с непрерывным наблюдением состояния станции. НЕ ДОКАЗАНО: потерь пакетов во время скана не измерено (пинги дали NA — дефект оснастки, починен). Источник: raw/27-rq03-apply-verbs.txt раздел «rq04 scan», raw/28-rq03-samples.tsv, raw/29-rq03-events.txt."
     },
     {
       "id": "RQ-05",
       "text": "Число клиентов домашней точки: стоит ли брать assoclist по phy0.1-ap0 или stations[] из network.wireless status",
       "blocks": [],
-      "severity": "низкая — ap.clients отдаётся как null, пока не подтверждено",
+      "severity": "низкая — вопрос закрыт, но ap.clients по-прежнему отдаётся как null: чтение не реализовано",
       "resolve_with": "ubus call iwinfo assoclist '{\"device\":\"phy0.1-ap0\"}'",
-      "answer": null
+      "answer": "ЗАКРЫТ. Брать assoclist по интерфейсу домашней точки: ubus call iwinfo assoclist '{\"device\":\"phy0.1-ap0\"}'. Поле connected_time в assoclist ЕСТЬ — raw/27 («connected_time в assoclist: да») и raw/29 [225.91] («клиенты домашней точки на старте: 6C:40:08:98:AA:18; поле connected_time: да»). Форма подтверждена практикой: 3421 строка raw/28 из 3500 несёт числовой ap_conn_time, снятый именно этим вызовом (остальные 79 — NA/ERR в хвосте после тупого wifi). Ценность сверх количества клиентов: connected_time — прямой признак свежей переассоциации (малое значение сразу после применения = клиента только что отцепило); именно на нём построено доказательство RQ-03. Интерфейс точки выводить из network.wireless status, не хардкодить (ifname_rule, radio_role_rule выше). ОТДЕЛЬНО И ЧЕСТНО: вопрос отвечен, функция НЕ реализована — поле ap.clients в нашем API остаётся null до отдельной задачи, теперь не потому что источник неизвестен, а потому что чтение не написано."
     },
     {
       "id": "RQ-06",

@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"netmoded/internal/executor"
 )
 
 func post(t *testing.T, s *Server, path, body, ifMatch string) *httptest.ResponseRecorder {
@@ -228,8 +231,15 @@ func TestCreateRejectsBadInput(t *testing.T) {
 // ─────────── незнакомые поля ───────────
 
 // Поле `network` до этой правки принималось и молча выбрасывалось: клиент
-// получал 200 и секцию на wwan. Принять его нельзя — это смена upstream,
-// отложенная до фазы 2 (ADR-0016), — значит остаётся честно отказать.
+// получал 200 и секцию на wwan. Принять его нельзя и в фазе 2: станционная
+// секция всегда живёт на upstreamIf, а смена внешней сети — это переключение
+// того, какая секция включена (ADR-0026), а не правка L3-сети у секции.
+//
+// Проверка стоит на СОДЕРЖАНИИ подсказки, а не на номере ADR. Прежняя версия
+// требовала в тексте «ADR-0016» и тем самым пришпилила формулировку «отложено
+// до фазы 2»: фаза наступила, текст стал ложью, и красным загорелся тест, а не
+// ложь. Теперь пришпилен адрес, по которому клиенту идти, — он переживёт
+// следующую перенумерацию решений.
 func TestNetworkFieldIsRejectedNotIgnored(t *testing.T) {
 	s, f := newServer(t)
 
@@ -242,10 +252,11 @@ func TestNetworkFieldIsRejectedNotIgnored(t *testing.T) {
 	if got := errCode(t, rec); got != "unsupported_field" {
 		t.Errorf("код ошибки %q, ожидался unsupported_field", got)
 	}
-	// Текст обязан отсылать к решению, а не просто ругаться: клиент должен
-	// понять, что поле не забыли, а отложили.
-	if !strings.Contains(rec.Body.String(), "ADR-0016") {
-		t.Errorf("в сообщении нет отсылки к ADR-0016: %s", rec.Body.String())
+	// Текст обязан вести клиента дальше, а не просто ругаться: поле не забыли
+	// и не отложили — у смены внешней сети есть собственный маршрут, и
+	// сообщение обязано его назвать.
+	if !strings.Contains(rec.Body.String(), "/api/upstream") {
+		t.Errorf("в сообщении нет маршрута смены сети: %s", rec.Body.String())
 	}
 	if len(f.Calls) != 0 {
 		t.Errorf("отвергнутый запрос не смеет ничего писать: %v", f.Calls)
@@ -667,4 +678,88 @@ func listNetworks(t *testing.T, s *Server) []netRow {
 		t.Fatalf("разбор списка: %v", err)
 	}
 	return got.Networks
+}
+
+// ─────────── отмена своего черновика (ADR-0028) ───────────
+
+// Отказ uci в СЕРЕДИНЕ записи не смеет оставлять черновик в стейджинге.
+//
+// Оставленный, он запирает запись навсегда: шаг 1 openWriteCommon видит его
+// и отвечает 409 foreign_staged_changes с текстом про открытый LuCI,
+// которого нет, — а обойти эту проверку из панели нечем. Хуже того,
+// недописанная секция чаще всего не имеет disabled (он пишется последним), и
+// чужой uci commit — кнопка Save & Apply в LuCI — опубликовал бы ВКЛЮЧЁННУЮ
+// станционную секцию, возможно без шифрования.
+//
+// Проверяется не наличие вызова revert, а его СЛЕДСТВИЕ: стейджинг пуст и
+// следующая запись проходит. Вызов можно сделать и по неверному адресу.
+func TestWriteFailureLeavesNoDraft(t *testing.T) {
+	cases := []struct {
+		name   string
+		break_ func(f *executor.Fake)
+		do     func(t *testing.T, s *Server) *httptest.ResponseRecorder
+	}{
+		{
+			// Ломаем НЕ первый шаг: отказ на первой же команде черновика не
+			// оставляет и потому про его отмену ничего не доказывает.
+			// Адрес заранее неизвестен — имя секции генерируется (ADR-0005).
+			name:   "создание оборвалось на encryption",
+			break_: func(f *executor.Fake) { f.ErrorsBySuffix[".encryption=psk2"] = errors.New("uci занят") },
+			do: func(t *testing.T, s *Server) *httptest.ResponseRecorder {
+				return post(t, s, "/api/wifi/networks",
+					`{"ssid":"Новая","encryption":"psk2","key":"пароль12345"}`, etag(t, s))
+			},
+		},
+		{
+			name: "правка оборвалась на key",
+			break_: func(f *executor.Fake) {
+				f.ErrorsBySuffix[".key=новыйпароль1"] = errors.New("uci занят")
+			},
+			do: func(t *testing.T, s *Server) *httptest.ResponseRecorder {
+				return post(t, s, "/api/wifi/networks",
+					`{"id":"wifinet2","ssid":"ATOM-2","key":"новыйпароль1"}`, etag(t, s))
+			},
+		},
+		{
+			name:   "удаление не удалось",
+			break_: func(f *executor.Fake) { f.Errors["delete wireless.wifinet2"] = errors.New("uci занят") },
+			do: func(t *testing.T, s *Server) *httptest.ResponseRecorder {
+				return del(t, s, "/api/wifi/networks/wifinet2", etag(t, s))
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, f := newServer(t)
+			c.break_(f)
+
+			rec := c.do(t, s)
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("код %d, ожидался 500: отказ не сработал, проверять нечего", rec.Code)
+			}
+			if got := errCode(t, rec); got != "write_failed" {
+				t.Errorf("код ошибки %q, ожидался write_failed", got)
+			}
+
+			changes, err := f.UCIChanges(context.Background(), "wireless")
+			if err != nil {
+				t.Fatalf("uci changes: %v", err)
+			}
+			if len(strings.TrimSpace(string(changes))) != 0 {
+				t.Errorf("после отказа в стейджинге остался черновик: %q\nвызовы: %v", changes, f.Calls)
+			}
+
+			// Главное следствие: повтор осмыслен, запись не заперта.
+			// Отказ снимаем — иначе повтор упёрся бы в него же, а не в
+			// оставленный черновик, и тест доказывал бы не то.
+			f.ErrorsBySuffix = map[string]error{}
+			f.Errors = map[string]error{}
+			rec2 := post(t, s, "/api/wifi/networks",
+				`{"ssid":"Повторная","encryption":"psk2","key":"пароль12345"}`, etag(t, s))
+			if rec2.Code != http.StatusOK {
+				t.Errorf("после отказа запись заперта: %d %s", rec2.Code, rec2.Body.String())
+			}
+		})
+	}
 }

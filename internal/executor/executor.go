@@ -105,22 +105,74 @@ var applySentinels = map[int]error{
 	7: ErrApplyPrereq,
 }
 
-// applyErrorForCode заворачивает причину в сентинел по коду возврата.
+// Исходы netmode-wifi — применение конфигурации беспроводной сети после
+// смены upstream (ADR-0027).
 //
-// Одна таблица на реальную реализацию и на фейк: будь у фейка своя копия,
-// тест проверял бы её саму против себя, а не тот разбор, который сработает
-// на роутере.
+// Кода «переключилось» здесь НЕТ и не появится. Скрипт видит только код
+// глагола, а тот лжёт: `ubus call network.wireless reconf` без
+// предварительного `network reload` возвращает 0, не изменив ассоциации
+// (замер в ADR-0025). Поэтому nil от ApplyUpstream означает ровно
+// «конфигурация передана netifd», а вердикт о переключении выносит демон
+// по ассоциации — в internal/httpapi/upstreamhandler.go.
+//
+// Совпадение чисел 3 и 7 с netmode-apply намеренное: в обоих скриптах они
+// означают одно и то же, и человек, читающий logread, не обязан помнить,
+// какой скрипт что кодирует. Число 4 значит разное, и потому у него свой
+// сентинел, а не переиспользованный ErrApplyFirewall. Кодов 5 и 6 нет:
+// сервисов netmode-wifi не трогает, верификации в нём нет.
+var (
+	// ErrUpstreamBusy — flock держит другой процесс (ssh, cron, применение
+	// при загрузке). Система НЕ тронута, повтор осмыслен через секунды.
+	ErrUpstreamBusy = errors.New("netmode-wifi: занято")
+
+	// ErrUpstreamApply — оба глагола отказали: конфигурация не применялась
+	// вовсе. Записанное лежит в /etc/config/wireless и уедет в живую
+	// систему при ближайшем чужом применении.
+	ErrUpstreamApply = errors.New("netmode-wifi: применить конфигурацию не удалось")
+
+	// ErrUpstreamPrereq — нет предусловия (flock, ubus). Чинится доставкой
+	// пакета, а не повтором.
+	ErrUpstreamPrereq = errors.New("netmode-wifi: нет предусловия на роутере")
+)
+
+// upstreamSentinels — таблица «код возврата netmode-wifi → исход».
+//
+// Копия таблицы из шапки files/usr/local/bin/netmode-wifi и из
+// docs/contracts/executor.md; три места обязаны меняться вместе (ADR-0027).
+var upstreamSentinels = map[int]error{
+	3: ErrUpstreamBusy,
+	4: ErrUpstreamApply,
+	7: ErrUpstreamPrereq,
+}
+
+// errorForCode заворачивает причину в сентинел по коду возврата.
+//
+// Таблица параметром, а не зашитая: скриптов с таблицей исходов уже два
+// (netmode-apply, netmode-wifi), и вторая копия этой функции разъехалась бы
+// с первой в первый же раз, когда правку внесли в одну.
+//
+// Одна и та же функция работает на реальную реализацию и на фейк: будь у
+// фейка своя копия, тест проверял бы её саму против себя, а не тот разбор,
+// который сработает на роутере.
 //
 // Неизвестный код возвращается как есть: выдумывать ему смысл нельзя —
 // «неизвестный отказ» честнее, чем отнесённый не к тому классу.
-func applyErrorForCode(code int, cause error) error {
-	sentinel, ok := applySentinels[code]
+func errorForCode(table map[int]error, code int, cause error) error {
+	sentinel, ok := table[code]
 	if !ok {
 		return cause
 	}
 	// Оба слоя оборачиваются: сентинел нужен вызывающему для решения,
 	// исходный текст (stderr скрипта) — владельцу для диагностики.
 	return fmt.Errorf("%w: %w", sentinel, cause)
+}
+
+func applyErrorForCode(code int, cause error) error {
+	return errorForCode(applySentinels, code, cause)
+}
+
+func upstreamErrorForCode(code int, cause error) error {
+	return errorForCode(upstreamSentinels, code, cause)
 }
 
 // Таймауты. Каждый внешний вызов обязан иметь дедлайн: зависший uci
@@ -130,6 +182,20 @@ const (
 	ScanTimeout         = 15 * time.Second
 	ApplyTimeout        = 60 * time.Second
 	SubscriptionTimeout = 120 * time.Second
+
+	// UpstreamApplyTimeout — потолок на netmode-wifi.
+	//
+	// Пятнадцать секунд, а не шестьдесят, как у ApplyTimeout, и это не
+	// экономия: применение ИЗМЕРЕНО и укладывается в 0.01–0.04 с
+	// (ADR-0025, raw/27, шесть применений подряд). Скрипт не ждёт
+	// ассоциации внутри себя (ADR-0027) — ждать её будет демон, уже без
+	// замка. Значит всё, что длится дольше секунд, — это зависший ubus, и
+	// минутный дедлайн лишь прятал бы его на 45 лишних секунд, держа
+	// джоб занятым и кнопку заблокированной.
+	//
+	// Запас против измеренного — примерно 400-кратный, так что срабатывание
+	// этого дедлайна означает поломку, а не медленный роутер.
+	UpstreamApplyTimeout = 15 * time.Second
 )
 
 // Лимиты на вывод внешних команд. Дедлайн ограничивает ВРЕМЯ, эти два
@@ -207,6 +273,25 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// UpstreamTarget — чему адресовано применение беспроводной конфигурации.
+//
+// Структура, а не позиционная строка, и это не украшение. Рядом с именем
+// радио (`radio0`) в этом коде всё время ходит имя интерфейса
+// (`phy0.0-sta0`) и имя секции (`wifinet2`) — три разные строки, каждая
+// подходит по типу. Перепутанные аргументы у ApplyUpstream(ctx, radio) не
+// поймал бы ни компилятор, ни ревью, а на роутере это значит `reconf`,
+// адресованный несуществующему устройству, — то есть код 4 вместо
+// переключения. Именованное поле делает подмену видимой в точке вызова.
+//
+// Поле одно намеренно: скрипту нужно ровно имя радио (ADR-0025, узкий
+// глагол). Второе поле «на будущее» здесь означало бы полномочие, которого
+// у скрипта нет.
+type UpstreamTarget struct {
+	// Radio — имя станционного радио, ВЫВЕДЕННОЕ из системы
+	// (wireless.ResolveRadios, ADR-0019), никогда не литерал.
+	Radio string
+}
+
 // Executor — контракт из docs/contracts/executor.md.
 type Executor interface {
 	UCIShow(ctx context.Context, pkg string) ([]byte, error)
@@ -217,10 +302,12 @@ type Executor interface {
 	UCISet(ctx context.Context, pkg, section, option, value string) error
 	UCIDelete(ctx context.Context, pkg, section, option string) error
 	UCICommit(ctx context.Context, pkg string) error
+	UCIRevert(ctx context.Context, pkg, section string) error
 
 	UbusCall(ctx context.Context, object, method string, args map[string]any) ([]byte, error)
 
 	ApplyMode(ctx context.Context, mode string) error
+	ApplyUpstream(ctx context.Context, t UpstreamTarget) error
 	UpdateSubscription(ctx context.Context) ([]byte, error)
 }
 
@@ -271,6 +358,39 @@ func validateName(kind, s string) error {
 	return nil
 }
 
+// validateRadioName проверяет имя радио ФОРМОЙ СКРИПТА, а не формой UCI.
+//
+// netmode-wifi принимает только `^[a-z][a-z0-9_-]*$` и на всё прочее отвечает
+// кодом 1 — «баг вызывающего» (ADR-0027). validateName здесь не годится: он
+// писался под имена секций UCI и потому шире — пропускает заглавные, ведущую
+// цифру и `@`, `[`, `]`. Имя вида `Radio0` прошло бы Go, дошло бы до скрипта
+// и вернулось кодом 1, а владелец увидел бы «баг вызывающего» вместо
+// внятного отказа — причём причина оказалась бы в двух процессах от места,
+// где её видно.
+//
+// На реальных именах OpenWrt расхождение не стреляет: они этой форме
+// удовлетворяют. Это защита в глубину, и её цена — одна функция.
+//
+// Отказ возвращается ОБЫЧНОЙ ошибкой, а не сентинелом из upstreamSentinels:
+// сентинелы описывают исходы запущенного скрипта, а здесь до запуска дело не
+// дошло и система не тронута. Наделить этот отказ кодом 4 значило бы сказать
+// владельцу «применить не удалось, записанное ждёт чужого применения» —
+// утверждение, ложное дважды.
+func validateRadioName(s string) error {
+	if s == "" {
+		return errors.New("имя радио: пустое имя")
+	}
+	for i, r := range s {
+		ok := (r >= 'a' && r <= 'z') ||
+			(i > 0 && (r == '_' || r == '-' || (r >= '0' && r <= '9')))
+		if !ok {
+			return fmt.Errorf("имя радио %q: netmode-wifi принимает только строчные латинские "+
+				"буквы, цифры, дефис и подчёркивание, первым символом — букву", s)
+		}
+	}
+	return nil
+}
+
 // validateValue проверяет значение опции.
 //
 // Здесь наоборот — почти всё разрешено: в значениях живут пароли WiFi со
@@ -291,6 +411,7 @@ type Exec struct {
 	uciBin        string
 	ubusBin       string
 	applyBin      string
+	wifiBin       string
 	subscribeBin  string
 	commandRunner func(ctx context.Context, name string, args ...string) ([]byte, error)
 }
@@ -301,6 +422,7 @@ func New() *Exec {
 		uciBin:       "/sbin/uci",
 		ubusBin:      "/bin/ubus",
 		applyBin:     "/usr/local/bin/netmode-apply",
+		wifiBin:      "/usr/local/bin/netmode-wifi",
 		subscribeBin: "/usr/local/bin/happ2clash",
 	}
 }
@@ -462,6 +584,38 @@ func (e *Exec) UCICommit(ctx context.Context, pkg string) error {
 	return err
 }
 
+// UCIRevert отменяет НАШ собственный черновик одной секции (ADR-0028).
+//
+// Это не откат (ADR-0006) и не автопочинка (ADR-0010). Отменяется
+// НЕОПУБЛИКОВАННОЕ намерение: черновик по определению не был закоммичен,
+// живая конфигурация его не видела, netifd о нём не знает, восстанавливать
+// нечего — `uci revert` не возвращает состояние, он вычёркивает то, чего
+// ещё не было.
+//
+// Границы вызова, за пределами которых он запрещён (ADR-0028, «Решение»):
+//
+//  1. только на пути отказа записи — не при старте, не в фоне, не «заодно»;
+//  2. только ДО UCICommit — после коммита это уже возврат опубликованного,
+//     то есть откат;
+//  3. только по адресу секции, которую записывал этот же запрос.
+//
+// Отсюда обязательный аргумент section: `uci revert wireless` по пакету
+// снёс бы и чужой черновик, попавший в стейджинг в окне между проверкой
+// шага 1 openWriteCommon и отказом. Наш адрес известен точно — мы его либо
+// сгенерировали, либо получили из разбора `uci show`, — и расширять снос до
+// пакета не за чем. Пустое имя секции поэтому отвергается здесь, а не
+// «подразумевает весь пакет»: подразумеваемое полномочие однажды получат
+// по невнимательности.
+func (e *Exec) UCIRevert(ctx context.Context, pkg, section string) error {
+	for kind, s := range map[string]string{"пакет": pkg, "секция": section} {
+		if err := validateName(kind, s); err != nil {
+			return err
+		}
+	}
+	_, err := e.run(ctx, UCITimeout, e.uciBin, "revert", pkg+"."+section)
+	return err
+}
+
 func (e *Exec) UbusCall(ctx context.Context, object, method string, args map[string]any) ([]byte, error) {
 	if err := validateUbusObject(object); err != nil {
 		return nil, err
@@ -494,7 +648,27 @@ func (e *Exec) ApplyMode(ctx context.Context, mode string) error {
 	return classifyApplyError(err)
 }
 
-// classifyApplyError переводит код возврата скрипта в исход.
+// ApplyUpstream просит netifd перечитать беспроводную конфигурацию для
+// станционного радио: /usr/local/bin/netmode-wifi <radio>.
+//
+// nil означает РОВНО «применение выполнено» — глагол принят netifd. Он НЕ
+// означает, что станция переключилась: код возврата глагола измеренно лжёт
+// (ADR-0025, «мина»), и кода «переключилось» у скрипта нет вовсе
+// (ADR-0027). Вердикт выносит вызывающий, читая ассоциацию.
+//
+// Имя радио проверяется здесь, а не только у вызывающего: пустая строка
+// дошла бы до скрипта как отсутствующий аргумент, тот вернул бы код 1
+// («баг вызывающего»), и отличить его от настоящего отказа применения
+// пришлось бы по тексту.
+func (e *Exec) ApplyUpstream(ctx context.Context, t UpstreamTarget) error {
+	if err := validateRadioName(t.Radio); err != nil {
+		return err
+	}
+	_, err := e.run(ctx, UpstreamApplyTimeout, e.wifiBin, t.Radio)
+	return classifyUpstreamError(err)
+}
+
+// classifyByExitCode переводит код возврата скрипта в исход по таблице.
 //
 // run уже заворачивает *exec.ExitError через %w — код достаётся errors.As
 // без переделки run, и в тексте уже лежит stderr скрипта (die_code пишет
@@ -503,7 +677,7 @@ func (e *Exec) ApplyMode(ctx context.Context, mode string) error {
 //
 // Не ExitError — процесс не запустился вовсе (нет файла, права, таймаут
 // контекста). Кода возврата не существует, классифицировать нечего.
-func classifyApplyError(err error) error {
+func classifyByExitCode(table map[int]error, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -511,7 +685,15 @@ func classifyApplyError(err error) error {
 	if !errors.As(err, &ee) {
 		return err
 	}
-	return applyErrorForCode(ee.ExitCode(), err)
+	return errorForCode(table, ee.ExitCode(), err)
+}
+
+func classifyApplyError(err error) error {
+	return classifyByExitCode(applySentinels, err)
+}
+
+func classifyUpstreamError(err error) error {
+	return classifyByExitCode(upstreamSentinels, err)
 }
 
 func (e *Exec) UpdateSubscription(ctx context.Context) ([]byte, error) {

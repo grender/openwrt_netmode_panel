@@ -95,14 +95,17 @@
 | `status-job-running.json` | `GET /api/status` | выполняется смена режима на b4; b4 уже отвечает — джоб доигрывает остаток (`netmode-apply` считает готовностью процесс, а слушатель к этому моменту открылся) |
 | `status-job-failed.json` | `GET /api/status` | смена режима на b4 **провалилась**: `job.state: "failed"`, `finished_at` заполнен, в `error` — текст демона. `mode: "b4"` при `b4.available: false` не противоречие, а следствие порядка в `applyMode`: UCI коммитится до запуска службы, поэтому намерение записано, а система к нему не пришла |
 | `status-online-unknown.json` | `GET /api/status` | `ubus network.interface.wwan status` не ответил: `online.checked: false` — состояние канала **неизвестно**, а не «оффлайн» |
-| `wifi-networks.json` | `GET /api/wifi/networks` | список из разведки; у активной `editable: false` |
+| `status-job-upstream.json` | `GET /api/status` | идёт переключение upstream: `job.kind: "upstream"`, **`job.arg` это ssid (`ATOM`), а не имя секции** — панель строит подпись сама, `wifinet2` человеку не говорит ничего. UCI уже закоммичен, поэтому `configured_ssid: "ATOM"`, а станция ещё на прежней сети (`associated_ssid: "John24"`) и `pending_apply: true` |
+| `status-upstream-fail.json` | `GET /api/status` | переключение не состоялось: `last_fail.reason: "stayed_on_previous"` — глагол вернул `0`, а станция осталась на `John24` (ADR-0025, «мина»). `job: null` намеренно: это и есть тот случай, ради которого `last_fail` заведено — владелец вернулся в панель позже, чем джоб пропал из показа. `online.ok: true` — роутер в сети, просто не в той |
+| `wifi-networks.json` | `GET /api/wifi/networks` | список из разведки; у активной `editable: false` и `switchable: false` (переключать не на что), у выключенной оба `true` |
+| `wifi-networks-ambiguous.json` | `GET /api/wifi/networks` | две включённые станционные секции: у обеих `editable: false`, но `switchable: true` — правка при `ambiguous` запрещена, а переключение разрешено и есть единственный выход из неоднозначности (ADR-0026). Единственный пример, где два признака расходятся |
 | `wifi-scan.json` | `GET /api/wifi/scan` | станция снимка на 2.4 ГГц, поэтому в списке только он; `band` и `note` выведены, а не зашиты (ADR-0019) |
 | `b4-sets.json` | `GET /api/b4/sets` | включён ровно один — наша эксклюзивность соблюдена |
 | `nikki-proxies.json` | `GET /api/nikki/proxies` | группа `URLTest` в автовыборе: `fixed: ""`, `pinned: false`; у мёртвого узла ключа `alive` нет вовсе |
 | `logs.json` | `GET /api/logs` | новые строки первыми, среди них одна `fail` |
 
 В `links` **три поля, и порядок их значим**: `nikki`, `b4`, `luci` — как в
-Go-структуре и в `openapi.yaml`. В остальных семи файлах они равны
+Go-структуре и в `openapi.yaml`. В остальных девяти файлах они равны
 `http://192.168.9.1:9090/ui/`, `http://192.168.9.1:7000/` и
 `http://192.168.9.1/cgi-bin/luci` — то есть ответ на запрос с
 `Host: 192.168.9.1:8088`.

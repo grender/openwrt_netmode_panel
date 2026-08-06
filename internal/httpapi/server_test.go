@@ -386,30 +386,9 @@ func TestScanRefusesWhenStationRadioUnknown(t *testing.T) {
 	}
 }
 
-// Переключение внешней сети — вторая фаза. Заглушка обязана объяснять
-// причину: пользователь видит кнопку и должен понять, почему она не
-// работает, не читая ADR.
-func TestUpstreamReturns501WithExplanation(t *testing.T) {
-	s, _ := newServer(t)
-	req := httptest.NewRequest("POST", "/api/upstream", strings.NewReader(`{"id":"wifinet2"}`))
-	req.Header.Set("Authorization", "Bearer "+testToken)
-	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("код %d, ожидался 501", rec.Code)
-	}
-	var e apiError
-	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil {
-		t.Fatalf("разбор: %v", err)
-	}
-	if e.Code != "not_implemented" {
-		t.Errorf("код %q", e.Code)
-	}
-	if len(e.Error) < 40 {
-		t.Errorf("объяснение слишком короткое: %q", e.Error)
-	}
-}
+// Заглушка 501 на POST /api/upstream жила здесь всю первую фазу и удалена
+// вместе с ней: оба блокера ADR-0016 закрыты замером, обработчик настоящий.
+// Проверки переключения — в upstreamhandler_test.go.
 
 func TestPanelIsEmbedded(t *testing.T) {
 	s, _ := newServer(t)

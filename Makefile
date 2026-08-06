@@ -5,7 +5,7 @@ TARGET   := $(BUILDDIR)/$(BIN)
 GOFLAGS_TARGET := GOOS=linux GOARCH=arm64 CGO_ENABLED=0
 LDFLAGS        := -s -w
 
-.PHONY: all verify fmt vet test panel build size checks clean help
+.PHONY: all verify fmt vet test panel build size checks probe-check clean help
 
 all: verify
 
@@ -45,12 +45,19 @@ checks:
 	@scripts/check-b4json.sh
 	@scripts/check-no-hardcoded-if.sh
 	@scripts/check-evidence.sh
-	@scripts/check-disabled-write.sh
+	@scripts/check-wireless-write.sh
 	@scripts/check-routes.sh
 	@scripts/check-netmode-seed.sh
 	@scripts/check-netmode-apply.sh
+	@scripts/check-netmode-wifi.sh
 	@scripts/check-web-size.sh
 	@scripts/check-panel-sync.sh
+
+## probe-check — песочница измерительной оснастки RQ-03. Не в checks намеренно:
+## пробник не инвариант плана, он одноразовый и на роутере не остаётся. Но
+## гонять его ОБЯЗАТЕЛЬНО перед тем, как везти замер на железо.
+probe-check:
+	@scripts/check-probe-rq03.sh
 
 clean:
 	@rm -rf $(BUILDDIR)

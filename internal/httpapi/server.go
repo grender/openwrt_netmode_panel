@@ -67,7 +67,10 @@ type Server struct {
 	led    *led.Controller
 	logf   func(string, ...any)
 	status *StatusReader
-	mux    *http.ServeMux
+	// fails — последняя неудачная смена внешней сети. Один слот в памяти,
+	// перезапуск не переживает (ADR-0025).
+	fails *failStore
+	mux   *http.ServeMux
 }
 
 // apiError — единая форма ошибки (docs/contracts/errors.md).
@@ -106,12 +109,19 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 		status: NewStatusReader(ex, logf),
 		jobs:   job.NewManager(logf),
 		logs:   logs.New(cfg.LogPath),
+		fails:  &failStore{},
 		mux:    http.NewServeMux(),
 	}
 	s.led = led.New(cfg.LEDRoot, s.logf)
 	s.sched = sched.New(ex, s.logs, cfg.SubInterval, s.logf)
 	s.status.jobs = s.jobs
 	s.status.logs = s.logs
+	// Слот неудачи — ОДИН на демона, и читатель статуса обязан смотреть в
+	// тот же, в который пишет джоб переключения. Второй экземпляр здесь
+	// означал бы, что доклад пишется в один объект, а показывается из
+	// другого, — и last_fail был бы вечно пуст (ровно так уже терялся
+	// клиент Nikki, см. TestNewServerWiresClientsIntoStatus).
+	s.status.fails = s.fails
 	// Клиент Nikki отдаётся читателю статуса явно.
 	//
 	// NewStatusReader заводит своего клиента b4, но не Nikki: адрес и секрет
@@ -522,17 +532,6 @@ func bandNote(band string) string {
 		return "Станция роутера работает в диапазоне " + band +
 			" — сети других диапазонов в этом списке не появятся."
 	}
-}
-
-// handleUpstream отвечает 501 всю первую фазу.
-//
-// Заглушка отдаёт объяснение, а не пустой код: пользователь панели видит
-// кнопку и должен понять, почему она не работает, без чтения ADR.
-func (s *Server) handleUpstream(w http.ResponseWriter, _ *http.Request) {
-	writeErr(w, http.StatusNotImplemented, "not_implemented",
-		"Переключение внешней сети появится во второй фазе: сначала надо выяснить, "+
-			"можно ли применить изменение только к станционному радио, не уронив "+
-			"домашнюю сеть — оба радио делят одну phy0 (RQ-03).")
 }
 
 // ─────────── ответы ───────────

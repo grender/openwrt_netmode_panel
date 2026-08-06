@@ -3,7 +3,7 @@
 #
 #   ./scripts/deploy.sh                 собрать, залить бинарь и перезапустить
 #   ./scripts/deploy.sh --install       полная установка: бинарь, netmode-apply,
-#                                       init.d, сид конфига, автозапуск
+#                                       netmode-wifi, init.d, сид, автозапуск
 #   ./scripts/deploy.sh --run           залить и запустить в консоли
 #   ./scripts/deploy.sh --no-restart    залить и оставить демон погашенным
 #   ./scripts/deploy.sh --host root@10.0.0.1 --port 8089
@@ -28,6 +28,7 @@ INSTALL=no
 RESTART=yes
 REMOTE=/usr/local/bin/netmoded
 APPLY=/usr/local/bin/netmode-apply
+WIFI=/usr/local/bin/netmode-wifi
 INITD=/etc/init.d/netmoded
 
 while [ $# -gt 0 ]; do
@@ -44,6 +45,17 @@ while [ $# -gt 0 ]; do
 done
 
 cd "$(dirname "$0")/.."
+
+# Что уедет на роутер при --install, проверяем ДО сборки и до запроса пароля.
+# Половинчатая установка — демон новый, а скрипта применения нет — выглядит
+# как удачный деплой и ломается только при первом нажатии в панели, кодом
+# «нет исполнителя».
+if [ "$INSTALL" = yes ]; then
+	for f in files/usr/local/bin/netmode-apply files/usr/local/bin/netmode-wifi \
+		files/etc/init.d/netmoded files/etc/config/netmode; do
+		[ -f "$f" ] || { echo "нет $f — устанавливать нечего" >&2; exit 1; }
+	done
+fi
 
 VER="0.1.0-phase1-$(date +%Y%m%d)"
 BIN=build/netmoded
@@ -104,6 +116,21 @@ LAN=$(sh_ "uci get network.lan.ipaddr 2>/dev/null" | sed 's#/.*##')
 [ -n "$LAN" ] || { echo "  ✗ демон не стартует без адреса — это защита, а не сбой" >&2; exit 1; }
 echo "  ✓ LAN-адрес: $LAN"
 
+# flock проверяется ДО заливки, потому что без него не работает ни одно
+# применение: и netmode-apply, и netmode-wifi берут им замок и без него
+# отказывают кодом 7 (ADR-0020, ADR-0027). Узнать об этом при первом нажатии
+# «переключить сеть» — значит узнать в худший момент: конфигурация к тому
+# времени уже записана и применения ждёт.
+#
+# Отказ здесь жёсткий, а не предупреждение: роутер без flock не умеет ни
+# сменить режим, ни сменить внешнюю сеть, то есть панель на нём — витрина.
+sh_ "command -v flock >/dev/null 2>&1" || {
+	echo "  ✗ на роутере нет flock — без него ни смена режима, ни смена сети не применяются" >&2
+	echo "    поставьте его: opkg update && opkg install flock  (или включите апплет в busybox)" >&2
+	exit 1
+}
+echo "  ✓ flock есть — применение сможет взять замок"
+
 # ─────────── заливка ───────────
 
 say "Заливка"
@@ -121,6 +148,11 @@ echo "  ✓ версия совпала: $GOT"
 if [ "$INSTALL" = yes ]; then
 	put - "$APPLY" 0755 < files/usr/local/bin/netmode-apply
 	echo "  ✓ $APPLY"
+
+	# Рядом с netmode-apply и теми же правами: это второй скрипт слоя 2, и
+	# демон без него отдаёт «нет исполнителя» на смену внешней сети.
+	put - "$WIFI" 0755 < files/usr/local/bin/netmode-wifi
+	echo "  ✓ $WIFI"
 
 	put - "$INITD" 0755 < files/etc/init.d/netmoded
 	echo "  ✓ $INITD"

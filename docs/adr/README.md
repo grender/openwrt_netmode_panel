@@ -35,6 +35,10 @@
 | [0022](0022-external-output-limits.md) | Вывод внешних команд ограничен, stdout и stderr — по-разному | уточняет [0015](0015-executor-shape.md) |
 | [0023](0023-nikki-panel-secret-on-demand.md) | Секрет Clash API уходит одним ответом по клику, а не в статусе | уточняет [0012](0012-write-only-credentials.md); **частично отменён [0024](0024-panel-links-only-when-service-answers.md)** |
 | [0024](0024-panel-links-only-when-service-answers.md) | Кнопка веб-морды движка рисуется, только когда движок отвечает | **частично отменяет [0023](0023-nikki-panel-secret-on-demand.md)** (довод «ссылка — адрес, а не проба живости») |
+| [0025](0025-upstream-narrow-verb.md) | Смена upstream: узость операции вместо отката | **исполняет мандат [0016](0016-upstream-deferred.md)**; подтверждает [0006](0006-no-rollback.md) |
+| [0026](0026-switch-from-ambiguous.md) | Переключение разрешено из `ambiguous`; инвариант записи фазы 2 | **заменяет [0009](0009-phase1-write-invariant.md)**; уточняет [0010](0010-never-auto-repair.md) |
+| [0027](0027-netmode-wifi-exit-codes.md) | `netmode-wifi` различает отказы кодами и не судит об исходе | уточняет [0015](0015-executor-shape.md), по образцу [0020](0020-netmode-apply-exit-codes.md) |
+| [0028](0028-uci-revert-not-rollback.md) | `uci revert` — отмена своего черновика, а не откат | уточняет [0015](0015-executor-shape.md), [0011](0011-optimistic-concurrency.md); **не ослабляет** [0006](0006-no-rollback.md) |
 
 ## Механические гейты
 
@@ -46,7 +50,10 @@
 | 0006 | `scripts/check-no-rollback.sh` |
 | 0007 | `scripts/check-b4json.sh` |
 | 0005, 0019 | `scripts/check-no-hardcoded-if.sh` |
-| 0009 | `scripts/check-disabled-write.sh` |
+| 0009 | `scripts/check-disabled-write.sh` — **подлежит удалению** вместе с решением ([0026](0026-switch-from-ambiguous.md)) |
+| 0026 | `scripts/check-wireless-write.sh` — **ещё не написан**; часть правил держат тесты, разделение объяснено в самом решении |
+| 0025, 0027 | `scripts/check-netmode-wifi.sh` — **ещё не написан** |
+| 0028 | **гейта нет** — граница «только на пути отказа, только до коммита, только по своей секции» грепом не выражается, держится тестами |
 | 0020 | `scripts/check-netmode-apply.sh` |
 | — | `scripts/check-evidence.sh` (любой внешний литерал) |
 | — | `scripts/check-netmode-seed.sh` (именованность `netmode.main`) |

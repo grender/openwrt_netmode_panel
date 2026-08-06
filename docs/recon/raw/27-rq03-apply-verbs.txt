@@ -1,0 +1,100 @@
+# snapshot: grenderRouter, замер RQ-03/RQ-04, 2026-08-05T22:37:31Z
+# command: scripts/probe-rq03.sh --go   (docs/recon/probes/)
+# цель: существует ли глагол применения, трогающий только станционное радио
+
+== summary ==
+RQ-03/RQ-04 — сводка пробника
+
+станция:        radio0 / phy0.0-sta0 / секция wifinet3 (ssid 'grenderNet idhd NONONO', сеть wwan)
+домашняя точка: radio1 / phy0.1-ap0 / секция wifinet1 (сеть lan)
+целевая сеть:   wifinet0 (ssid 'John24')
+владелец:       ip=192.168.9.188 mac=00:E0:4A:6A:45:AD, связь: провод
+свидетель на домашней точке: 6C:40:08:98:AA:18 (192.168.9.212)
+upstream-шлюз:  10.84.92.31
+клиенты AP на старте: 6C:40:08:98:AA:18
+connected_time в assoclist: да
+
+== кандидаты (по возрастанию грубости) ==
+ubus_reconf_dev	no	rc_туда=0	0.02s	ассоц=нет	rc_обратно=0	0.01s	вернулась=да	AP_клиенты_как_в_начале=да	потери_владелец=NA/NA	потери_шлюз=NA/NA	prerc=-
+ubus_reconf_dev	yes	rc_туда=0	0.01s	ассоц=да	rc_обратно=0	0.01s	вернулась=да	AP_клиенты_как_в_начале=да	потери_владелец=NA/NA	потери_шлюз=NA/NA	prerc=0
+wifi_reconf_radio	no	rc_туда=0	0.04s	ассоц=да	rc_обратно=0	0.03s	вернулась=да	AP_клиенты_как_в_начале=да	потери_владелец=NA/NA	потери_шлюз=NA/NA	prerc=-
+wifi_reconf_radio	yes	rc_туда=0	0.04s	ассоц=да	rc_обратно=0	0.03s	вернулась=да	AP_клиенты_как_в_начале=да	потери_владелец=NA/NA	потери_шлюз=NA/NA	prerc=0
+ubus_downup_dev	no	rc_туда=0	0.02s	ассоц=нет	rc_обратно=0	0.02s	вернулась=да	AP_клиенты_как_в_начале=да	потери_владелец=NA/NA	потери_шлюз=NA/NA	prerc=-
+ubus_downup_dev	yes	rc_туда=0	0.01s	ассоц=да	rc_обратно=0	0.02s	вернулась=да	AP_клиенты_как_в_начале=да	потери_владелец=NA/NA	потери_шлюз=NA/NA	prerc=0
+
+== доступность глаголов в этой сборке ==
+reconf в network.wireless:      есть
+  принимает device:             да
+up/down в network.wireless:     есть
+  down принимает device:        да
+notify в network.wireless:      есть
+reload в network:               есть
+reconf в /sbin/wifi:            есть
+
+== RQ-04 ==
+# RQ-04: ubus call iwinfo scan {"device":"phy0.0-sta0"} при живой ассоциации
+# до: ssid=grenderNet idhd NONONO net_uptime=145 ap_macs=6C:40:08:98:AA:18
+скан 1: rc=0 длительность=2.38s сетей=23 ssid_после='grenderNet idhd NONONO' uptime 146 -> 151 (сброс: нет) потери_владелец=NA потери_свидетель=NA потери_шлюз=NA
+скан 2: rc=0 длительность=2.36s сетей=26 ssid_после='grenderNet idhd NONONO' uptime 151 -> 156 (сброс: нет) потери_владелец=NA потери_свидетель=NA потери_шлюз=NA
+скан 3: rc=0 длительность=2.42s сетей=26 ssid_после='grenderNet idhd NONONO' uptime 156 -> 162 (сброс: нет) потери_владелец=NA потери_свидетель=NA потери_шлюз=NA
+
+Читать вместе с /root/rq03/samples.tsv (4 Гц) и /root/rq03/events.tsv.
+
+== inventory ==
+# ubus -v list network.wireless
+'network.wireless' @46bc4e8c
+	"up":{"device":"String"}
+	"down":{"device":"String"}
+	"retry":{"device":"String"}
+	"reconf":{"device":"String"}
+	"status":{"device":"String"}
+	"notify":{"device":"String","command":"Integer","interface":"String","vlan":"String","data":"Table"}
+	"get_validate":{"device":"String"}
+
+# ubus -v list network
+'network' @d88ab6c1
+	"restart":{}
+	"reload":{}
+	"add_host_route":{"target":"String","v6":"Boolean","interface":"String","exclude":"Boolean"}
+	"get_proto_handlers":{}
+	"add_dynamic":{"name":"String"}
+	"netns_updown":{"jail":"String","start":"Boolean"}
+
+# grep -n 'network.wireless|reconf|reload' /sbin/wifi
+9:Usage: $0 [config|up|down|reconf|reload|status|isup]
+21:	ubus call network.wireless "$cmd" "$(json_dump)"
+44:		ubus call network reload
+47:	[ reconf = "$1" ] && {
+48:		ubus call network reload
+49:		cmd=reconf
+54:wifi_reload() {
+55:	ubus call network reload
+88:	reload) wifi_reload "$2";;
+90:	reconf) wifi_updown "reconf" "$2";;
+
+# ubus list | grep '^hostapd'
+hostapd
+hostapd-auth
+hostapd.phy0.1-ap0
+
+# station: radio0/phy0.0-sta0   ap: radio1/phy0.1-ap0
+
+== results ==
+ubus_reconf_dev	no	rc_туда=0	0.02s	ассоц=нет	rc_обратно=0	0.01s	вернулась=да	AP_клиенты_как_в_начале=да	потери_владелец=NA/NA	потери_шлюз=NA/NA	prerc=-
+ubus_reconf_dev	yes	rc_туда=0	0.01s	ассоц=да	rc_обратно=0	0.01s	вернулась=да	AP_клиенты_как_в_начале=да	потери_владелец=NA/NA	потери_шлюз=NA/NA	prerc=0
+wifi_reconf_radio	no	rc_туда=0	0.04s	ассоц=да	rc_обратно=0	0.03s	вернулась=да	AP_клиенты_как_в_начале=да	потери_владелец=NA/NA	потери_шлюз=NA/NA	prerc=-
+wifi_reconf_radio	yes	rc_туда=0	0.04s	ассоц=да	rc_обратно=0	0.03s	вернулась=да	AP_клиенты_как_в_начале=да	потери_владелец=NA/NA	потери_шлюз=NA/NA	prerc=0
+ubus_downup_dev	no	rc_туда=0	0.02s	ассоц=нет	rc_обратно=0	0.02s	вернулась=да	AP_клиенты_как_в_начале=да	потери_владелец=NA/NA	потери_шлюз=NA/NA	prerc=-
+ubus_downup_dev	yes	rc_туда=0	0.01s	ассоц=да	rc_обратно=0	0.02s	вернулась=да	AP_клиенты_как_в_начале=да	потери_владелец=NA/NA	потери_шлюз=NA/NA	prerc=0
+
+== rq04 scan ==
+# RQ-04: ubus call iwinfo scan {"device":"phy0.0-sta0"} при живой ассоциации
+# до: ssid=grenderNet idhd NONONO net_uptime=145 ap_macs=6C:40:08:98:AA:18
+скан 1: rc=0 длительность=2.38s сетей=23 ssid_после='grenderNet idhd NONONO' uptime 146 -> 151 (сброс: нет) потери_владелец=NA потери_свидетель=NA потери_шлюз=NA
+скан 2: rc=0 длительность=2.36s сетей=26 ssid_после='grenderNet idhd NONONO' uptime 151 -> 156 (сброс: нет) потери_владелец=NA потери_свидетель=NA потери_шлюз=NA
+скан 3: rc=0 длительность=2.42s сетей=26 ssid_после='grenderNet idhd NONONO' uptime 156 -> 162 (сброс: нет) потери_владелец=NA потери_свидетель=NA потери_шлюз=NA
+
+== guard.log ==
+225 сторож взведён: цикл 5с, порог протухания 20с
+423 DONE: прогон закончен сам, конфигурацию не трогаю
+423 строка сторожа снята из crontab

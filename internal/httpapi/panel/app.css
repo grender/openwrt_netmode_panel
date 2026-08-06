@@ -105,7 +105,14 @@ button:disabled { cursor: not-allowed; }
 
 /* ─────────── карточки и секции ─────────── */
 
-.wrap { padding: 14px; display: grid; gap: 14px; }
+/* minmax(0, 1fr), а не голая колонка по умолчанию. Неявная колонка грида
+   имеет ширину auto, то есть НИКОГДА не уже своего min-content, — и строка
+   сети, у которой справа сигнал и три кнопки, растягивала колонку за края
+   экрана: на 320px документ уезжал в горизонтальную прокрутку целиком, вместе
+   с баннером и шапкой. Дырка была и до третьей кнопки (334px против 320),
+   третья кнопка довела её до 507. Ноль в минимуме разрешает колонке быть уже
+   содержимого, а укладываться внутри — уже забота .row (flex-wrap ниже). */
+.wrap { padding: 14px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .card { background: var(--card-2); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px; }
 .card > h2 {
 	margin: 0 0 12px; font: 600 13px var(--sans); color: var(--muted);
@@ -169,6 +176,16 @@ button:disabled { cursor: not-allowed; }
 .job { background: rgba(255,255,255,.14); border-radius: var(--r); padding: 12px 13px; }
 .banner.m-b4 .job { background: rgba(15,17,19,.08); }
 .job-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13.5px; }
+/* Левая подпись не переносится и не растёт вниз — она обрезается.
+   Высоту слота держит призрак ровно в одну строку (.job.ghost), поэтому
+   вторая строка здесь — это +20px под баннером в момент нажатия, то самое
+   дёрганье, ради которого призрак и заведён. У подписей режима повода
+   переноситься не было («Переключаю на b4»), у upstream появился: job.arg —
+   ssid до 32 байт, и на 320px он не влезал. Правый span при этом не жмётся:
+   «осталось ~20 с» — единственная цифра, по которой видно, что операция
+   вообще движется. */
+.job-row > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-row > span:last-child { flex: none; white-space: nowrap; }
 /* Провал операции. Селектор с .banner намеренно: у .banner.m-b4 .job выше
    специфичность (0,3,0), и голое .job.bad проиграло бы ему на светлом
    баннере b4. Токены те же, что у .note.err — провал везде выглядит
@@ -191,8 +208,17 @@ button:disabled { cursor: not-allowed; }
 .note { border-radius: var(--r-lg); padding: 14px 16px; border: 1px solid; }
 .note h3 { margin: 0 0 6px; font: 600 15px/1.35 var(--sans); }
 .note p { margin: 0; font-size: 14px; line-height: 1.45; }
+/* До этой правки в .note был ровно один абзац, и обнулённого margin хватало.
+   Теперь их два и там, и там (объяснение + что нажать в ambiguous; причина +
+   текст демона в провале переключения), а слипшиеся абзацы читаются как один
+   поток, где вторая мысль теряется в конце первой. */
+.note p + p { margin-top: 8px; }
 .note.err { background: var(--bad-bg); border-color: var(--bad-line); color: #f0c3bc; }
 .note.err p { color: #c2a19c; }
+/* Второй план внутри .note: сырое сообщение демона под переведённым
+   объяснением. Мельче и бледнее — оно уточняет, а не сообщает; заголовок и
+   причину читают первыми, а подробность нужна тому, кто пойдёт в ssh. */
+.note .detail { font-size: 12.5px; opacity: .72; }
 .note.warn { background: #241f14; border-color: #4a3f26; color: #f0e2bc; }
 .note.warn p { color: #c2b79c; }
 /* Нейтральное сообщение о ходе дела («Открываю…»): не ошибка и не
@@ -219,8 +245,14 @@ button:disabled { cursor: not-allowed; }
 /* ─────────── строки списков ─────────── */
 
 .rows { display: flex; flex-direction: column; gap: 8px; }
+/* flex-wrap: строка сохранённой сети умеет нести сигнал и три кнопки сразу
+   (Подключить + Пароль + ✕), а это по min-content шире телефона. Без переноса
+   лишнее просто вылезало за карточку. Перенос кнопок на вторую строку внутри
+   ряда — осознанная цена: имя сети остаётся читаемым целиком, а ряд растёт
+   вниз, никого не толкая вбок. Ряды Nikki и b4 сюда не попадают: их
+   содержимое в ширину укладывается и на 320px. */
 .row {
-	display: flex; align-items: center; gap: 10px;
+	display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
 	padding: 12px 14px; min-height: 48px; border-radius: var(--r);
 	background: var(--card); color: var(--fg-2); font-size: 14.5px;
 	border: 1px solid transparent; text-align: left; width: 100%;
@@ -248,6 +280,14 @@ button:disabled { cursor: not-allowed; }
 .lat-ok { color: var(--ok); } .lat-warn { color: var(--warn); } .lat-bad { color: var(--bad); }
 .bg-ok { background: var(--ok); } .bg-warn { background: var(--warn); } .bg-bad { background: var(--bad); }
 
+/* Группа кнопок ряда. margin-left:auto прижимает её вправо и на первой
+   строке, и на второй, куда она уезжает целиком при нехватке места, —
+   так она читается одним блоком управления, а не хвостом имени. */
+.row .acts { display: flex; align-items: center; gap: 10px; flex: none; margin-left: auto; }
+/* Замок рядом с живой кнопкой — в ambiguous они стоят вплотную, и группа
+   читается как один набор контролов, часть которого почему-то не нажимается.
+   Лишние шесть пикселей разводят их на «это кнопка» и «это запрет». */
+.row .acts .mini + .mark { margin-left: 6px; }
 .mark { font-size: 15px; line-height: 1; flex: none; cursor: help; }
 .empty { padding: 14px; border-radius: var(--r); background: var(--card); color: var(--muted); font-size: 14px; }
 
@@ -296,7 +336,7 @@ button:disabled { cursor: not-allowed; }
 	   сжался бы по своему содержимому — полоска .bar оказалась бы короче
 	   переключателя над ней и читалась бы как «прогресс уже не тот». */
 	.slot { width: 100%; margin-top: 0; }
-	.wrap { padding: 18px 26px 30px; grid-template-columns: repeat(3, 1fr); align-items: start; }
+	.wrap { padding: 18px 26px 30px; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; }
 	.wrap > .full { grid-column: 1 / -1; }
 }
 

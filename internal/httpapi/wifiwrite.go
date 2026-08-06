@@ -56,7 +56,7 @@ func (s *Server) handleWifiWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	g, errResp := s.openWrite(r)
+	g, errResp := s.openWriteForSaved(r)
 	if errResp != nil {
 		errResp.send(w)
 		return
@@ -72,12 +72,12 @@ func (s *Server) handleWifiWrite(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWifiDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	g, errResp := s.openWrite(r)
+	g, errResp := s.openWriteForSaved(r)
 	if errResp != nil {
 		errResp.send(w)
 		return
 	}
-	sec, errResp := g.target(id)
+	sec, errResp := g.targetEditable(id)
 	if errResp != nil {
 		errResp.send(w)
 		return
@@ -85,6 +85,7 @@ func (s *Server) handleWifiDelete(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	if err := s.ex.UCIDelete(ctx, "wireless", sec.Name, ""); err != nil {
+		s.revertDraft(ctx, sec.Name)
 		writeErr(w, http.StatusInternalServerError, "write_failed", err.Error())
 		return
 	}
@@ -143,9 +144,13 @@ func unknownField(err error) (string, bool) {
 // в текст ошибки не попадают никогда (ADR-0012).
 func unsupportedFieldMsg(field string) string {
 	if field == "network" {
-		return "Поле \"network\" не принимается: выбор L3-сети станционной секции — " +
-			"это смена upstream, отложенная до фазы 2 (ADR-0016). " +
-			"Секция создаётся на " + upstreamIf + "."
+		// Раньше здесь стояло «отложено до фазы 2». Фаза 2 наступила, и смена
+		// upstream делается переключением сети, а не сменой L3-сети у секции:
+		// секция всегда сидит на upstreamIf, меняется только то, какая из них
+		// включена (ADR-0026).
+		return "Поле \"network\" не принимается: станционная секция всегда живёт на " +
+			upstreamIf + ". Сменить внешнюю сеть — это POST /api/upstream, " +
+			"а не правка этого поля."
 	}
 	return fmt.Sprintf("Поле %q не входит в тело запроса. Демон не принимает полей, "+
 		"которых не понимает: молча пропущенное поле выглядит как выполненная просьба.", field)
@@ -157,13 +162,39 @@ func unsupportedFieldMsg(field string) string {
 //
 // radios здесь не для удобства: разрешение делается один раз на запрос, и
 // все шаги записи обязаны говорить об ОДНОМ радио. Разреши его повторно в
-// target() — и правка могла бы уйти на другое радио, чем то, по которому
+// resolve() — и правка могла бы уйти на другое радио, чем то, по которому
 // считалась однозначность выбора.
+//
+// Наружу этот тип не выдаётся: получить его можно только внутри одного из
+// именованных входов ниже.
 type writeGuard struct {
 	cfg    *uci.Config
 	sel    wireless.Selection
 	radios wireless.Radios
+	// fp — отпечаток конфигурации, по которому гард выдан. Нужен джобу
+	// переключения: между проверкой и записью проходят миллисекунды, но
+	// именно в них чужой Save & Apply публикует свою работу, и сверить
+	// отпечаток заново не с чем, если его не запомнить здесь.
+	fp string
 }
+
+// savedGuard и switchGuard — два именованных входа записи (ADR-0026).
+//
+// Разные ТИПЫ, а не признак внутри одного: гард обязан помнить, каким входом
+// он выдан, и «помнить» здесь означает, что перепутать невозможно. Метод
+// targetSwitchable существует только у switchGuard, targetEditable — только
+// у savedGuard; применить правила переключения к правке нельзя не потому,
+// что кто-то за этим следит, а потому, что это не компилируется.
+//
+// Булев параметр openWrite(r, allowAmbiguous) отвергнут ADR-0026: в точке
+// вызова видно `true`, а не смысл, и вопрос «кто разрешает запись при
+// неоднозначности» перестаёт быть греповским. Гейт в каждом обработчике
+// отвергнут там же: забытая проверка — это отсутствие строки, а отсутствия
+// строки на ревью не видно. Новый обработчик записи физически не может
+// «забыть» решить, чем он является: другого способа получить гард нет.
+type savedGuard struct{ writeGuard }
+
+type switchGuard struct{ writeGuard }
 
 // httpErr — отложенная ошибка: проверки собирают её, обработчик отправляет.
 type httpErr struct {
@@ -178,12 +209,18 @@ func conflict(code, msg string) *httpErr {
 	return &httpErr{http.StatusConflict, code, msg}
 }
 
-// openWrite выполняет все проверки, общие для любой записи в wireless.
+// openWriteCommon выполняет проверки, общие для ЛЮБОЙ записи в wireless.
+//
+// Общая часть живёт в одной функции, а не копией в каждом входе: два входа
+// вместо одного — это два места, где общая часть может разъехаться
+// (ADR-0026, «Платим»), и единственная защита от этого — то, что второго
+// места не существует.
 //
 // Порядок важен: сначала то, что делает запись бессмысленной (чужой
-// стейджинг), потом то, что делает её опасной (неоднозначность), потом
-// устаревшее представление клиента.
-func (s *Server) openWrite(r *http.Request) (*writeGuard, *httpErr) {
+// стейджинг), потом устаревшее представление клиента. Реакция на
+// неоднозначность здесь НЕ проверяется — это тот единственный шаг, которым
+// входы расходятся, и он стоит в них самих.
+func (s *Server) openWriteCommon(r *http.Request) (*writeGuard, *httpErr) {
 	ctx := r.Context()
 
 	// 1. Чужие незакоммиченные правки.
@@ -232,26 +269,61 @@ func (s *Server) openWrite(r *http.Request) (*writeGuard, *httpErr) {
 		return nil, conflict("fingerprint_required",
 			"Нужен заголовок If-Match с отпечатком из GET /api/wifi/networks")
 	}
-	if got := wireless.Fingerprint(raw); got != want {
+	fp := wireless.Fingerprint(raw)
+	if fp != want {
 		return nil, conflict("fingerprint_mismatch",
 			"Конфигурация изменилась с момента чтения. Обновите список и повторите.")
 	}
 
-	// 5. Неоднозначность запрещает любую запись — включая правку
-	//    выключенных секций. Пока неизвестно, какую секцию поднимет netifd,
-	//    доказать безвредность правки нельзя (ADR-0010).
-	if sel.State == wireless.Ambiguous {
+	return &writeGuard{cfg: cfg, sel: sel, radios: radios, fp: fp}, nil
+}
+
+// openWriteForSaved — вход для создания, правки и удаления сохранённых сетей.
+//
+// Неоднозначность запрещает любую такую запись — включая правку выключенной
+// секции. Пока неизвестно, какую секцию поднимет netifd, доказать
+// безвредность правки нельзя: секция, которую мы считаем спящей, может
+// оказаться той, что уедет в живую систему при ближайшем применении, а
+// применение теперь вызываем в том числе мы сами (ADR-0026, ADR-0010).
+//
+// Удаление при Ambiguous запрещено тем более: удалить одну из включённых
+// секций — это и есть «решить за владельца, какая лишняя», то есть
+// автопочинка, у которой всего лишь появилась кнопка.
+func (s *Server) openWriteForSaved(r *http.Request) (*savedGuard, *httpErr) {
+	g, errResp := s.openWriteCommon(r)
+	if errResp != nil {
+		return nil, errResp
+	}
+	if g.sel.State == wireless.Ambiguous {
 		return nil, conflict("ambiguous_selection",
 			"В конфигурации включено несколько станционных сетей. "+
 				"Демон не выбирает за владельца: оставьте одну через LuCI или ssh.")
 	}
-
-	return &writeGuard{cfg: cfg, sel: sel, radios: radios}, nil
+	return &savedGuard{*g}, nil
 }
 
-// target находит секцию для правки или удаления и проверяет, что её вообще
-// можно трогать.
-func (g *writeGuard) target(id string) (*uci.Section, *httpErr) {
+// openWriteForSwitch — вход для смены внешней сети (POST /api/upstream).
+//
+// Ambiguous ПРОПУСКАЕТСЯ, и это не послабление, а определение операции
+// (ADR-0026). Демон здесь ничего не решает: действие начинается с нажатия
+// человека, секция названа по имени, результат задан нажатием целиком —
+// включена ровно одна секция, та самая. Неоднозначность снимается не как
+// побочный эффект, а как смысл операции; запретить её из-за неоднозначности
+// значило бы отправить владельца в ssh мимо готовой кнопки.
+func (s *Server) openWriteForSwitch(r *http.Request) (*switchGuard, *httpErr) {
+	g, errResp := s.openWriteCommon(r)
+	if errResp != nil {
+		return nil, errResp
+	}
+	return &switchGuard{*g}, nil
+}
+
+// resolve отвечает на три вопроса, одинаковых для любой цели: годится ли
+// форма идентификатора, есть ли такая секция и наша ли она.
+//
+// Что с ней МОЖНО сделать — вопрос четвёртый, и ответ на него у входов
+// разный, поэтому он остался в targetEditable и targetSwitchable.
+func (g *writeGuard) resolve(id string) (*uci.Section, *httpErr) {
 	if id == "" {
 		return nil, &httpErr{http.StatusBadRequest, "bad_request", "Не указан идентификатор сети"}
 	}
@@ -269,13 +341,30 @@ func (g *writeGuard) target(id string) (*uci.Section, *httpErr) {
 	// Чужая секция — не наша забота. Домашняя точка доступа сюда не попадёт:
 	// радио сверяется с выведенным, а не с константой, иначе после
 	// перестановки радио «чужой» оказалась бы как раз наша (ADR-0019).
+	//
+	// Это же единственная защита radio1 и wifi-device на пути записи
+	// (ADR-0026, правило 4): не станционная секция не адресуется вовсе —
+	// ни на правку, ни на выключение, ни на чтение ради записи.
 	if sec.Type != "wifi-iface" ||
 		sec.Options["device"] != g.radios.Station ||
 		sec.Options["mode"] != "sta" {
 		return nil, &httpErr{http.StatusNotFound, "not_found",
 			"Секция не относится к внешним сетям роутера"}
 	}
-	// Инвариант фазы 1: включённую не трогаем (ADR-0009).
+	return sec, nil
+}
+
+// targetEditable находит секцию для правки или удаления.
+//
+// Править и удалять включённую секцию нельзя — правило пережило фазу 1
+// дословно и в фазе 2 стало весомее: смена ssid или пароля активной сети
+// рвёт ассоциацию при ближайшем применении, а применение теперь вызываем в
+// том числе мы (ADR-0026, «Что сохраняется из ADR-0009 дословно»).
+func (g *savedGuard) targetEditable(id string) (*uci.Section, *httpErr) {
+	sec, errResp := g.resolve(id)
+	if errResp != nil {
+		return nil, errResp
+	}
 	if sec.DisabledValid() && !sec.Disabled() {
 		return nil, conflict("enabled_network_readonly",
 			"Это активная внешняя сеть. Её правка порвала бы связь при ближайшем "+
@@ -284,9 +373,36 @@ func (g *writeGuard) target(id string) (*uci.Section, *httpErr) {
 	return sec, nil
 }
 
+// targetSwitchable находит секцию, на которую переключаемся.
+//
+// Включённая секция здесь допустима — она и есть цель. Отказ ровно один:
+// секция УЖЕ единственная включённая, то есть применять нечего, а применение
+// «на всякий случай» — риск без цели (ADR-0025).
+//
+// Проверка сужена до Single намеренно. При Ambiguous целевая секция тоже
+// может быть включена, но она не единственная — переключение на неё как раз
+// и есть работа, которую надо сделать.
+//
+// 409, а не 200: панель считает switchable на сервере и такой кнопки не
+// рисует, значит запрос означает устаревший список. 409 говорит панели
+// перечитать — тем же приёмом, что fingerprint_mismatch. 200 без джоба
+// потребовал бы отдельной формы ответа, которой больше нигде нет.
+func (g *switchGuard) targetSwitchable(id string) (*uci.Section, *httpErr) {
+	sec, errResp := g.resolve(id)
+	if errResp != nil {
+		return nil, errResp
+	}
+	if g.sel.State == wireless.Single && g.sel.Active == sec.Name {
+		return nil, conflict("already_selected",
+			"Эта сеть уже выбрана как единственная активная — переключать нечего. "+
+				"Обновите список: он устарел.")
+	}
+	return sec, nil
+}
+
 // ─────────── операции ───────────
 
-func (s *Server) createNetwork(w http.ResponseWriter, ctx context.Context, g *writeGuard, in NetworkWrite) {
+func (s *Server) createNetwork(w http.ResponseWriter, ctx context.Context, g *savedGuard, in NetworkWrite) {
 	if err := validateNetwork(in, true); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
@@ -298,9 +414,27 @@ func (s *Server) createNetwork(w http.ResponseWriter, ctx context.Context, g *wr
 		return
 	}
 
-	if err := s.ex.UCIAddNamed(ctx, "wireless", name, "wifi-iface"); err != nil {
-		writeErr(w, http.StatusInternalServerError, "write_failed", err.Error())
+	// Единственная точка отказа на всю запись — и это форма, а не вкус.
+	// Отмена черновика обязана стоять на КАЖДОМ пути отказа, а забытый
+	// revert в новой ветке выглядит как отсутствие строки и на ревью не
+	// виден (ADR-0028, «Платим»). Одна ветка — одно место, где его можно
+	// забыть, и оно здесь.
+	if errResp := s.writeNewSection(ctx, g, name, in); errResp != nil {
+		s.revertDraft(ctx, name)
+		errResp.send(w)
 		return
+	}
+
+	s.commitAndRespond(w, ctx)
+}
+
+// writeNewSection пишет секцию по частям. Порядок значим: disabled пишется
+// ПОСЛЕДНИМ, и именно поэтому недописанная секция чаще всего не имеет его
+// вовсе — то есть опубликованная чужим коммитом оказалась бы ВКЛЮЧЁННОЙ
+// (ADR-0028, «Найденный дефект»). Отсюда обязательная отмена у вызывающего.
+func (s *Server) writeNewSection(ctx context.Context, g *savedGuard, name string, in NetworkWrite) *httpErr {
+	if err := s.ex.UCIAddNamed(ctx, "wireless", name, "wifi-iface"); err != nil {
+		return &httpErr{http.StatusInternalServerError, "write_failed", err.Error()}
 	}
 
 	opts := [][2]string{
@@ -312,34 +446,48 @@ func (s *Server) createNetwork(w http.ResponseWriter, ctx context.Context, g *wr
 	}
 	for _, kv := range opts {
 		if err := s.ex.UCISet(ctx, "wireless", name, kv[0], kv[1]); err != nil {
-			writeErr(w, http.StatusInternalServerError, "write_failed", err.Error())
-			return
+			return &httpErr{http.StatusInternalServerError, "write_failed", err.Error()}
 		}
 	}
 	if in.Key != nil {
 		if err := s.ex.UCISet(ctx, "wireless", name, "key", *in.Key); err != nil {
 			// Текст ошибки uci для key намеренно без значения (ADR-0012).
-			writeErr(w, http.StatusInternalServerError, "write_failed", "Не удалось записать пароль")
-			return
+			return &httpErr{http.StatusInternalServerError, "write_failed", "Не удалось записать пароль"}
 		}
 	}
 
-	// ЕДИНСТВЕННОЕ место во всём демоне, где пишется disabled, и только "1".
+	// Одно из ДВУХ мест во всём демоне, где пишется disabled (второе —
+	// путь переключения, upstreamhandler.go), и здесь только "1".
 	//
 	// Это не лазейка в инварианте, а его часть: отсутствие опции означает
 	// ВКЛЮЧЕНА, поэтому создать секцию, не написав disabled, — значит
 	// создать включённую станционную секцию, то есть ровно то, что
-	// инвариант запрещает (ADR-0009).
+	// инвариант запрещает (ADR-0009, сохранено ADR-0026 правилом 5).
 	if err := s.ex.UCISet(ctx, "wireless", name, "disabled", "1"); err != nil {
-		writeErr(w, http.StatusInternalServerError, "write_failed", err.Error())
-		return
+		return &httpErr{http.StatusInternalServerError, "write_failed", err.Error()}
 	}
-
-	s.commitAndRespond(w, ctx)
+	return nil
 }
 
-func (s *Server) editNetwork(w http.ResponseWriter, ctx context.Context, g *writeGuard, in NetworkWrite) {
-	sec, errResp := g.target(in.ID)
+// revertDraft отменяет незакоммиченный черновик ОДНОЙ секции на пути отказа.
+//
+// Без него первый же сбой uci запирал бы запись навсегда: наш недописанный
+// черновик остаётся в стейджинге, шаг 1 openWriteCommon видит его и отвечает
+// `409 foreign_staged_changes` с текстом про LuCI, которого нет, — и обойти
+// эту проверку из панели нечем (ADR-0028).
+//
+// Отказ самой отмены ответа НЕ меняет: клиент уже получает 500 write_failed,
+// и превращать неудачную уборку во второй код ошибки значило бы рассказывать
+// владельцу про наш стейджинг вместо того, что случилось с его сетью.
+// Строка в журнал — всё, что тут можно честно сделать.
+func (s *Server) revertDraft(ctx context.Context, section string) {
+	if err := s.ex.UCIRevert(ctx, "wireless", section); err != nil {
+		s.logf("запись: не удалось отменить черновик секции %s — %v", section, err)
+	}
+}
+
+func (s *Server) editNetwork(w http.ResponseWriter, ctx context.Context, g *savedGuard, in NetworkWrite) {
+	sec, errResp := g.targetEditable(in.ID)
 	if errResp != nil {
 		errResp.send(w)
 		return
@@ -349,27 +497,35 @@ func (s *Server) editNetwork(w http.ResponseWriter, ctx context.Context, g *writ
 		return
 	}
 
+	if errResp := s.writeSectionEdits(ctx, sec.Name, in); errResp != nil {
+		// Половина правки в стейджинге запирает панель ровно так же, как
+		// половина создания, и отменяется так же адресно (ADR-0028).
+		s.revertDraft(ctx, sec.Name)
+		errResp.send(w)
+		return
+	}
+
+	s.commitAndRespond(w, ctx)
+}
+
+func (s *Server) writeSectionEdits(ctx context.Context, name string, in NetworkWrite) *httpErr {
 	if in.SSID != "" {
-		if err := s.ex.UCISet(ctx, "wireless", sec.Name, "ssid", in.SSID); err != nil {
-			writeErr(w, http.StatusInternalServerError, "write_failed", err.Error())
-			return
+		if err := s.ex.UCISet(ctx, "wireless", name, "ssid", in.SSID); err != nil {
+			return &httpErr{http.StatusInternalServerError, "write_failed", err.Error()}
 		}
 	}
 	if in.Encryption != "" {
-		if err := s.ex.UCISet(ctx, "wireless", sec.Name, "encryption", in.Encryption); err != nil {
-			writeErr(w, http.StatusInternalServerError, "write_failed", err.Error())
-			return
+		if err := s.ex.UCISet(ctx, "wireless", name, "encryption", in.Encryption); err != nil {
+			return &httpErr{http.StatusInternalServerError, "write_failed", err.Error()}
 		}
 	}
 	// Отсутствие key — «не трогай», а не «сотри».
 	if in.Key != nil {
-		if err := s.ex.UCISet(ctx, "wireless", sec.Name, "key", *in.Key); err != nil {
-			writeErr(w, http.StatusInternalServerError, "write_failed", "Не удалось записать пароль")
-			return
+		if err := s.ex.UCISet(ctx, "wireless", name, "key", *in.Key); err != nil {
+			return &httpErr{http.StatusInternalServerError, "write_failed", "Не удалось записать пароль"}
 		}
 	}
-
-	s.commitAndRespond(w, ctx)
+	return nil
 }
 
 // commitAndRespond публикует стейджинг и отдаёт обновлённый список.

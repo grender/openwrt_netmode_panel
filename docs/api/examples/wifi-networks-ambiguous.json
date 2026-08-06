@@ -1,6 +1,6 @@
 {
-  "fingerprint": "sha256:1f0c9a3b7d2e4a58",
-  "selection_state": "single",
+  "fingerprint": "sha256:c4b1e07a9d3f2661",
+  "selection_state": "ambiguous",
   "radio": {
     "device": "radio0",
     "band": "2g",
@@ -15,7 +15,7 @@
       "network": "wwan",
       "enabled": true,
       "editable": false,
-      "switchable": false
+      "switchable": true
     },
     {
       "id": "wifinet2",
@@ -23,8 +23,8 @@
       "encryption": "psk2",
       "has_key": true,
       "network": "wwan",
-      "enabled": false,
-      "editable": true,
+      "enabled": true,
+      "editable": false,
       "switchable": true
     }
   ]
