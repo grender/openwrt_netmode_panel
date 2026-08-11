@@ -14,12 +14,21 @@ import (
 	"netmoded/internal/nikki"
 )
 
-// devNikki повторяет раскладку живого роутера: PROXY типа URLTest с 29
-// участниками, автовыбор по умолчанию.
+// devNikki повторяет раскладку живого роутера: PROXY типа URLTest, автовыбор
+// по умолчанию.
+//
+// Участников восемь, а не 26 как на роутере, и число здесь ни на что не
+// влияет: длину списка проверяет вёрстка на фикстурах мока, а поведение
+// замера при пачке — ProbeAll со своими тестами. Прежний комментарий обещал
+// «29 участников» — столько их не было никогда.
 type devNikki struct {
 	mu  sync.Mutex
 	all map[string]nikki.Proxy
 }
+
+// separator — разделитель, который провайдер кладёт в подписку между
+// группами узлов. В /proxies отдельной записи у него нет.
+const separator = "⬇️ Обходы белых списков ⬇️"
 
 func newDevNikki() *devNikki {
 	d := func(v int) *int { return &v }
@@ -33,7 +42,7 @@ func newDevNikki() *devNikki {
 		{"🇳🇱⚡Нидерланды 1", d(61)},
 		{"🇺🇸США 1", d(148)},
 		{"🇯🇵Япония", d(210)},
-		{"⬇️ Обходы белых списков ⬇️", nil},
+		{separator, nil},
 		{"🇹🇷💳Турция", nil}, // мёртвый: delay:0 у mihomo → null у нас
 	}
 
@@ -41,6 +50,14 @@ func newDevNikki() *devNikki {
 	var members []string
 	for _, n := range nodes {
 		members = append(members, n.name)
+		// Разделитель подписки в списке группы ЕСТЬ, а отдельным узлом в
+		// /proxies его нет — так отвечает живой роутер, и именно на это
+		// рассчитан nikki.Members. Положив его сюда как «мёртвый узел», мы
+		// бы своими руками сделали дев-сервер, на котором замер докладывает
+		// о провале несуществующего сервера, — и выглядело бы это правдой.
+		if n.name == separator {
+			continue
+		}
 		all[n.name] = nikki.Proxy{
 			Name: n.name, Type: "Vless", Alive: n.delay != nil, DelayMS: n.delay,
 		}
@@ -71,6 +88,35 @@ func (f *devNikki) Proxies(context.Context) (map[string]nikki.Proxy, error) {
 		out[k] = v
 	}
 	return out, nil
+}
+
+// Delay изображает пробу задержки: живой узел отдаёт новое число, мёртвый
+// молчит. Числа тасуются на каждом нажатии — иначе «замерить» на ноуте
+// выглядело бы как кнопка, ничего не меняющая, и панельную половину замера
+// (тост с итогом, обновлённый список) проверить было бы нечем.
+//
+// Задержка ответа не изображается намеренно: ждать шесть секунд на каждом
+// прогоне мока — плата ни за что, а таймауты панели проверяются сценарием
+// мок-сервера, а не этим клиентом.
+func (f *devNikki) Delay(_ context.Context, name string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.all[name]
+	if !ok {
+		return 0, nikki.ErrNotFound
+	}
+	if !p.Alive {
+		return 0, nikki.ErrProbeFailed
+	}
+	// Разброс без Rand: он тянул бы затравку и делал прогон невоспроизводимым.
+	// Хватает сдвига от длины имени и прошлого значения.
+	v := 20 + len(name)*3
+	if p.DelayMS != nil {
+		v = 20 + (*p.DelayMS+7)%180
+	}
+	p.DelayMS = &v
+	f.all[name] = p
+	return v, nil
 }
 
 func (f *devNikki) Select(_ context.Context, group, member string) error {

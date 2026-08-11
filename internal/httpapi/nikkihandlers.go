@@ -16,6 +16,15 @@ import (
 const ProxyGroup = "PROXY"
 
 func (s *Server) handleNikkiProxies(w http.ResponseWriter, r *http.Request) {
+	s.writeProxies(w, r, nil)
+}
+
+// writeProxies отдаёт тело ProxiesResponse, добавив к нему extra.
+//
+// Вынесено из обработчика, потому что тело описано в контракте один раз, а
+// отдают его три пути (список, выбор узла, замер). Собирать его на каждом
+// заново значило бы завести три копии, расходящиеся по одной за правку.
+func (s *Server) writeProxies(w http.ResponseWriter, r *http.Request, extra map[string]any) {
 	if s.nikki == nil {
 		writeErr(w, http.StatusServiceUnavailable, "nikki_unavailable", "Клиент Nikki не настроен")
 		return
@@ -44,7 +53,7 @@ func (s *Server) handleNikkiProxies(w http.ResponseWriter, r *http.Request) {
 		ver = v
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"available": true,
 		"version":   ver,
 		"group":     ProxyGroup,
@@ -57,7 +66,80 @@ func (s *Server) handleNikkiProxies(w http.ResponseWriter, r *http.Request) {
 		"pinned":     g.Pinned,
 		"selectable": g.Selectable,
 		"members":    nikki.Members(all, ProxyGroup),
-	})
+	}
+	// extra не может затереть поля тела: ключи контракта раскладываются
+	// последними. Иначе добавка «сверху» однажды подменила бы members и
+	// расхождение с openapi не поймал бы ни один гвард.
+	for k, v := range extra {
+		if _, busy := body[k]; !busy {
+			body[k] = v
+		}
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+// handleNikkiTest — замер задержки всех участников группы.
+//
+// Это ТРИГГЕР свежей пробы, а не источник чисел (RQ-06): задержки приходят в
+// GET /proxies и без нажатия — mihomo обновляет history сам примерно раз в
+// пять минут. Кнопка нужна, когда ждать этих пяти минут нельзя: подписка
+// только что обновилась или узел, похоже, лёг.
+//
+// Синхронный ответ, без джоба: операция ничего не меняет ни в UCI, ни в
+// профиле, повтор безвреден, и единственная её цена — время (probeBudget).
+// Джоб дал бы владельцу полоску вместо ответа и второй путь опроса ради
+// операции, которая всё равно укладывается в один запрос.
+//
+// Двойное нажатие сервер не блокирует: панель держит свой busy, а два
+// параллельных замера дадут лишний трафик и одинаковый результат — блокировка
+// на демоне стоила бы разделяемого состояния ради этого.
+func (s *Server) handleNikkiTest(w http.ResponseWriter, r *http.Request) {
+	if s.nikki == nil {
+		writeErr(w, http.StatusServiceUnavailable, "nikki_unavailable", "Клиент Nikki не настроен")
+		return
+	}
+
+	all, err := s.nikki.Proxies(r.Context())
+	if err != nil {
+		if errors.Is(err, nikki.ErrUnavailable) {
+			writeErr(w, http.StatusServiceUnavailable, "nikki_unavailable",
+				"Clash API не отвечает. Замерять нечего.")
+			return
+		}
+		writeErr(w, http.StatusBadGateway, "nikki_error", err.Error())
+		return
+	}
+	if _, ok := all[ProxyGroup]; !ok {
+		writeErr(w, http.StatusServiceUnavailable, "group_missing",
+			"В профиле mihomo нет группы "+ProxyGroup)
+		return
+	}
+
+	// Members отбрасывает участников, которых нет в ответе, — это разделители
+	// вида «⬇️ Обходы белых списков ⬇️» из подписки. Проба по такому имени
+	// вернула бы «не найдено» и осела бы в failed, то есть кнопка честно
+	// докладывала бы о провале там, где узла никогда и не было.
+	members := nikki.Members(all, ProxyGroup)
+	names := make([]string, 0, len(members))
+	for _, m := range members {
+		names = append(names, m.Name)
+	}
+	// Саму группу не проверяем: /proxies/{группа}/delay отдаёт задержку
+	// выбранного члена, а он и так есть в списке — вышла бы двойная проба
+	// одного узла под двумя именами.
+
+	sum := nikki.ProbeAll(r.Context(), s.nikki, names)
+	s.logf("nikki: замер %d узлов — измерено %d, не ответили %d, не успели %d, %d мс",
+		sum.Total, sum.Measured, sum.Failed, sum.Skipped, sum.ElapsedMS)
+
+	// Ответ 200 даже когда не ответил никто, а исход — в теле.
+	//
+	// Кодом ошибки это было бы неправдой: движок отработал, узлы опрошены,
+	// результат «все мертвы» — такой же результат, как «все живы», и панели
+	// он нужен вместе со свежим списком. Молчать о нём тоже нельзя: числа в
+	// списке останутся прежними, и нажатие будет неотличимо от бездействия.
+	// Поэтому итог едет полем test, а разговаривает с владельцем панель.
+	s.writeProxies(w, r, map[string]any{"test": sum})
 }
 
 // handleNikkiPanel отдаёт адрес веб-панели mihomo — единственный ответ

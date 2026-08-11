@@ -375,3 +375,165 @@ func TestFakePanicLeavesFakeUsable(t *testing.T) {
 		t.Errorf("вызов, на котором рвануло, не попал в журнал: %v", f.Calls)
 	}
 }
+
+// ─────────── исполнитель, которого нет ───────────
+
+// Незапустившийся скрипт — НЕ «оба глагола отказали», и цена этой разницы
+// измерена на живом роутере.
+//
+// Демон фазы 2 приехал без /usr/local/bin/netmode-wifi. Отсутствие файла
+// проваливалось в default ветку applyReason и объявлялось apply_failed, чей
+// текст обещает владельцу «оба способа применения отказали» — уверенный
+// диагноз про механизм, который ни разу не запускался. Роутер при этом
+// оставался с ОПУБЛИКОВАННОЙ, но не применённой конфигурацией: uci commit
+// прошёл, применить его было нечем, станция висела не подключённой.
+//
+// Настоящий несуществующий путь, а не подменённый commandRunner: форма
+// ошибки (*fs.PathError под *exec.Error) — это то, что отдаёт os/exec, и
+// стаб с готовой ошибкой проверял бы нашу догадку о ней саму против себя.
+func TestApplyUpstreamMissingScriptIsNoExecutor(t *testing.T) {
+	e := New()
+	e.wifiBin = filepath.Join(t.TempDir(), "нет-такого-файла")
+
+	err := e.ApplyUpstream(context.Background(), UpstreamTarget{Radio: "wlanx"})
+	if err == nil {
+		t.Fatal("отсутствующий скрипт объявлен успехом")
+	}
+	if !errors.Is(err, ErrNoExecutor) {
+		t.Errorf("исход %v, ожидался ErrNoExecutor", err)
+	}
+	// Каждый из трёх утверждал бы про роутер то, чего мы не знаем или что
+	// прямо неверно: Apply — что глаголы звали, Prereq — что скрипт доложил
+	// о нехватке flock, Unknown — что процесс мог успеть сделать всё.
+	for _, sentinel := range []error{ErrUpstreamApply, ErrUpstreamPrereq, ErrUpstreamUnknown} {
+		if errors.Is(err, sentinel) {
+			t.Errorf("отсутствие исполнителя выдано за класс отказа %v", sentinel)
+		}
+	}
+	// Путь обязан быть в тексте: владелец унесёт эту строку в ssh, и
+	// «исполнителя нет» без имени файла ему там не поможет.
+	if !strings.Contains(err.Error(), e.wifiBin) {
+		t.Errorf("в тексте нет пути к скрипту: %v", err)
+	}
+}
+
+// Потерянный бит исполнения читается так же, как отсутствие файла: для
+// нажатия это одно и то же, и совет владельцу тот же — переустановить пакет.
+//
+// Проверка идёт под пропуском для root: под ним режим 0644 не мешает
+// запуску, и тест доказывал бы обратное тому, что написано.
+func TestApplyUpstreamNonExecutableScriptIsNoExecutor(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("под root бит исполнения не проверяется ядром")
+	}
+	path := filepath.Join(t.TempDir(), "netmode-wifi")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := New()
+	e.wifiBin = path
+
+	err := e.ApplyUpstream(context.Background(), UpstreamTarget{Radio: "wlanx"})
+	if !errors.Is(err, ErrNoExecutor) {
+		t.Errorf("исход %v, ожидался ErrNoExecutor", err)
+	}
+}
+
+// Та же воронка закрывает и netmode-apply: проверка стоит в общей
+// classifyByExitCode, а не в одном из двух вызывающих.
+func TestApplyModeMissingScriptIsNoExecutor(t *testing.T) {
+	e := New()
+	e.applyBin = filepath.Join(t.TempDir(), "нет-такого-файла")
+
+	err := e.ApplyMode(context.Background(), "nikki")
+	if !errors.Is(err, ErrNoExecutor) {
+		t.Errorf("исход %v, ожидался ErrNoExecutor", err)
+	}
+	if errors.Is(err, ErrApplyFirewall) || errors.Is(err, ErrApplyPrereq) {
+		t.Errorf("отсутствие исполнителя выдано за класс отказа: %v", err)
+	}
+}
+
+// Фейк обязан изображать отсутствие исполнителя ТОЙ ЖЕ воронкой: иначе
+// тесты демона проверяли бы вторую копию разбора саму против себя.
+func TestFakeMissingBinsUseSameFunnel(t *testing.T) {
+	f := NewFake()
+	f.MissingBins = []string{WifiBinPath}
+
+	err := f.ApplyUpstream(context.Background(), UpstreamTarget{Radio: "wlanx"})
+	if !errors.Is(err, ErrNoExecutor) {
+		t.Errorf("исход %v, ожидался ErrNoExecutor", err)
+	}
+	if errors.Is(err, ErrUpstreamApply) {
+		t.Errorf("фейк отнёс отсутствие исполнителя к отказу применения: %v", err)
+	}
+	// Попытка видна в журнале: демон её сделал, и тест обязан это видеть.
+	if len(f.CallsContaining("apply-upstream")) != 1 {
+		t.Errorf("попытка запуска не попала в журнал: %v", f.Calls)
+	}
+	// Отсутствие netmode-wifi не делает недоступным netmode-apply: скрипты
+	// ставятся вместе, но пропасть может один.
+	if err := f.ApplyMode(context.Background(), "nikki"); err != nil {
+		t.Errorf("смена режима отказала из-за чужого отсутствующего скрипта: %v", err)
+	}
+}
+
+// MissingExecutors отвечает на тот же вопрос ДО нажатия.
+//
+// Три состояния проверяются вместе, потому что важен не только факт, но и
+// состав: панель печатает владельцу путь, и «чего-то не хватает» ему нечего
+// делать.
+func TestMissingExecutorsListsWhatWontRun(t *testing.T) {
+	dir := t.TempDir()
+	apply := filepath.Join(dir, "netmode-apply")
+	wifi := filepath.Join(dir, "netmode-wifi")
+	write := func(path string, mode os.FileMode) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	e := New()
+	e.applyBin, e.wifiBin = apply, wifi
+
+	if got := e.MissingExecutors(); len(got) != 2 {
+		t.Errorf("оба скрипта отсутствуют, доложено %v", got)
+	}
+
+	write(apply, 0o755)
+	got := e.MissingExecutors()
+	if len(got) != 1 || got[0] != wifi {
+		t.Errorf("доложено %v, ожидался ровно %s", got, wifi)
+	}
+
+	write(wifi, 0o755)
+	if got := e.MissingExecutors(); len(got) != 0 {
+		t.Errorf("оба скрипта на месте, а доложено %v", got)
+	}
+
+	// Файл без бита исполнения числится отсутствующим наравне с
+	// несуществующим: нажатие от этой разницы не выигрывает ничего.
+	if os.Geteuid() != 0 {
+		if err := os.Chmod(wifi, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got := e.MissingExecutors()
+		if len(got) != 1 || got[0] != wifi {
+			t.Errorf("неисполняемый файл не доложен: %v", got)
+		}
+	}
+}
+
+// Порядок фиксирован: строка в журнале и поле в /api/status не имеют права
+// переставляться от запуска к запуску, иначе владелец, сверяющий два
+// доклада, решит, что состояние изменилось.
+func TestMissingExecutorsOrderIsStable(t *testing.T) {
+	f := NewFake()
+	f.MissingBins = []string{WifiBinPath, ApplyBinPath}
+	got := f.MissingExecutors()
+	want := []string{ApplyBinPath, WifiBinPath}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("порядок %v, ожидался %v", got, want)
+	}
+}

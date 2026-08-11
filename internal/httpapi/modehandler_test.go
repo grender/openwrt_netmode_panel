@@ -279,6 +279,47 @@ func TestModeApplyOutcomesAreDistinguished(t *testing.T) {
 	}
 }
 
+// Отсутствие netmode-apply на роутере обязано читаться как половинчатая
+// установка, а не как внутренний сбой демона.
+//
+// Таксономии кодов у режимов нет — доклад один, текст ошибки джоба, — и
+// потому весь диагноз держится на формулировке. Голая ошибка exec на её
+// месте («fork/exec …: no such file or directory») выглядит как поломка
+// демона и уводит владельца читать наш код вместо того, чтобы доставить
+// пакет. Тот же отказ у смены ВНЕШНЕЙ СЕТИ докладывается причиной
+// executor_missing (см. upstreamhandler_test.go).
+func TestModeMissingExecutorNamesTheRealProblem(t *testing.T) {
+	s, f, _ := serverWithLED(t)
+	f.MissingBins = []string{executor.ApplyBinPath}
+
+	if rec := post(t, s, "/api/mode", `{"mode":"nikki"}`, ""); rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d", rec.Code)
+	}
+	if !s.jobs.Wait(3 * time.Second) {
+		t.Fatal("джоб не завершился")
+	}
+
+	cur := s.jobs.Current()
+	if cur == nil || cur.State != "failed" {
+		t.Fatalf("джоб: %+v", cur)
+	}
+	if cur.Error == nil {
+		t.Fatal("отсутствие скрипта объявлено успехом")
+	}
+	// Три вещи, ради которых текст и написан: что не переключилось, чего
+	// именно нет и что с этим делать.
+	for _, want := range []string{"не переключён", "скрипта применения", "--install"} {
+		if !strings.Contains(*cur.Error, want) {
+			t.Errorf("в тексте нет %q: %s", want, *cur.Error)
+		}
+	}
+	// Намерение записано и здесь: следующая загрузка доведёт дело сама,
+	// когда скрипт приедет.
+	if !strings.Contains(strings.Join(f.Calls, "\n"), "set netmode.main.mode=nikki") {
+		t.Error("намерение не записано — повторить будет нечего")
+	}
+}
+
 // Индикация — best-effort: её отказ НИКОГДА не валит переключение.
 func TestModeSucceedsWhenLEDIsBroken(t *testing.T) {
 	s, f, _ := serverWithLED(t)

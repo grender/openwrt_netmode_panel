@@ -1,21 +1,25 @@
 {
-  "generated_at": "2026-08-02T10:23:50Z",
+  "generated_at": "2026-08-02T10:00:00Z",
   "hostname": "grenderRouter",
   "mode": "nikki",
   "selection_state": "single",
-  "configured_ssid": "Beeline_Home_5GHz_Guest_2024_ext",
+  "configured_ssid": "John24",
   "associated_ssid": "John24",
-  "pending_apply": true,
-  "wireless_fingerprint": "sha256:5c2ea8d417b60f93",
+  "missing_executors": [
+    "/usr/local/bin/netmode-apply",
+    "/usr/local/bin/netmode-wifi"
+  ],
+  "pending_apply": false,
+  "wireless_fingerprint": "sha256:1f0c9a3b7d2e4a58",
   "ap": {
-    "ssid": "grenderNet_5GHz_Guest_Extended_1",
+    "ssid": "grenderNet",
     "band": "5g",
     "clients": null
   },
   "online": {
     "ok": true,
     "checked": true,
-    "checked_at": "2026-08-02T10:23:50Z"
+    "checked_at": "2026-08-02T10:00:00Z"
   },
   "links": {
     "nikki": "http://192.168.9.1:9090/ui/",
@@ -29,12 +33,7 @@
     "nodes": 42,
     "error": null
   },
-  "last_fail": {
-    "ssid": "Beeline_Home_5GHz_Guest_2024_ext",
-    "reason": "stayed_on_previous",
-    "at": "2026-08-02T10:21:39Z",
-    "detail": "станция осталась на прежней сети «John24» — переключение на «Beeline_Home_5GHz_Guest_2024_ext» не состоялось, хотя применение прошло без ошибки"
-  },
+  "last_fail": null,
   "nikki": {
     "available": true,
     "version": "v1.19.27",

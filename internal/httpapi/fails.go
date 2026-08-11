@@ -46,7 +46,19 @@ type failStore struct {
 // ssid, а не имя секции: владелец выбирал сеть по имени в эфире и опознаёт
 // её только так. `wifinet2` в докладе означало бы, что за объяснением
 // придётся идти в LuCI.
-func (s *failStore) Set(ssid string, reason FailReason, at time.Time) {
+//
+// detail — человекочитаемая подробность в дополнение к коду, и параметр
+// добавлен по разбирательству, в котором её не хватило. Код apply_failed
+// выставляется шестью путями, панель переводит его одной фразой, и владелец,
+// у которого на роутере не оказалось скрипта применения, читал уверенный
+// диагноз про механизм, который ни разу не запускался. Текст у вызывающего
+// уже собран — терять его на границе слота было нечем оправдать.
+//
+// Порядок параметров: ssid, reason, detail — то есть от машинного к
+// человеческому. Две соседние строки (ssid и detail) переставить местами
+// компилятор не мешает, но перепутанные они видны сразу: detail — фраза, а
+// не имя сети.
+func (s *failStore) Set(ssid string, reason FailReason, detail string, at time.Time) {
 	if s == nil {
 		return
 	}
@@ -55,6 +67,7 @@ func (s *failStore) Set(ssid string, reason FailReason, at time.Time) {
 	s.fail = &Fail{
 		SSID:   ssid,
 		Reason: reason,
+		Detail: detail,
 		At:     at.UTC().Format(time.RFC3339),
 	}
 }

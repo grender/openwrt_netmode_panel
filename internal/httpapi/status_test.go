@@ -657,6 +657,90 @@ func TestServiceFieldsAlwaysPresent(t *testing.T) {
 	}
 }
 
+// Половинчатая установка видна в статусе — то есть ДО нажатия.
+//
+// Раньше её не было видно нигде: демон прописывал пути двух скриптов и не
+// смотрел на них ни разу, панель отдавалась с рабочей на вид кнопкой, и
+// владелец узнавал правду после uci commit — когда конфигурация уже
+// опубликована и висит неприменённой.
+func TestStatusReportsMissingExecutors(t *testing.T) {
+	s, f := newServer(t)
+	f.MissingBins = []string{executor.WifiBinPath}
+
+	var got Status
+	if err := json.Unmarshal(do(t, s, "GET", "/api/status", true).Body.Bytes(), &got); err != nil {
+		t.Fatalf("статус не разбирается: %v", err)
+	}
+	if len(got.MissingExecutors) != 1 || got.MissingExecutors[0] != executor.WifiBinPath {
+		t.Errorf("missing_executors = %v, ожидался ровно %s", got.MissingExecutors, executor.WifiBinPath)
+	}
+}
+
+// Когда оба скрипта на месте, ключа в ответе нет вовсе.
+//
+// Пустой массив здесь означал бы «чего-то не хватает, чего именно —
+// неизвестно», а такого состояния не бывает. Довод и форма те же, что у
+// соседнего conflict: omitempty, и панель рисует блок по непустому списку.
+func TestStatusOmitsMissingExecutorsWhenAllPresent(t *testing.T) {
+	s, _ := newServer(t)
+	b := do(t, s, "GET", "/api/status", true).Body.Bytes()
+	if contains(b, "missing_executors") {
+		t.Errorf("ключ есть при полной установке — панель нарисует пустой баннер: %s", b)
+	}
+}
+
+// Тот же факт обязан доехать и в журнал: без панели, по ssh, logread —
+// единственная дорога.
+//
+// Проверяется боевым путём NewServer, а не вызовом warnMissingExecutors
+// напрямую: забыть строку в конструкторе — ровно тот отказ, который тест
+// стережёт, и вызов помощника из теста его не поймал бы.
+func TestNewServerShoutsAboutMissingExecutors(t *testing.T) {
+	sink := &logSink{}
+	f := executor.NewFake()
+	f.MissingBins = []string{executor.ApplyBinPath, executor.WifiBinPath}
+
+	if _, err := NewServer(Config{
+		Listen:  "192.168.9.1",
+		Port:    8088,
+		Token:   testToken,
+		LogPath: filepath.Join(t.TempDir(), "updates.log"),
+		Logf:    sink.logf,
+	}, f); err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	lines := sink.matching("deploy.sh --install")
+	if len(lines) != 1 {
+		t.Fatalf("строк с советом об установке %d, ожидалась одна: %v", len(lines), sink.lines)
+	}
+	// Оба пути названы: владелец идёт в ssh с именами файлов, а не с
+	// сообщением «чего-то не хватает».
+	for _, want := range []string{executor.ApplyBinPath, executor.WifiBinPath} {
+		if !strings.Contains(lines[0], want) {
+			t.Errorf("в строке журнала нет %s: %s", want, lines[0])
+		}
+	}
+}
+
+// Полная установка молчит. Строка про отсутствующие скрипты на каждом старте
+// здорового роутера обесценила бы саму себя: её перестают читать.
+func TestNewServerSilentWhenExecutorsPresent(t *testing.T) {
+	sink := &logSink{}
+	if _, err := NewServer(Config{
+		Listen:  "192.168.9.1",
+		Port:    8088,
+		Token:   testToken,
+		LogPath: filepath.Join(t.TempDir(), "updates.log"),
+		Logf:    sink.logf,
+	}, executor.NewFake()); err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if lines := sink.matching("скриптов применения"); len(lines) != 0 {
+		t.Errorf("демон пожаловался при полной установке: %v", lines)
+	}
+}
+
 func contains(b []byte, sub string) bool {
 	return len(sub) > 0 && len(b) >= len(sub) && indexOf(string(b), sub) >= 0
 }

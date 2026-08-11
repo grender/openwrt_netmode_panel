@@ -16,6 +16,11 @@ const T_STATUS = 4000;
 const T_SIDE = 8000;
 const T_SCAN = 20000;
 const T_MODE = 8000; // 202 приходит сразу, ждать завершения джоба тут нечего
+// Замер задержек синхронный: демон опрашивает каждый узел группы с общим
+// бюджетом 9 с и только потом отвечает. Восьми секунд по умолчанию не хватит
+// на его худший случай, и обрыв выглядел бы как сломанная кнопка ровно тогда,
+// когда узлы мертвы, — то есть когда замер и нужен.
+const T_TEST = 15000;
 const T_DEFAULT = 8000;
 
 // Потолок жизни джоба. Отсчитывается по МЕСТНЫМ часам от момента, когда панель
@@ -166,6 +171,8 @@ function App() {
 	const [busy, setBusy] = useState('');
 	const [sheet, setSheet] = useState(null);
 	const [toast, setToast] = useState(null);
+	// Ключ скрытого блока провала, не булев флаг: см. upFailKey ниже.
+	const [failHidden, setFailHidden] = useState('');
 	const tRef = useRef(null);
 	// Джоб из ответа 202 — до того, как о нём узнает опрос. Ref, а не только
 	// состояние: tick создаётся один раз в эффекте с пустыми зависимостями
@@ -720,6 +727,16 @@ function App() {
 	// вышло» — возможно, про разные сети.
 	const upFail = running && running.kind === 'upstream' ? null
 		: status.last_fail || (upFailed && { ssid: upFailed.arg, reason: '' });
+	// Скрытие блока провала — ПОСОБЫТИЙНОЕ, а не «больше не показывать».
+	// Ключ собран из полей самой неудачи: следующая, отличная хоть чем-то,
+	// покажется снова. Иначе один крестик выключил бы доклад навсегда, и
+	// панель молчала бы там, где обязана говорить.
+	//
+	// last_fail живёт в памяти демона и переживает обрыв связи браузера
+	// (ADR-0025) — то есть блок появится и после возврата на страницу. Это
+	// нужное поведение, и крестик его не отменяет: он про «я прочитал», а
+	// не про «этого не было».
+	const upFailKey = upFail ? [upFail.at, upFail.ssid, upFail.reason].join('|') : '';
 
 	return html`
 		<${Top} s=${status} t=${t} lang=${lang} setLang=${setLang} onNikkiOpen=${onNikkiOpen} />
@@ -732,7 +749,8 @@ function App() {
 				sow(r);
 			})} />
 
-		<${Toasts} toast=${toast} onCta=${() => setTimeout(dropToast, 0)} />
+		<${Toasts} toast=${toast} t=${t} onClose=${dropToast}
+			onCta=${() => setTimeout(dropToast, 0)} />
 
 		<div class="wrap">
 			<!-- Причина провала живёт здесь, а не в баннере рядом со своим
@@ -752,12 +770,22 @@ function App() {
 			${failed && failed.error && failed.kind !== 'upstream' && html`
 				<div class="note err full"><p>${failed.error}</p></div>`}
 
+			<!-- Перед SelectionNote: неоднозначный выбор чинится кнопкой в
+			     панели, а отсутствие исполнителя не чинится ничем из того,
+			     что здесь нарисовано. Совет «нажмите» под советом «нажимать
+			     бесполезно» читается как противоречие. -->
+			<${ExecutorsNote} s=${status} t=${t} />
+
 			<${SelectionNote} s=${status} t=${t} />
 
 			${status.mode === 'nikki' && html`
 				<${NikkiCard} data=${nikki} svc=${svc.nikki} t=${t} busy=${busy} locked=${locked}
 					onPick=${(n) => act('proxy:' + n, () => api('/api/nikki/proxy', { method: 'POST', body: JSON.stringify({ name: n }) }), loadNikki)}
-					onTest=${() => act('test', () => api('/api/nikki/test', { method: 'POST' }), loadNikki)} />`}
+					onTest=${() => act('test', async () => {
+						const r = await api('/api/nikki/test', { method: 'POST' }, T_TEST);
+						const note = testNote(r && r.test, t);
+						if (note) flash(note.msg, note.kind);
+					}, loadNikki)} />`}
 
 			${status.mode === 'b4' && html`
 				<${B4Card} data=${sets} svc=${svc.b4} t=${t} busy=${busy} locked=${locked}
@@ -785,8 +813,18 @@ function App() {
 			<!-- Ниже WifiCard, а не выше: причина провала обязана стоять рядом
 			     с тем местом, где нажимали. Позицию первой карточки этот блок
 			     не двигает вовсе — он идёт после неё. -->
-			${upFail && html`
-				<${UpstreamFailNote} fail=${upFail} detail=${upFailed && upFailed.error} t=${t} />`}
+			<!-- Подробность берётся из двух источников по старшинству, и оба
+			     нужны. job.error свежее и живёт, только пока джоб виден в
+			     статусе (пять секунд после завершения). last_fail.detail —
+			     тот же текст, но переживает и обрыв связи браузера, и
+			     возвращение на страницу через минуту; ради этого разрыва слот
+			     и заведён (ADR-0025). Раньше второго источника не было вовсе,
+			     и вернувшийся владелец видел одну переведённую фразу на код —
+			     а у apply_failed за ней шесть разных путей. -->
+			${upFail && upFailKey !== failHidden && html`
+				<${UpstreamFailNote} fail=${upFail}
+					detail=${(upFailed && upFailed.error) || upFail.detail} t=${t}
+					onClose=${() => setFailHidden(upFailKey)} />`}
 
 			<${SubCard} s=${status} logs=${logs} t=${t} lang=${lang} busy=${busy}
 				onUpdate=${() => act('sub', async () => {
@@ -1001,8 +1039,24 @@ function jobText(job, t) {
 // и открывает вкладку, что бы ни думал блокировщик. Адрес несёт секрет,
 // поэтому он живёт только в атрибуте (подпись берётся из словаря) и только
 // до клика или до конца тоста.
-function Toasts({ toast, onCta }) {
-	const body = toast && html`<div class="note ${toast.kind}"><p>${toast.msg}</p>${toast.href
+// CloseX — крестик «скрыть». Один на все уведомления намеренно: два разных
+// крестика на одной странице читались бы как две разные операции.
+//
+// type="button" обязателен. Кнопка без него внутри формы (а лист сети — это
+// форма) отправляет её: скрыть уведомление означало бы сохранить сеть.
+//
+// Крестик — НЕ «прочитано» и не «исправлено»: он убирает сообщение с глаз и
+// ничего не сообщает демону. Состояние провала живёт в status.last_fail и
+// стирается по своим правилам (ADR-0025); панель их не трогает.
+function CloseX({ t, onClose }) {
+	return html`<button type="button" class="x" onClick=${onClose}
+		title=${t('ui.dismiss')} aria-label=${t('ui.dismiss')}>✕</button>`;
+}
+
+function Toasts({ toast, onCta, onClose, t }) {
+	const body = toast && html`<div class="note dismissable ${toast.kind}">
+		<${CloseX} t=${t} onClose=${onClose} />
+		<p>${toast.msg}</p>${toast.href
 		&& html`<a class="cta" href=${toast.href} target="_blank" rel="noreferrer" onClick=${onCta}>${toast.cta}</a>`}</div>`;
 	return html`<div class="wrap toasts" role="status">${body}</div>`;
 }
@@ -1255,13 +1309,44 @@ function SelectionNote({ s, t }) {
 		</div>`;
 }
 
+// Половинчатая установка: демон приехал, скрипты слоя 2 — нет.
+//
+// Единственный блок панели, говорящий не о роутере, а о нас самих, и стоит
+// он ПЕРЕД всеми карточками намеренно: пока список непуст, любая кнопка
+// применения запишет намерение и не применит его. Узнать об этом после
+// нажатия — значит узнать в худший момент: у переключения сети отказ
+// приходит уже после uci commit, конфигурация опубликована и висит
+// неприменённой, а станция не подключена ни к старой сети, ни к новой.
+// Ровно так это и случилось на живом роутере.
+//
+// Крестика нет, в отличие от блока провала переключения. Тот про
+// СОБЫТИЕ — «я прочитал, что попытка не удалась», — и закрывается по
+// событию. Этот про СОСТОЯНИЕ: пока файла нет, факт остаётся верным, и
+// спрятать его значило бы вернуть панель ровно в то положение, из-за
+// которого блок написан.
+//
+// Пути печатаются дословно, каждый своей строкой: владелец унесёт их в ssh,
+// и «не хватает исполнителей» ему там не поможет.
+function ExecutorsNote({ s, t }) {
+	const missing = s.missing_executors;
+	if (!missing || !missing.length) return null;
+	return html`
+		<div class="note err full">
+			<h3>${t('exec.missing.title')}</h3>
+			<p>${t('exec.missing.text')}</p>
+			${missing.map((p) => html`<code key=${p}>${p}</code>`)}
+			<p>${t('exec.missing.fix')}</p>
+		</div>`;
+}
+
 // ─────────── исход переключения внешней сети ───────────
 
 // Закрытый набор причин из контракта (LastFail.reason). Нужен ровно затем,
 // чтобы отличить известную причину от незнакомой: makeT при промахе вернёт
 // сам ключ, и в интерфейсе напечаталось бы «wifi.fail.plasma.title».
-const REASONS = new Set(['apply_failed', 'busy', 'prereq_missing', 'stayed_on_previous',
-	'other_ssid', 'not_associated', 'no_ipv4', 'unverifiable', 'stale_draft']);
+const REASONS = new Set(['apply_failed', 'busy', 'prereq_missing', 'executor_missing',
+	'stayed_on_previous', 'other_ssid', 'not_associated', 'no_ipv4', 'unverifiable',
+	'stale_draft']);
 
 // Провал переключения — один блок, а не два, хотя каналов доклада два.
 //
@@ -1275,10 +1360,11 @@ const REASONS = new Set(['apply_failed', 'busy', 'prereq_missing', 'stayed_on_pr
 //
 // Форма h3+p взята у SelectionNote: пара «короткий заголовок / длинное
 // объяснение» здесь та же, а у верхнего .note заголовка нет вовсе.
-function UpstreamFailNote({ fail, detail, t }) {
+function UpstreamFailNote({ fail, detail, t, onClose }) {
 	const key = REASONS.has(fail.reason) ? fail.reason : 'unknown';
 	return html`
-		<div class="note err full">
+		<div class="note err full dismissable">
+			<${CloseX} t=${t} onClose=${onClose} />
 			<h3>${t('wifi.fail.' + key + '.title', { ssid: fail.ssid })}</h3>
 			<p>${t('wifi.fail.' + key + '.text', { ssid: fail.ssid })}</p>
 			${detail && html`<p class="detail">${detail}</p>`}
@@ -1286,6 +1372,30 @@ function UpstreamFailNote({ fail, detail, t }) {
 }
 
 // ─────────── Nikki ───────────
+
+// testNote — итог замера задержек словами.
+//
+// Демон отвечает 200 даже когда наружу не выбрался ни один узел: движок
+// отработал, узлы опрошены, «все мертвы» — такой же результат, как «все
+// живы» (контракт, POST /api/nikki/test). Рассказать о нём обязана панель,
+// и молчать нельзя: mihomo обновляет задержки сам примерно раз в пять минут,
+// поэтому «нажал, а числа те же» неотличимо от неудачи, пока не сказано вслух.
+//
+// Не ответившие и не замеренные разведены намеренно. Первое — про узел:
+// сервер молчит. Второе — про нас: кончился бюджет демона, и о таком узле
+// не известно ничего, включая то, жив ли он.
+function testNote(sum, t) {
+	if (!sum || typeof sum.total !== 'number') return null;
+	if (sum.total === 0) return { msg: t('srv.test.empty'), kind: 'warn' };
+	if (sum.measured === 0) return { msg: t('srv.test.none', { n: sum.total }), kind: 'err' };
+	if (sum.skipped) {
+		return { msg: t('srv.test.cut', { ok: sum.measured, n: sum.total }), kind: 'warn' };
+	}
+	if (sum.failed) {
+		return { msg: t('srv.test.part', { ok: sum.measured, n: sum.total, bad: sum.failed }), kind: 'warn' };
+	}
+	return { msg: t('srv.test.ok', { n: sum.total }), kind: 'info' };
+}
 
 function NikkiCard({ data, svc, t, busy, locked, onPick, onTest }) {
 	// Заглушка держит и заголовок, и место под нижнюю кнопку: без них

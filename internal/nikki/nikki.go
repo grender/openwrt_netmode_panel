@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
+	"sync"
 	"time"
 )
 
@@ -35,6 +37,14 @@ var ErrNotSelectable = errors.New("nikki: группа не допускает �
 
 // ErrNotFound — группы или узла нет.
 var ErrNotFound = errors.New("nikki: не найдено")
+
+// ErrProbeFailed — узел не ответил на пробу задержки.
+//
+// Отдельно от ErrUnavailable: там не отвечает САМ движок и панели показывать
+// нечего вовсе, здесь движок ответил исправно и сообщил, что конкретный узел
+// мёртв. Смешать их значило бы объявить недоступным Clash API всякий раз,
+// когда в подписке протух один сервер.
+var ErrProbeFailed = errors.New("nikki: узел не ответил на пробу")
 
 // StatusError — движок ответил кодом, который разбирается по смыслу вызова.
 //
@@ -90,6 +100,11 @@ type Client interface {
 	Proxies(ctx context.Context) (map[string]Proxy, error)
 	Select(ctx context.Context, group, member string) error
 	Unfix(ctx context.Context, group string) error
+	// Delay — проба задержки одного узла. В интерфейсе, потому что замер
+	// пачки (ProbeAll) написан против интерфейса: иначе поведение при
+	// частичном отказе — половина узлов мертва, бюджет вышел — проверялось
+	// бы только на живом роутере, то есть никогда.
+	Delay(ctx context.Context, name string) (int, error)
 	// PanelAlive — проба статики дашборда (panel.go). В интерфейсе, а не
 	// только у HTTP: без неё обработчик не смог бы проверить панель на
 	// подменённом клиенте, и единственный путь, отдающий секрет наружу,
@@ -332,6 +347,161 @@ func (c *HTTP) Unfix(ctx context.Context, group string) error {
 			ErrNotSelectable, group, g.Type)
 	}
 	return err
+}
+
+// delayProbeTimeout — сколько mihomo ждёт ответа узла.
+//
+// 1,5 с, а не 3 с из команды разведки: замер идёт по ВСЕМ участникам группы
+// (на живом роутере их 26), и худший случай складывается из мёртвых узлов —
+// каждый занимает ровно timeout целиком. Панель ждёт ответа синхронно, так
+// что цена медленного замера — не «дольше», а «оборвалось таймаутом клиента,
+// и владелец не узнал ничего».
+const delayProbeTimeout = 1500 * time.Millisecond
+
+// delayTestURL — цель пробы, ровно та, которой снимался RQ-06.
+//
+// Адрес запрашивается ЧЕРЕЗ проверяемый узел, поэтому «gstatic заблокирован
+// напрямую» здесь не довод: способность дотянуться до него в обход блокировки
+// и есть то, что мы измеряем.
+const delayTestURL = "https://www.gstatic.com/generate_204"
+
+// Delay замеряет задержку одного узла и попутно обновляет history у mihomo.
+//
+// Форма ответа измерена (RQ-06, живой роутер): РОВНО одно поле {"delay":25}.
+// Несуществующее имя даёт непустое тело {"message":"Resource not found"} и
+// код не 200 — какой именно, разведка не записала, поэтому здесь на код никто
+// не смотрит: любой неуспех означает «про этот узел мы ничего не узнали», и
+// различать причины нам не для чего.
+//
+// Групповой эндпоинт /group/{имя}/delay НЕ ИСПОЛЬЗУЕТСЯ: его форма не
+// снималась. А /proxies/{группа}/delay отдаёт задержку выбранного члена, а не
+// всех, — обновить всех можно только вызовом по каждому имени.
+func (c *HTTP) Delay(ctx context.Context, name string) (int, error) {
+	q := url.Values{
+		"timeout": {strconv.Itoa(int(delayProbeTimeout / time.Millisecond))},
+		"url":     {delayTestURL},
+	}
+	path := "/proxies/" + url.PathEscape(name) + "/delay?" + q.Encode()
+
+	var out struct {
+		Delay int `json:"delay"`
+	}
+	// Свой дедлайн заведомо больше того, что просим у движка: иначе «узел не
+	// ответил» и «мы не дождались самого mihomo» слились бы в одну ошибку,
+	// и первое молча записалось бы во второе.
+	if err := c.do(ctx, http.MethodGet, path, nil, &out, delayProbeTimeout+time.Second); err != nil {
+		return 0, err
+	}
+	if out.Delay <= 0 {
+		// Нуля в успешном ответе на роутере не наблюдалось. Проверка стоит
+		// потому, что ноль в history у mihomo означает несостоявшуюся пробу
+		// (см. lastDelay), и отдать его как «0 мс» — ровно тот дефект,
+		// который там уже чинился: мёртвый узел выглядит самым быстрым.
+		return 0, fmt.Errorf("%w: %q вернул delay=%d", ErrProbeFailed, name, out.Delay)
+	}
+	return out.Delay, nil
+}
+
+const (
+	// probeParallel — сколько узлов проверяется одновременно.
+	//
+	// Каждая проба — настоящий запрос наружу через свой узел, поэтому число
+	// ограничивает не CPU роутера, а желание не устраивать себе всплеск из
+	// 26 туннелей разом.
+	probeParallel = 6
+	// probeBudget — общий потолок замера.
+	//
+	// Он тут не «на всякий случай»: 26 мёртвых узлов по 1,5 с при шестерых
+	// работниках дали бы около 7 с, и это ещё до чтения /proxies. Панель
+	// ждёт синхронно, и обрыв по её таймауту выглядел бы как «кнопка сломана».
+	// Лучше вернуть честное «столько-то не успели».
+	probeBudget = 9 * time.Second
+)
+
+// ProbeSummary — что на самом деле случилось при замере пачки узлов.
+//
+// Тип существует ради Skipped и Failed. Без них ответ «замер прошёл» ничем не
+// отличается от «ни один узел не ответил, и мы промолчали»: числа задержек
+// панель показывает и без всякого замера (mihomo сам обновляет history раз в
+// несколько минут, RQ-06), так что по одному только списку узлов понять,
+// сработала кнопка или нет, нельзя в принципе.
+type ProbeSummary struct {
+	Total     int `json:"total"`
+	Measured  int `json:"measured"`
+	Failed    int `json:"failed"`
+	Skipped   int `json:"skipped"`
+	ElapsedMS int `json:"elapsed_ms"`
+}
+
+// ProbeAll замеряет узлы по именам, не больше probeParallel одновременно.
+//
+// Отказ одного узла не прерывает остальных — в этом весь смысл вызова:
+// подписка на два десятка серверов, часть из которых заведомо мертва, и
+// «первый мёртвый обрывает замер» означало бы, что кнопка бесполезна ровно
+// тогда, когда нужна.
+//
+// Ошибок не возвращает намеренно: неуспех отдельного узла — это результат
+// замера, а не сбой операции. Единственное, что вызывающий обязан проверить,
+// — Measured: ноль при непустом Total значит, что наружу не выбрался никто.
+func ProbeAll(ctx context.Context, c Client, names []string) ProbeSummary {
+	start := time.Now()
+	sum := ProbeSummary{Total: len(names)}
+	if len(names) == 0 {
+		return sum
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, probeBudget)
+	defer cancel()
+
+	workers := probeParallel
+	if workers > len(names) {
+		workers = len(names)
+	}
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	next := 0
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				mu.Lock()
+				if next >= len(names) {
+					mu.Unlock()
+					return
+				}
+				name := names[next]
+				next++
+				mu.Unlock()
+
+				var err error
+				if ctx.Err() == nil {
+					_, err = c.Delay(ctx, name)
+				} else {
+					err = ctx.Err()
+				}
+
+				mu.Lock()
+				switch {
+				case err == nil:
+					sum.Measured++
+				case ctx.Err() != nil:
+					// Бюджет кончился — про узел мы не узнали ничего, и
+					// записать это в «не ответил» значило бы оболгать узел
+					// собственным таймаутом.
+					sum.Skipped++
+				default:
+					sum.Failed++
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	sum.ElapsedMS = int(time.Since(start) / time.Millisecond)
+	return sum
 }
 
 // Groups возвращает только группы, в стабильном порядке имён.

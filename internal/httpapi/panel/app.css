@@ -225,6 +225,27 @@ button:disabled { cursor: not-allowed; }
 .wrap.toasts:empty { padding: 0; }
 
 .note { border-radius: var(--r-lg); padding: 14px 16px; border: 1px solid; }
+
+/* Крестик кладётся ПОВЕРХ уведомления, а не в поток. Встав в поток, он
+   добавил бы уведомлению строку, а высота этих блоков входит в критерии
+   замера геометрии (C3: subTop в провале строго больше покоя) — числа в
+   web/README.md разъехались бы от косметической правки.
+   Правый отступ расширен только у .dismissable: остальные .note (подсказка
+   о выборе, ошибка режима) крестика не несут, и трогать их padding значило
+   бы двигать то, что мерено. */
+.note.dismissable { position: relative; padding-right: 44px; }
+.note .x {
+	position: absolute; top: 8px; right: 8px;
+	width: 28px; height: 28px; line-height: 1;
+	display: grid; place-items: center;
+	background: none; border: 0; border-radius: var(--r-sm);
+	color: inherit; opacity: .55; font-size: 15px; cursor: pointer;
+}
+.note .x:hover, .note .x:focus-visible { opacity: 1; background: rgba(255,255,255,.07); }
+/* 28px — меньше рекомендованных 44, поэтому зона нажатия расширена наружу
+   псевдоэлементом: на телефоне промах по крестику означает, что владелец
+   тычет в сообщение об ошибке и ничего не происходит. */
+.note .x::after { content: ''; position: absolute; inset: -8px; }
 .note h3 { margin: 0 0 6px; font: 600 15px/1.35 var(--sans); }
 .note p { margin: 0; font-size: 14px; line-height: 1.45; }
 /* До этой правки в .note был ровно один абзац, и обнулённого margin хватало.

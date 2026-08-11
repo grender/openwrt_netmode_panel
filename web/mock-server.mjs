@@ -38,6 +38,11 @@ const SCENARIOS = {
 	'nikki-unconfigured': 'status-single.json',
 	'nikki-nopanel': 'status-single.json',
 	'nikki-boom': 'status-single.json',
+	// Итог замера задержек (POST /api/nikki/test). Обычный ответ виден на
+	// любом сценарии с режимом nikki; эти два показывают то, чего кликом не
+	// добиться: наружу не выбрался никто и замер не успел обойти всех.
+	'nikki-test-dead': 'status-single.json',
+	'nikki-test-slow': 'status-single.json',
 	// Адрес роутера не выводится из Host. Статус обычный и движок отвечает —
 	// смотреть надо именно на шапку: кнопки нет, хотя движок жив.
 	'host-unknown': 'status-single.json',
@@ -75,6 +80,25 @@ const SCENARIOS = {
 	// не «повторите», а ssh и `uci revert wireless`: смотреть надо именно на
 	// текст карточки, кнопка здесь не поможет.
 	'upstream-stale-draft': 'status-single.json',
+	// Половинчатая установка: демон приехал, /usr/local/bin/netmode-wifi нет.
+	// Второй исход, где «повторите» — вредный совет: повтор упрётся в то же
+	// отсутствие файла. Смотреть надо на текст карточки и на detail под ним —
+	// именно detail и называет путь, который владелец унесёт в ssh.
+	//
+	// Баннер про отсутствующие исполнители тут НЕ показывается: он живёт в
+	// missing_executors статуса, а сценарий выставляет только исход джоба.
+	// Пара «баннер до нажатия» проверяется отдельным сценарием ниже.
+	'upstream-no-executor': 'status-single.json',
+	// Та же поломка, увиденная ДО нажатия: баннер про отсутствующие
+	// исполнители. Отдельный сценарий, а не поле в предыдущем, потому что это
+	// два разных доклада об одном факте, и проверять их надо порознь — на
+	// роутере владелец может увидеть только один из двух (баннер, если
+	// смотрит; причину джоба, если нажал не глядя).
+	//
+	// В фикстуре отсутствуют ОБА скрипта: список рисуется построчно, и на
+	// одном элементе не видно ни вёрстки нескольких строк, ни того, что
+	// порядок фиксирован.
+	'no-executors': 'status-no-executors.json',
 	// Исходы переключения, достижимые СРАЗУ ПРИ ЗАГРУЗКЕ — сменой сценария,
 	// а не нажатием кнопки.
 	//
@@ -520,16 +544,17 @@ const startJob = (kind, arg, label, sec, finish) => {
 // успех. Строки те же, что в закрытом наборе LastFail.reason
 // (docs/api/openapi.yaml) и в internal/httpapi/upstreamhandler.go.
 //
-// Мок вправе знать НЕ ВСЕ девять причин — он сценарный, а не справочник.
-// Но выдумывать десятую нельзя: код, которого нет в allReasons, с роутера
-// не придёт никогда, и панель отрисовала бы на моке то, чего не бывает.
-// Подмножество стережёт scripts/check-fail-reasons.sh.
+// Мок вправе знать НЕ ВСЕ десять причин — он сценарный, а не справочник.
+// Но выдумывать одиннадцатую нельзя: код, которого нет в allReasons, с
+// роутера не придёт никогда, и панель отрисовала бы на моке то, чего не
+// бывает. Подмножество стережёт scripts/check-fail-reasons.sh.
 const UPSTREAM_REASON = {
 	'upstream-fail-stale': 'stayed_on_previous',
 	'upstream-fail-nokey': 'not_associated',
 	'upstream-no-ipv4': 'no_ipv4',
 	'upstream-busy': 'busy',
 	'upstream-stale-draft': 'stale_draft',
+	'upstream-no-executor': 'executor_missing',
 };
 
 // Текст job.error — дословно из internal/httpapi/upstreamhandler.go
@@ -549,6 +574,14 @@ const upstreamFailText = (reason, ssid, prevSsid) => {
 		// заворачивает ErrUpstreamBusy и stderr скрипта одним «%w: %w».
 		return 'netmode-wifi: занято: не удалось взять блокировку — ' +
 			'радио настраивает другой процесс';
+	}
+	if (reason === 'executor_missing') {
+		// Форма из internal/executor: ErrNoExecutor и под ним *fs.PathError,
+		// который отдаёт os/exec, когда файла нет. Панель показывает эту
+		// строку как detail, и она обязана выглядеть ровно так же, как в
+		// logread роутера, — иначе владелец не опознает её при сверке.
+		return 'netmode-wifi radio0: исполнителя нет на роутере: ' +
+			'fork/exec /usr/local/bin/netmode-wifi: no such file or directory';
 	}
 	if (reason === 'stale_draft') {
 		// Две новости одной строкой, как в switchUpstream, шаг 5:
@@ -666,9 +699,16 @@ async function handleAPI(req, res, u) {
 				// конфигурация записана, а станция не подтвердила её делом.
 				// Оба канала доклада — job.error для того, кто смотрит
 				// сейчас, last_fail для того, кто вернётся позже.
+				//
+				// Текст в ОБОИХ каналах один и тот же, как в switchFailed:
+				// он собирается один раз и уходит и в job.error, и в слот.
+				// Разные строки здесь означали бы, что панель показывает
+				// разное до и после того, как джоб уйдёт из статуса, — а
+				// проверять на моке надо ровно переход между ними.
+				const detail = upstreamFailText(reason, ssid, prevSsid);
 				state.job.state = 'failed';
-				state.job.error = upstreamFailText(reason, ssid, prevSsid);
-				state.overlay.last_fail = { ssid, reason, at: nowISO() };
+				state.job.error = detail;
+				state.overlay.last_fail = { ssid, reason, detail, at: nowISO() };
 			} else {
 				state.job.state = 'done';
 				state.overlay.configured_ssid = ssid;
@@ -787,6 +827,12 @@ async function handleAPI(req, res, u) {
 		}
 		const d = await readJSON('nikki-proxies.json');
 		if (state.overlay.nikkiSelected) d.selected = state.overlay.nikkiSelected;
+		// Замер обязан пережить перечитывание списка: панель после нажатия
+		// зовёт GET, и мок, забывший измеренное, схлопнул бы числа обратно
+		// к фикстуре. Тогда «замерили» и «сходили впустую» снова выглядят
+		// одинаково — ровно то, ради чего и заводился итог замера.
+		const seen = state.overlay.nikkiDelays;
+		if (seen) d.members = d.members.map((m) => (m.name in seen ? { ...m, delay_ms: seen[m.name] } : m));
 		return send(res, 200, d);
 	}
 	if (p === '/api/nikki/proxy' && method === 'POST') {
@@ -802,7 +848,43 @@ async function handleAPI(req, res, u) {
 			return fail(res, 503, 'nikki_unavailable', 'Nikki не отвечает');
 		}
 		await new Promise((r) => setTimeout(r, 900));
-		return send(res, 200, { ok: true });
+		// Тело — как у GET /api/nikki/proxies плюс test. Прежде здесь стоял
+		// {ok:true}, и панельная половина замера проверялась ровно ничем:
+		// ответ, не похожий на список, панель молча проглатывала.
+		const d = await readJSON('nikki-proxies.json');
+		if (state.overlay.nikkiSelected) d.selected = state.overlay.nikkiSelected;
+		// Живые узлы получают новые числа, мёртвые остаются с null — иначе
+		// «замерили» и «сходили впустую» выглядят одинаково.
+		//
+		// Сценарий, где наружу не выбрался никто, — единственный способ
+		// увидеть тост про полный провал, не выдёргивая кабель. Где кончился
+		// бюджет — способ увидеть частичный итог; там последние два узла
+		// остаются НЕ ЗАМЕРЕННЫМИ, а не проваленными, и числа у них прежние.
+		const dead = state.scenario === 'nikki-test-dead';
+		const budget = state.scenario === 'nikki-test-slow' ? 2 : 0;
+		const cut = d.members.length - budget;
+		let measured = 0;
+		let failed = 0;
+		d.members = d.members.map((m, i) => {
+			if (i >= cut) return m; // до этого узла замер не дошёл
+			if (dead || m.delay_ms == null) { failed++; return { ...m, delay_ms: null }; }
+			measured++;
+			return { ...m, delay_ms: 20 + ((m.delay_ms * 7) % 180) };
+		});
+		// Измеренное запоминается: панель сразу после нажатия перечитывает
+		// список, и мок, забывший результат, схлопнул бы числа обратно к
+		// фикстуре — «замерили» опять стало бы неотличимо от «сходили зря».
+		state.overlay.nikkiDelays = Object.fromEntries(d.members.map((m) => [m.name, m.delay_ms]));
+		return send(res, 200, {
+			...d,
+			test: {
+				total: d.members.length,
+				measured,
+				failed,
+				skipped: d.members.length - measured - failed,
+				elapsed_ms: 900,
+			},
+		});
 	}
 
 	// --- b4 ---

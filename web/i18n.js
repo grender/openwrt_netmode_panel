@@ -95,6 +95,15 @@ export const DICT = {
 		'sel.ambiguous.switch': 'Кнопка «Подключить» у сетей ниже работает и сейчас: выбрать одну из них — это и есть способ выйти из этой ситуации, поэтому она не заперта вместе с остальными. Изменить пароль или удалить сеть нельзя, пока включено больше одной, — правку в этом состоянии невозможно доказать безвредной.',
 		'sel.ambiguous.cmd': 'ssh root@{host} uci show wireless',
 
+		// Половинчатая установка пакета. Формулировка обязана сказать три
+		// вещи в этом порядке: что не работает, чего именно нет, что делать.
+		// Прежде чем блок появился, владелец узнавал всё это по факту —
+		// нажатием, после которого конфигурация оказывалась опубликованной и
+		// неприменённой.
+		'exec.missing.title': 'На роутере не хватает скриптов применения',
+		'exec.missing.text': 'Демон установлен не полностью: на роутере нет этих файлов. Смена режима и переключение внешней сети запишут выбор в конфигурацию, но применить его будет нечем — роутер останется в прежнем состоянии, а записанное повиснет неприменённым.',
+		'exec.missing.fix': 'Переустановите пакет целиком: ./scripts/deploy.sh --install. Повторные нажатия до этого не помогут.',
+
 		'srv.title': 'Сервер',
 		'srv.auto': 'Выбирает автоматика',
 		'srv.auto.back': 'Вернуть автовыбор',
@@ -105,6 +114,11 @@ export const DICT = {
 		'srv.pinned.note': 'Узел закреплён. Автоподбор не работает, пока закрепление не снято.',
 		'srv.measure': 'Замерить все',
 		'srv.measuring': 'Замеряю…',
+		'srv.test.ok': 'Замерены все {n} узлов',
+		'srv.test.part': 'Замерено {ok} из {n}: не ответили {bad}',
+		'srv.test.cut': 'Замерено {ok} из {n} — на остальные не хватило времени, о них ничего не известно',
+		'srv.test.none': 'Ни один из {n} узлов не ответил. Похоже, наружу не выходит ничего.',
+		'srv.test.empty': 'Замерять нечего: в группе нет узлов',
 		'srv.down': 'Clash API не отвечает. Узлы недоступны, режим переключается по-прежнему.',
 		// Подпись под скелетоном. Скелетон без слов честен, но молчалив:
 		// на третьей секунде владелец обязан понимать, что идёт запуск, а не
@@ -196,16 +210,38 @@ export const DICT = {
 		'wifi.hidden.cant': 'К скрытой сети нельзя подключиться из списка: имя неизвестно.',
 
 		// Исход переключения: заголовок и объяснение на каждую машинную причину.
-		// Одного текста на восемь причин не хватает — «не вышло» означает разное:
-		// заведомо не применилось (apply_failed, busy, prereq_missing),
-		// применилось не туда (stayed_on_previous, other_ssid), результат
-		// неизвестен (unverifiable), а no_ipv4 — не провал ассоциации вовсе.
+		// Одного текста на десять причин не хватает — «не вышло» означает разное:
+		// заведомо не применилось (apply_failed, busy, prereq_missing,
+		// executor_missing), применилось не туда (stayed_on_previous,
+		// other_ssid), результат неизвестен (unverifiable), а no_ipv4 — не
+		// провал ассоциации вовсе.
+		//
+		// Текст apply_failed называет КЛАСС, а не механизм, и это исправление
+		// по живому отказу. Прежняя формулировка обещала «оба способа
+		// применения отказали», хотя код выставляется шестью разными путями:
+		// неудачной записью, разошедшимся отпечатком, неудавшимся коммитом,
+		// отказом глаголов и неизвестным кодом возврата. Владелец, у которого
+		// на роутере не было самого скрипта применения, читал уверенный
+		// диагноз про механизм, который ни разу не запускался. Конкретика
+		// теперь приезжает отдельным полем detail.
 		'wifi.fail.apply_failed.title': 'Применить не удалось',
-		'wifi.fail.apply_failed.text': 'Роутер не смог включить сеть {ssid}: оба способа применения отказали. Конфигурация записана — попробуйте ещё раз или проверьте состояние по ssh.',
+		'wifi.fail.apply_failed.text': 'Роутер не применил переключение на {ssid}. Конфигурация записана — повторите или проверьте состояние по ssh.',
 		'wifi.fail.busy.title': 'Радио занято другим процессом',
 		'wifi.fail.busy.text': 'Кто-то ещё сейчас настраивает радио — например, из LuCI или по ssh. Подождите и повторите переключение на {ssid}.',
 		'wifi.fail.prereq_missing.title': 'На роутере не хватает нужных программ',
 		'wifi.fail.prereq_missing.text': 'Намерение записано, но переключение на {ssid} не выполнено: на роутере не нашлось flock или ubus. Это неполадка прошивки, не пароля — обратитесь по ssh.',
+		// Отдельно от prereq_missing, и разница не в оттенке: там нет системной
+		// утилиты (чинит прошивка), здесь нет НАШЕГО скрипта — половинчатая
+		// установка пакета. Совет поэтому разный, и «повторите» не годится ни
+		// в каком виде: повтор упрётся в то же отсутствие файла.
+		//
+		// Про «уже записано» сказано прямым текстом намеренно. Конфигурация
+		// опубликована и висит неприменённой: станция не подключена ни к
+		// старой сети, ни к новой, и владелец, не знающий этого, идёт искать
+		// поломку в эфире. Команда для ssh названа целиком — «передёрните
+		// радио» ему там не поможет.
+		'wifi.fail.executor_missing.title': 'На роутере не установлен netmode-wifi',
+		'wifi.fail.executor_missing.text': 'Переключение на {ssid} записано в конфигурацию, но применить его нечем: скрипта применения нет на роутере. Установите пакет заново (deploy.sh --install) и повторите. Уже записанное можно дожать по ssh: wifi up <радио>.',
 		'wifi.fail.stayed_on_previous.title': 'Осталась на прежней сети',
 		'wifi.fail.stayed_on_previous.text': 'Роутер принял команду, но станция не перешла на {ssid} и осталась на прежней сети. Конфигурация уже записана — повторное нажатие «Подключить» имеет смысл.',
 		'wifi.fail.other_ssid.title': 'Подключилась к другой сети',
@@ -275,6 +311,10 @@ export const DICT = {
 		// а адрес с секретом в подпись не выносится намеренно.
 		'links.blocked.cta': 'Открыть панель Nikki',
 		'links.opening': 'Открываю…',
+
+		// Крестик убирает сообщение с глаз и ничего не сообщает демону:
+		// «прочитал», а не «исправлено».
+		'ui.dismiss': 'Скрыть',
 
 		'ap.broadcasts': 'вещает {ssid}',
 		'ap.clients': '{n} устройств',
@@ -357,6 +397,10 @@ export const DICT = {
 		'sel.ambiguous.switch': 'The “Connect” button on the networks below still works right now: picking one of them is exactly how you get out of this situation, which is why it is not locked along with the rest. Changing a password or deleting a network is not possible while more than one is enabled — an edit cannot be shown safe in that state.',
 		'sel.ambiguous.cmd': 'ssh root@{host} uci show wireless',
 
+		'exec.missing.title': 'The router is missing the apply scripts',
+		'exec.missing.text': 'The daemon is only partly installed: these files are not on the router. Changing the mode or switching the upstream network will write the choice into the configuration, but there will be nothing to apply it with — the router stays as it is, and what was written hangs unapplied.',
+		'exec.missing.fix': 'Reinstall the whole package: ./scripts/deploy.sh --install. Pressing again before that will not help.',
+
 		'srv.title': 'Server',
 		'srv.auto': 'Chosen automatically',
 		'srv.auto.back': 'Back to auto',
@@ -367,6 +411,11 @@ export const DICT = {
 		'srv.pinned.note': 'A node is pinned. Automatic picking stays off until you unpin it.',
 		'srv.measure': 'Measure all',
 		'srv.measuring': 'Measuring…',
+		'srv.test.ok': 'All {n} nodes measured',
+		'srv.test.part': 'Measured {ok} of {n}: {bad} did not answer',
+		'srv.test.cut': 'Measured {ok} of {n} — no time left for the rest, nothing is known about them',
+		'srv.test.none': 'None of the {n} nodes answered. Looks like nothing gets out at all.',
+		'srv.test.empty': 'Nothing to measure: the group has no nodes',
 		'srv.down': 'Clash API does not respond. Nodes are unavailable; mode switching still works.',
 		'srv.starting': 'Nikki is starting — nodes appear as soon as the Clash API answers.',
 		'srv.empty': 'No nodes yet — the subscription has never been updated.',
@@ -425,11 +474,13 @@ export const DICT = {
 		'wifi.hidden.cant': 'A hidden network cannot be joined from the list: its name is unknown.',
 
 		'wifi.fail.apply_failed.title': 'Could not apply',
-		'wifi.fail.apply_failed.text': 'The router could not switch to {ssid}: both apply methods failed. The configuration is saved — try again, or check over ssh.',
+		'wifi.fail.apply_failed.text': 'The router did not apply the switch to {ssid}. The configuration is saved — try again, or check over ssh.',
 		'wifi.fail.busy.title': 'Radio busy with another process',
 		'wifi.fail.busy.text': 'Something else is configuring the radio right now — from LuCI or over ssh, for example. Wait and try switching to {ssid} again.',
 		'wifi.fail.prereq_missing.title': 'The router is missing required tools',
 		'wifi.fail.prereq_missing.text': 'The intent is saved, but the switch to {ssid} did not run: the router is missing flock or ubus. This is a firmware problem, not the password — check over ssh.',
+		'wifi.fail.executor_missing.title': 'netmode-wifi is not installed on the router',
+		'wifi.fail.executor_missing.text': 'The switch to {ssid} is written to the configuration, but there is nothing to apply it with: the apply script is missing from the router. Reinstall the package (deploy.sh --install) and try again. What is already written can be forced over ssh: wifi up <radio>.',
 		'wifi.fail.stayed_on_previous.title': 'Stayed on the previous network',
 		'wifi.fail.stayed_on_previous.text': 'The router accepted the command, but the station did not move to {ssid} and stayed on the previous network. The configuration is already saved — pressing Connect again makes sense.',
 		'wifi.fail.other_ssid.title': 'Connected to a different network',
@@ -464,6 +515,8 @@ export const DICT = {
 		'links.blocked': 'The browser refused to open a new tab — pop-ups look blocked.',
 		'links.blocked.cta': 'Open the Nikki panel',
 		'links.opening': 'Opening…',
+
+		'ui.dismiss': 'Dismiss',
 
 		'ap.broadcasts': 'broadcasting {ssid}',
 		'ap.clients': '{n} devices',

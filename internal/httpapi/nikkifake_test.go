@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"sync"
 
 	"netmoded/internal/nikki"
 )
@@ -9,11 +10,19 @@ import (
 // fakeNikkiClient повторяет раскладку с живого роутера: PROXY типа
 // URLTest, то есть ручной выбор невозможен.
 type fakeNikkiClient struct {
+	// mu защищает all и delayed: ProbeAll зовёт Delay из нескольких
+	// горутин сразу, и без замка тест ловил бы не поведение обработчика,
+	// а гонку в собственной подделке (go test -race).
+	mu  sync.Mutex
 	all map[string]nikki.Proxy
 	err error
 	// panelErr — чем отвечает проба статики дашборда. nil означает «/ui/
 	// отдаёт 200», как на живом роутере (raw/73-nikki-ui-probe.txt).
 	panelErr error
+	// delayed — имена, по которым прошла проба, в порядке вызова. Нужен,
+	// чтобы проверить, КОГО именно опрашивали: замер разделителей подписки
+	// или самой группы иначе неотличим от правильного.
+	delayed []string
 }
 
 func newFakeNikkiClient() *fakeNikkiClient {
@@ -71,6 +80,31 @@ func (f *fakeNikkiClient) Select(_ context.Context, group, member string) error 
 
 // PanelAlive повторяет пробу /ui/: по умолчанию панель на месте.
 func (f *fakeNikkiClient) PanelAlive(context.Context) error { return f.panelErr }
+
+// Delay повторяет пробу задержки: живой узел отвечает, мёртвый — нет.
+//
+// Успех записывается в DelayMS, потому что настоящий замер обновляет history
+// у mihomo, и следующее чтение /proxies отдаёт уже новое число. Без этого
+// тест не отличил бы «замерили» от «сходили и выбросили».
+func (f *fakeNikkiClient) Delay(_ context.Context, name string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return 0, f.err
+	}
+	f.delayed = append(f.delayed, name)
+	p, ok := f.all[name]
+	if !ok {
+		return 0, nikki.ErrNotFound
+	}
+	if !p.Alive {
+		return 0, nikki.ErrProbeFailed
+	}
+	v := 11
+	p.DelayMS = &v
+	f.all[name] = p
+	return v, nil
+}
 
 func (f *fakeNikkiClient) Unfix(_ context.Context, group string) error {
 	if f.err != nil {

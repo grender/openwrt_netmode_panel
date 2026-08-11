@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -645,6 +646,64 @@ func TestSwitchApplyExitCodesMapToReasons(t *testing.T) {
 	}
 }
 
+// Отсутствующий netmode-wifi — СВОЯ причина, а не apply_failed.
+//
+// Отказ воспроизведён на живом роутере: демон фазы 2 приехал без скрипта
+// применения (deploy.sh льёт его только под --install). Отсутствие файла
+// проваливалось в default ветку applyReason, и владелец читал в панели «оба
+// способа применения отказали» — про механизм, который ни разу не
+// запускался. Повторное нажатие, к которому звал этот текст, упиралось в то
+// же отсутствие файла.
+//
+// Проверяется здесь и вторая половина новости, ради которой причина заведена
+// отдельно: коммит УЖЕ прошёл. Конфигурация опубликована и висит
+// неприменённой — станция не на старой сети и не на новой, и владелец,
+// которому об этом не сказали, идёт искать поломку в эфире.
+func TestSwitchMissingExecutorIsItsOwnReason(t *testing.T) {
+	fastUpstream(t)
+	s, f := newServer(t)
+	seesSSID(f, ssidSaved)
+	f.MissingBins = []string{executor.WifiBinPath}
+
+	j := runSwitch(t, s, secSaved)
+	wantFailure(t, s, j, reasonExecutorMissing)
+
+	if callIndex(f.Calls, "commit wireless") < 0 {
+		t.Errorf("коммита не было, значит проверяется не путь применения: %v", f.Calls)
+	}
+	// Путь доезжает до владельца: с ним он идёт в ssh, а «исполнителя нет»
+	// без имени файла ему там не поможет.
+	if j.Error == nil || !strings.Contains(*j.Error, executor.WifiBinPath) {
+		t.Errorf("текст не называет отсутствующий скрипт: %s", jobErr(j))
+	}
+}
+
+// Соседние причины не имеют права подобрать этот исход: у каждой свой совет
+// владельцу, и промах уводит его чинить не то.
+func TestMissingExecutorIsNotConfusedWithNeighbours(t *testing.T) {
+	for _, err := range []error{
+		fmt.Errorf("%w: fork/exec: no such file", executor.ErrNoExecutor),
+	} {
+		if got := applyReason(err); got != reasonExecutorMissing {
+			t.Errorf("applyReason(%v) = %q, ожидалось %q", err, got, reasonExecutorMissing)
+		}
+	}
+	// А занятость и нехватка предусловия остаются собой: скрипт запустился и
+	// доложил о себе сам.
+	for _, c := range []struct {
+		err  error
+		want FailReason
+	}{
+		{executor.ErrUpstreamBusy, reasonBusy},
+		{executor.ErrUpstreamPrereq, reasonPrereqMissing},
+		{executor.ErrUpstreamApply, reasonApplyFailed},
+	} {
+		if got := applyReason(c.err); got != c.want {
+			t.Errorf("applyReason(%v) = %q, ожидалось %q", c.err, got, c.want)
+		}
+	}
+}
+
 // ─────────── что переключение не трогает ───────────
 
 func TestSwitchNeverTouchesHomeAPOrMode(t *testing.T) {
@@ -712,6 +771,54 @@ wireless.up_nokey.disabled='1'
 			t.Errorf("пароль в job.error: %s", *j.Error)
 		}
 	})
+
+	// Слот пережил джоб на минуту и уехал в /api/status — то есть стал
+	// третьей дорогой, по которой текст ошибки покидает демон. Проверять её
+	// отдельно обязательно: job.error к тому времени уже стёрт, и первые две
+	// проверки эту строку не видят.
+	t.Run("в last_fail.detail", func(t *testing.T) {
+		s, f := newServer(t)
+		seesSSID(f, ssidActive)
+		f.Errors["set wireless."+secSaved+".disabled=0"] = errors.New("uci занят")
+
+		runSwitch(t, s, secSaved)
+		lf := s.fails.Get()
+		if lf == nil {
+			t.Fatal("слот неудачи пуст")
+		}
+		if lf.Detail == "" {
+			t.Fatal("подробность потеряна на границе слота — владелец опять пойдёт в ssh")
+		}
+		if strings.Contains(lf.Detail, fixtureKeys) {
+			t.Errorf("пароль в last_fail.detail: %s", lf.Detail)
+		}
+	})
+}
+
+// Подробность доезжает до владельца ТЕМ ЖЕ текстом, что и в job.error.
+//
+// Два канала одной новости обязаны говорить одно и то же: панель показывает
+// job.error, пока джоб виден в статусе (пять секунд), и last_fail.detail
+// после. Разойдись они — владелец решит, что случились две разные вещи.
+func TestLastFailDetailMatchesJobError(t *testing.T) {
+	fastUpstream(t)
+	s, f := newServer(t)
+	seesSSID(f, ssidActive)
+	f.MissingBins = []string{executor.WifiBinPath}
+
+	j := runSwitch(t, s, secSaved)
+	lf := s.fails.Get()
+	if lf == nil || j.Error == nil {
+		t.Fatalf("нет одного из двух докладов: слот %+v, джоб %+v", lf, j)
+	}
+	if lf.Detail != *j.Error {
+		t.Errorf("каналы разошлись:\n  job.error = %s\n  detail    = %s", *j.Error, lf.Detail)
+	}
+	// И то, ради чего подробность заведена: она называет механизм, которого
+	// в переведённой фразе на код нет.
+	if !strings.Contains(lf.Detail, executor.WifiBinPath) {
+		t.Errorf("подробность не называет отсутствующий скрипт: %s", lf.Detail)
+	}
 }
 
 // ─────────── last_fail ───────────
@@ -749,7 +856,7 @@ func TestLastFailIsNotDelayedByStatusCache(t *testing.T) {
 	if lf := lastFail(t, s); lf != nil {
 		t.Fatalf("на старте last_fail не пуст: %+v", lf)
 	}
-	s.fails.Set(ssidSaved, reasonNoIPv4, time.Now())
+	s.fails.Set(ssidSaved, reasonNoIPv4, "подробность из журнала", time.Now())
 
 	lf := lastFail(t, s)
 	if lf == nil || lf.Reason != reasonNoIPv4 {
@@ -1113,7 +1220,7 @@ func TestSwitchClearsPreviousFailBeforeItStarts(t *testing.T) {
 	slowUpstream(t, time.Second)
 	s, f := newServer(t)
 	seesSSID(f, ssidActive) // джоб в итоге упадёт, но не скоро
-	s.fails.Set("ПрежняяСеть", reasonNoIPv4, time.Now())
+	s.fails.Set("ПрежняяСеть", reasonNoIPv4, "", time.Now())
 
 	rec := switchTo(t, s, secSaved)
 	if rec.Code != http.StatusAccepted {
@@ -1172,7 +1279,7 @@ func TestSwitchPanicReachesOwnerAsReason(t *testing.T) {
 func TestFailStoreWithoutSlotIsSafe(t *testing.T) {
 	var fs *failStore
 	fs.Clear()
-	fs.Set(ssidSaved, reasonNoIPv4, time.Now())
+	fs.Set(ssidSaved, reasonNoIPv4, "подробность", time.Now())
 	if got := fs.Get(); got != nil {
 		t.Errorf("несуществующий слот что-то вернул: %+v", got)
 	}

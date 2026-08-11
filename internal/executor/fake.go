@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,6 +75,22 @@ type Fake struct {
 	// для этого нет намеренно — иначе разбор «кода нет» жил бы у фейка своей
 	// жизнью, а он обязан идти той же воронкой upstreamErrorForCode.
 	UpstreamExitCode int
+
+	// MissingBins — пути скриптов слоя 2, которых на «роутере» нет
+	// (ApplyBinPath, WifiBinPath). Изображает половинчатую установку: демон
+	// приехал, скрипт применения — нет.
+	//
+	// Отдельно от ApplyExitCodes и UpstreamExitCode, и это не третий способ
+	// сказать «отказ». Кода возврата у незапустившегося процесса не
+	// существует вовсе, и любое число здесь было бы выдумкой: ноль означал
+	// бы успех, четвёрка — «глаголы отказали», то есть ровно ту ложь, ради
+	// снятия которой заведён ErrNoExecutor.
+	//
+	// Ошибка при этом собирается НЕ вручную: фейк отдаёт тот же
+	// *fs.PathError, что и os/exec на роутере, и пропускает его через ту же
+	// classifyByExitCode. Готовая errors.New проверяла бы разбор фейка
+	// против себя самого.
+	MissingBins []string
 
 	// Panics — вызовы, на которых фейк ПАНИКУЕТ (ключ как в Calls/reads,
 	// значение — текст паники).
@@ -527,6 +544,9 @@ func (f *Fake) ApplyMode(ctx context.Context, mode string) error {
 	if err := f.record("apply-mode " + mode); err != nil {
 		return err
 	}
+	if err := f.missingBinError(ApplyBinPath, mode); err != nil {
+		return classifyApplyError(err)
+	}
 	f.mu.Lock()
 	code := f.ApplyExitCodes[mode]
 	f.mu.Unlock()
@@ -553,6 +573,9 @@ func (f *Fake) ApplyUpstream(ctx context.Context, t UpstreamTarget) error {
 	// тест обязан видеть попытку, а не только её результат.
 	if err := f.record("apply-upstream " + t.Radio); err != nil {
 		return err
+	}
+	if err := f.missingBinError(WifiBinPath, t.Radio); err != nil {
+		return classifyUpstreamError(err)
 	}
 	f.mu.Lock()
 	code := f.UpstreamExitCode
@@ -582,6 +605,48 @@ func (f *Fake) UpdateSubscription(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	return f.fixture("subscription-output"), nil
+}
+
+// MissingExecutors — те же пути, что перечислил тест, но в каноническом
+// порядке.
+//
+// Порядок задаётся здесь, а не полем MissingBins: тест пишет пути так, как
+// ему удобно, а вызывающий сравнивает срез целиком. Отдай мы поле как есть,
+// перестановка двух строк в тесте меняла бы результат, ничего не меняя по
+// смыслу.
+func (f *Fake) MissingExecutors() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, path := range []string{ApplyBinPath, WifiBinPath} {
+		for _, missing := range f.MissingBins {
+			if missing == path {
+				out = append(out, path)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// missingBinError собирает ту же ошибку, которую отдаст os/exec на роутере,
+// когда скрипта нет.
+//
+// Форма важна до последнего поля: вызывающий узнаёт её через
+// errors.Is(err, fs.ErrNotExist) в classifyByExitCode, а не по тексту.
+// Собери мы здесь errors.New с похожей фразой — фейк проходил бы мимо
+// настоящей воронки, и тест доказывал бы разбор, которого на роутере нет.
+func (f *Fake) missingBinError(path, arg string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, missing := range f.MissingBins {
+		if missing != path {
+			continue
+		}
+		return fmt.Errorf("%s %s: %w", filepath.Base(path), arg,
+			&fs.PathError{Op: "fork/exec", Path: path, Err: fs.ErrNotExist})
+	}
+	return nil
 }
 
 // CallsContaining — помощник для тестов: вызовы, содержащие подстроку.

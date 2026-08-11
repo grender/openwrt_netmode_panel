@@ -138,7 +138,37 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 	// ниже — он идёт боевым путём NewServer, а не через подмену.
 	s.status.nikki = s.nikki
 	s.routes()
+	warnMissingExecutors(ex, logf)
 	return s, nil
+}
+
+// warnMissingExecutors кричит в журнал, если применять нечем.
+//
+// Старт при этом НЕ отказывает, и это решение, а не мягкость. Демон без
+// netmode-wifi всё ещё показывает статус, журнал, состояние движков и
+// ссылку на LuCI; мёртвый демон не показывает ничего, а владелец без панели
+// остаётся с одним ssh. Отказ был бы уместен, если бы без скрипта не
+// работало ничего, — но не работает одна операция из четырёх.
+//
+// Молчать при этом нельзя. Ровно так и вышло на живом роутере: демон фазы 2
+// приехал без /usr/local/bin/netmode-wifi (deploy.sh льёт его только под
+// --install), панель отдавалась с рабочей на вид кнопкой, и владелец узнал
+// правду после uci commit — когда намерение уже опубликовано и висит
+// неприменённым. Прецедент довода лежит в самом deploy.sh, в проверке
+// flock: «узнать об этом при первом нажатии — значит узнать в худший
+// момент».
+//
+// Второй адресат того же факта — /api/status (поле missing_executors) и
+// баннер панели. Журнал нужен и при этом: без панели, по ssh, logread —
+// единственная дорога.
+func warnMissingExecutors(ex executor.Executor, logf func(string, ...any)) {
+	missing := ex.MissingExecutors()
+	if len(missing) == 0 {
+		return
+	}
+	logf("ВНИМАНИЕ: на роутере нет скриптов применения (%s) — "+
+		"смена режима и смена внешней сети запишут намерение, но применить его будет нечем; "+
+		"переустановите пакет: deploy.sh --install", strings.Join(missing, ", "))
 }
 
 // validateListen не даёт демону выйти наружу.
@@ -197,6 +227,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/nikki/proxies", s.handleNikkiProxies)
 	s.mux.HandleFunc("GET /api/nikki/panel", s.handleNikkiPanel)
 	s.mux.HandleFunc("POST /api/nikki/proxy", s.handleNikkiProxy)
+	s.mux.HandleFunc("POST /api/nikki/test", s.handleNikkiTest)
 	s.mux.HandleFunc("POST /api/subscription/update", s.handleSubscriptionUpdate)
 	s.mux.HandleFunc("GET /api/logs", s.handleLogs)
 	s.mux.HandleFunc("GET /api/b4/sets", s.handleB4Sets)
