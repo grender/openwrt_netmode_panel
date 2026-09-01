@@ -142,6 +142,17 @@ type Fake struct {
 	// foreign — чужой стейджинг, каким он был до первой нашей правки.
 	foreign map[string]string
 
+	// anonRevertName — внутреннее имя uci для операции над АНОНИМНОЙ
+	// секцией: ключ «pkg\x00операция», значение — cfgNNNNNN.
+	//
+	// Моделирует наблюдение с живого роутера (2026-09-01): удалённая
+	// анонимная секция живёт в стейджинге под внутренним именем, и
+	// `uci revert network.@bridge-vlan[0]` отвечает кодом 0, НЕ отменяя
+	// ничего. Фейк без этой особенности зеленел на дефекте, ради которого
+	// написан тест отмены черновика: у него revert по индексу работал.
+	anonRevertName map[string]string
+	anonSeq        int
+
 	// fixtureQueue — ответы, меняющиеся от вызова к вызову (QueueFixture).
 	fixtureQueue map[string][][]byte
 }
@@ -161,6 +172,7 @@ func NewFake() *Fake {
 		stagedOps:          map[string][]string{},
 		base:               map[string][]byte{},
 		foreign:            map[string]string{},
+		anonRevertName:     map[string]string{},
 		fixtureQueue:       map[string][][]byte{},
 	}
 }
@@ -253,11 +265,29 @@ func (f *Fake) record(call string) error {
 	}
 	if pkg := pkgOf(call); pkg != "" {
 		f.snapshot(pkg)
+		// Анонимной секции uci выдаёт внутреннее имя, и только оно потом
+		// адресует её в changes и в revert (см. anonRevertName).
+		if sec := opSection(call); strings.HasPrefix(sec, "@") {
+			key := pkg + "\x00" + call
+			if _, ok := f.anonRevertName[key]; !ok {
+				f.anonSeq++
+				f.anonRevertName[key] = fmt.Sprintf("cfg%06x", f.anonSeq)
+			}
+		}
 		f.applyStaged(pkg, call)
 		f.stagedOps[pkg] = append(f.stagedOps[pkg], call)
 		f.Staged[pkg] += call + "\n"
 	}
 	return nil
+}
+
+// revertName — под каким именем uci знает секцию этой операции.
+// Для именованных — само имя, для анонимных — внутреннее cfgNNNNNN.
+func (f *Fake) revertName(pkg, op string) string {
+	if n, ok := f.anonRevertName[pkg+"\x00"+op]; ok {
+		return n
+	}
+	return opSection(op)
 }
 
 // snapshot запоминает состояние пакета до ПЕРВОЙ нашей правки.
@@ -285,9 +315,13 @@ func (f *Fake) revertSection(addr string) {
 		return
 	}
 
+	// Сравнение по revert-ИМЕНИ, а не по адресу секции: revert анонимной
+	// секции по индексу на живом роутере не отменяет ничего (и отвечает
+	// успехом), и фейк обязан вести себя так же — иначе тест отмены
+	// черновика зеленеет на дефекте.
 	kept := make([]string, 0, len(f.stagedOps[pkg]))
 	for _, op := range f.stagedOps[pkg] {
-		if opSection(op) != section {
+		if f.revertName(pkg, op) != section {
 			kept = append(kept, op)
 		}
 	}
@@ -444,6 +478,17 @@ func (f *Fake) UCIGet(ctx context.Context, pkg, section, option string) (string,
 	return v, nil
 }
 
+// UCIChanges отдаёт черновик в ФОРМЕ НАСТОЯЩЕГО `uci changes`, а не в
+// журнальной форме фейка.
+//
+// Разница стала значимой, когда отмена черновика начала адресовать секции
+// именами из этого вывода (uci.ChangedSections): журнальные строки
+// («set network.lan.device=br-lan») разобрались бы в другие адреса, и тест
+// доказывал бы разбор фейка против себя самого.
+//
+// Чужой черновик, подставленный тестом прямо в Staged, отдаётся как есть:
+// он и пишется в этой же форме, а его назначение — сработать на
+// HasStagedChanges, которому форма безразлична.
 func (f *Fake) UCIChanges(ctx context.Context, pkg string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -452,12 +497,56 @@ func (f *Fake) UCIChanges(ctx context.Context, pkg string) ([]byte, error) {
 		return nil, err
 	}
 	f.mu.Lock()
-	s := f.Staged[pkg]
+	own := append([]string(nil), f.stagedOps[pkg]...)
+	foreign := f.foreign[pkg]
+	raw := f.Staged[pkg]
 	f.mu.Unlock()
-	if s == "" {
-		return nil, nil
+
+	if len(own) == 0 {
+		if raw == "" {
+			return nil, nil
+		}
+		return []byte(raw), nil
 	}
-	return []byte(s), nil
+	var b strings.Builder
+	b.WriteString(foreign)
+	for _, op := range own {
+		line := uciChangeLine(op)
+		// Адрес анонимной секции подменяется внутренним именем — ровно так
+		// её печатает настоящий uci changes.
+		if sec := opSection(op); strings.HasPrefix(sec, "@") {
+			f.mu.Lock()
+			n := f.anonRevertName[pkg+"\x00"+op]
+			f.mu.Unlock()
+			if n != "" {
+				line = strings.Replace(line, "."+sec, "."+n, 1)
+			}
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return []byte(b.String()), nil
+}
+
+// uciChangeLine переводит журнальную запись фейка в строку `uci changes`.
+//
+// Формы взяты с живого роутера (docs/recon/raw/80…81 и прогон 2026-09-01):
+// удаление — со знаком минус перед адресом, всё прочее — «адрес=значение».
+func uciChangeLine(op string) string {
+	verb, rest, ok := strings.Cut(op, " ")
+	if !ok {
+		return op
+	}
+	switch verb {
+	case "delete":
+		return "-" + rest
+	case "add-named":
+		// add-named pkg.name=type → pkg.name=type
+		return rest
+	case "set", "add_list", "del_list":
+		return rest
+	}
+	return op
 }
 
 func (f *Fake) UCIAddNamed(ctx context.Context, pkg, name, sectionType string) error {

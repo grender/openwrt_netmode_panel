@@ -864,3 +864,76 @@ func TestBridgeRoutesRequireToken(t *testing.T) {
 		}
 	}
 }
+
+// ─────────── регрессии живого прогона 2026-09-01 ───────────
+
+// Демонтаж идемпотентен: удаление того, чего нет, не отказ.
+//
+// Живой прогон упёрся ровно в это. Ручная сборка адрес ПК никогда не
+// записывала, `uci delete netmode.main.bridge_pc_ip` вернул «Entry not
+// found», и вся партия демонтажа рухнула на последнем шаге — конфигурация
+// осталась собранной, а владелец получил apply_failed.
+func TestBridgeDisableToleratesMissingTargets(t *testing.T) {
+	fastBridge(t)
+	s, f := newServer(t)
+	bridgeOn(t, f)
+	f.Errors["ubus network.interface.homelan status"] = errors.New("Not found")
+	f.Fixtures["bridge status"] = scriptStatus(true, false, 1)
+	// Ровно то, что было на роутере: опции с адресом ПК нет, потому что
+	// конфигурацию собирали руками.
+	f.ErrorsBySuffix["delete netmode.main.bridge_pc_ip"] =
+		errors.New("uci delete netmode.main.bridge_pc_ip: exit status 1: /sbin/uci: Entry not found")
+
+	j := runBridgeOp(t, s, "/api/bridge/disable", "")
+	if j.State != job.Done {
+		t.Fatalf("демонтаж упал на отсутствующей цели: %s", jobErr(j))
+	}
+	if n := len(f.CallsContaining("apply-bridge disable")); n != 1 {
+		t.Error("применение не вызвано — партия оборвалась до него")
+	}
+	// Настоящий отказ uci при этом остаётся отказом.
+	s2, f2 := newServer(t)
+	bridgeOn(t, f2)
+	f2.ErrorsBySuffix["delete netmode.main.bridge_pc_ip"] = errors.New("uci: I/O error")
+	j2 := runBridgeOp(t, s2, "/api/bridge/disable", "")
+	wantBridgeFailure(t, s2, j2, breasonApplyFailed)
+}
+
+// Отмена черновика адресует секции ИМЕНАМИ ИЗ uci changes.
+//
+// Вторая регрессия того же прогона: `uci revert network.@bridge-vlan[0]`
+// на живом роутере вернул 0 и не отменил ничего — удалённая анонимная
+// секция живёт в стейджинге под внутренним именем. Пять удалений застряли
+// черновиком, а демон доложил apply_failed вместо stale_draft, то есть
+// посоветовал повторить там, где повтор упрётся в foreign_staged_changes.
+func TestBridgeRevertAddressesSectionsFromChanges(t *testing.T) {
+	s, f := newServer(t)
+	bridgeOn(t, f)
+	// Ломаем партию на последнем шаге firewall, когда удаления анонимных
+	// секций network уже в стейджинге.
+	f.ErrorsBySuffix["del_list firewall.@zone[1].masq_src=!192.168.0.0/24"] = errors.New("uci упал")
+
+	j := runBridgeOp(t, s, "/api/bridge/disable", "")
+	wantBridgeFailure(t, s, j, breasonApplyFailed)
+
+	// Главное: стейджинг чист. Именно это и не выходило на роутере.
+	if len(f.Staged) != 0 {
+		t.Errorf("черновик застрял: %v", f.Staged)
+	}
+	// И revert адресован ВНУТРЕННИМИ именами из uci changes, а не
+	// индексами: по индексу живой uci не отменяет ничего, отвечая успехом,
+	// и фейк ведёт себя так же (executor.Fake.anonRevertName).
+	reverts := f.CallsContaining("revert ")
+	if len(reverts) == 0 {
+		t.Fatal("revert не звался вовсе")
+	}
+	for _, byIndex := range reverts {
+		if strings.Contains(byIndex, "@") {
+			t.Errorf("revert адресован индексом (%q) — на роутере это молчаливый промах", byIndex)
+		}
+	}
+	// Именованные секции при этом адресуются своими именами.
+	if callIndex(f.Calls, "revert network.homelan") < 0 {
+		t.Errorf("именованная секция не отменена: %v", reverts)
+	}
+}

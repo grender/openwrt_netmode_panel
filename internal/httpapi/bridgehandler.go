@@ -822,14 +822,84 @@ func (b *bridgeBatch) del(pkg, section, opt string) {
 	b.do(pkg, section, func() error { return b.s.ex.UCIDelete(b.ctx, pkg, section, opt) })
 }
 
-// revert отменяет затронутое в обратном порядке. Ошибки копятся: одна
-// неотменённая секция — уже stale_draft.
+// delIfPresent — удаление, для которого ОТСУТСТВИЕ цели не отказ.
+//
+// Демонтаж обязан быть идемпотентным: он снимает конфигурацию, собранную
+// не обязательно нами. Живой прогон 2026-09-01 упёрся ровно в это —
+// `uci delete netmode.main.bridge_pc_ip` вернул «Entry not found», потому
+// что ручная сборка адрес ПК никогда не записывала, и вся партия
+// демонтажа рухнула на последнем шаге. Требовать наличия того, что мы
+// собираемся УДАЛИТЬ, — это требовать, чтобы конфигурацию собрали ровно
+// мы, а она бывает и чужой.
+//
+// Прочие отказы uci при этом остаются отказами: «нет записи» —
+// единственное, что здесь безвредно.
+func (b *bridgeBatch) delIfPresent(pkg, section, opt string) {
+	b.do(pkg, section, func() error {
+		err := b.s.ex.UCIDelete(b.ctx, pkg, section, opt)
+		if err != nil && (errors.Is(err, executor.ErrNotFound) || isUCIEntryNotFound(err)) {
+			return nil
+		}
+		return err
+	})
+}
+
+// isUCIEntryNotFound — «нет такой записи» по тексту uci.
+//
+// UCIDelete не заворачивает этот случай в ErrNotFound (в отличие от
+// UCIGet): удаление в остальном коде адресуется тому, что мы только что
+// прочитали. Строка «Entry not found» — часть пользовательского
+// интерфейса uci, не приватная деталь (тот же приём, что isUCINotFound
+// в executor).
+func isUCIEntryNotFound(err error) bool {
+	return strings.Contains(err.Error(), "Entry not found")
+}
+
+// revert отменяет свой черновик, адресуя секции ИМЕНАМИ ИЗ uci changes.
+//
+// Не по b.ops, и это не оптимизация: адрес анонимной секции — индекс, а
+// удалённая анонимная секция живёт в стейджинге под внутренним именем
+// (cfg08a1b0). `uci revert network.@bridge-vlan[0]` на неё отвечает кодом
+// 0 и не отменяет ничего — измерено на живом роутере, см.
+// uci.ChangedSections. Список из самого uci — единственный способ назвать
+// то, что мы наделали, теми же словами, что и он.
+//
+// Границы ADR-0028 соблюдены: чужой стейджинг отвергнут на входе
+// (foreign_staged_changes), значит всё, что uci сейчас перечисляет, —
+// наше; зовётся это только на пути отказа и только до коммита.
+//
+// b.ops остаётся источником СПИСКА ПАКЕТОВ: спрашивать changes у пакета,
+// которого партия не касалась, незачем.
 func (b *bridgeBatch) revert() error {
 	var firstErr error
-	for i := len(b.ops) - 1; i >= 0; i-- {
-		t := b.ops[i]
-		if err := b.s.ex.UCIRevert(b.ctx, t.pkg, t.section); err != nil && firstErr == nil {
-			firstErr = err
+	var pkgs []string
+	for _, t := range b.ops {
+		known := false
+		for _, p := range pkgs {
+			if p == t.pkg {
+				known = true
+				break
+			}
+		}
+		if !known {
+			pkgs = append(pkgs, t.pkg)
+		}
+	}
+	for _, pkg := range pkgs {
+		raw, err := b.s.ex.UCIChanges(b.ctx, pkg)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("черновик %s не прочитан: %w", pkg, err)
+			}
+			continue
+		}
+		// В обратном порядке: у зависимых секций отмена в прямом порядке
+		// повторила бы ту же беду со сдвигом адресов.
+		secs := uci.ChangedSections(pkg, raw)
+		for i := len(secs) - 1; i >= 0; i-- {
+			if err := b.s.ex.UCIRevert(b.ctx, pkg, secs[i]); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 	return firstErr
@@ -997,30 +1067,30 @@ func (s *Server) writeBridge(b *bridgeBatch, c *bridgeConfig, p bridgePlan) []st
 		// удаляются в обратном порядке файла: индексы @type[N] сдвигаются
 		// на каждом удалении.
 		for i := len(c.vlanSections) - 1; i >= 0; i-- {
-			b.del("network", c.vlanSections[i], "")
+			b.delIfPresent("network", c.vlanSections[i], "")
 		}
 		if c.devSection != "" {
-			b.del("network", c.devSection, "vlan_filtering")
+			b.delIfPresent("network", c.devSection, "vlan_filtering")
 		}
 		if _, ok := c.netCfg.Section("lan"); ok && c.baseDev != "" {
 			b.set("network", "lan", "device", c.baseDev)
 		}
 		if _, ok := c.netCfg.Section("relay"); ok {
-			b.del("network", "relay", "")
+			b.delIfPresent("network", "relay", "")
 		}
 		if _, ok := c.netCfg.Section("homelan"); ok {
-			b.del("network", "homelan", "")
+			b.delIfPresent("network", "homelan", "")
 		}
 		for i := len(c.homelanFwds) - 1; i >= 0; i-- {
-			b.del("firewall", c.homelanFwds[i], "")
+			b.delIfPresent("firewall", c.homelanFwds[i], "")
 		}
 		for i := len(c.homelanZones) - 1; i >= 0; i-- {
-			b.del("firewall", c.homelanZones[i], "")
+			b.delIfPresent("firewall", c.homelanZones[i], "")
 		}
 		for _, v := range c.wanMasqNeg {
 			b.delList("firewall", c.wanZone, "masq_src", v)
 		}
-		b.del("netmode", "main", "bridge_pc_ip")
+		b.delIfPresent("netmode", "main", "bridge_pc_ip")
 		return []string{"network", "firewall", "netmode"}
 
 	case "access-on":
@@ -1029,10 +1099,10 @@ func (s *Server) writeBridge(b *bridgeBatch, c *bridgeConfig, p bridgePlan) []st
 
 	case "access-off":
 		if c.lanFwd != "" {
-			b.del("firewall", c.lanFwd, "")
+			b.delIfPresent("firewall", c.lanFwd, "")
 		}
 		for _, zone := range c.homelanZones {
-			b.del("firewall", zone, "masq")
+			b.delIfPresent("firewall", zone, "masq")
 			if sec, ok := c.fwCfg.Section(zone); ok {
 				vals := sec.Lists["masq_src"]
 				if v := sec.Options["masq_src"]; v != "" {

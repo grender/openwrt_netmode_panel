@@ -3,6 +3,7 @@ package uci
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -357,5 +358,44 @@ func TestHasStagedChanges(t *testing.T) {
 		if got := HasStagedChanges([]byte(tt.raw)); got != tt.want {
 			t.Errorf("%s: HasStagedChanges(%q) = %v, ожидалось %v", tt.name, tt.raw, got, tt.want)
 		}
+	}
+}
+
+// ChangedSections разбирает вывод настоящего `uci changes`, снятый с
+// живого роутера 2026-09-01. Форма важна до знака: по этим именам
+// адресуется отмена черновика, а адрес анонимной секции индексом
+// (@bridge-vlan[0]) uci после удаления уже не понимает — revert по нему
+// отвечает успехом и не делает ничего.
+func TestChangedSectionsReadsRealUCIOutput(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"-network.cfg09a1b0",
+		"-network.cfg08a1b0",
+		"-network.cfg08a1b0.ports",
+		"network.homelan=interface",
+		"network.homelan.ipaddr='192.168.0.85'",
+		"network.lan.device='br-lan.1'",
+		// Значение со знаком равенства и точками внутри: адрес обязан
+		// разбираться до него, а не по первому попавшемуся разделителю.
+		"network.relay.network='homelan' 'wwan'",
+		"firewall.cfg11ad58.masq_src='!192.168.0.0/24'",
+		"",
+	}, "\n"))
+
+	got := ChangedSections("network", raw)
+	want := []string{"cfg09a1b0", "cfg08a1b0", "homelan", "lan", "relay"}
+	if len(got) != len(want) {
+		t.Fatalf("секции %v, ожидались %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("секция [%d] = %q, ожидалась %q (порядок значим: отмена идёт в обратном)", i, got[i], want[i])
+		}
+	}
+	// Чужой пакет в выводе игнорируется: revert адресуется своему.
+	if fw := ChangedSections("firewall", raw); len(fw) != 1 || fw[0] != "cfg11ad58" {
+		t.Errorf("секции firewall: %v", fw)
+	}
+	if n := len(ChangedSections("network", nil)); n != 0 {
+		t.Errorf("пустой ввод дал %d секций", n)
 	}
 }

@@ -117,6 +117,60 @@ func HasStagedChanges(raw []byte) bool {
 	return false
 }
 
+// ChangedSections — адреса секций из вывода `uci changes <pkg>`, в порядке
+// появления и без повторов.
+//
+// Нужен ровно для отмены СВОЕГО черновика (ADR-0028): адресовать секцию
+// именем, под которым её видит uci, а не тем, под которым её видели мы.
+// Разница не косметическая, и она измерена на живом роутере 2026-09-01:
+//
+//	uci delete network.@bridge-vlan[0]   → changes: -network.cfg08a1b0
+//	uci revert network.@bridge-vlan[0]   → код 0, и НИЧЕГО не отменено
+//	uci revert network.cfg08a1b0         → отменено
+//
+// Анонимная секция адресуется индексом только пока существует; удалённая
+// живёт в стейджинге под внутренним именем, и revert по индексу молча
+// промахивается — возвращая при этом успех. Демонтаж после такого «успеха»
+// оставлял застрявший черновик и докладывал apply_failed вместо
+// stale_draft, то есть советовал повторить там, где повтор упрётся в
+// foreign_staged_changes.
+//
+// Формы строк (все три встречаются в одном выводе):
+//
+//	-network.cfg08a1b0                  удалена секция
+//	-network.cfg09a1b0.ports            удалена опция
+//	network.homelan=interface           создана секция
+//	network.homelan.ipaddr='192.168.0.85'  записана опция
+//
+// Возвращается ровно «пакет.секция»: revert адресуется секции целиком —
+// отменять отдельную опцию, оставляя соседние, uci не умеет.
+func ChangedSections(pkg string, raw []byte) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "-")
+		// Значение опции отбрасывается до разбора адреса: в нём бывают и
+		// точки, и знак равенства (ssid, пароли, CIDR с отрицанием).
+		if i := strings.IndexByte(line, '='); i >= 0 {
+			line = line[:i]
+		}
+		parts := strings.SplitN(line, ".", 3)
+		if len(parts) < 2 || parts[0] != pkg || parts[1] == "" {
+			continue
+		}
+		sec := parts[1]
+		if !seen[sec] {
+			seen[sec] = true
+			out = append(out, sec)
+		}
+	}
+	return out
+}
+
 // ParseShow разбирает вывод `uci show pkg`.
 //
 // Строка из чужого пакета — ошибка, а не повод её пропустить: молчаливый
