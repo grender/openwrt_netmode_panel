@@ -91,6 +91,12 @@ const STATES = [
 	// База сравнения для длинных состояний. Само по себе это состояние ничего
 	// не проверяет — оно нужно C3/C4 (см. BASE ниже).
 	{ key: 'single-long', scenario: 'single-long', tab: 'wifi', rm: false },
+	// Вкладка проброса: своя пара покой/джоб не нужна (джобы моста мок
+	// заводит только по нажатию, а кликов здесь нет по устройству оснастки),
+	// но C2 и C5 обязаны выполняться и на ней — карточка несёт строки
+	// диагностики с адресами, а они на 320px переносятся.
+	{ key: 'bridge-on', scenario: 'bridge-on', tab: 'bridge', rm: false },
+	{ key: 'bridge-off', scenario: 'bridge-off', tab: 'bridge', rm: false },
 	{ key: 'single-rm', scenario: 'single', tab: 'wifi', rm: true },
 	{ key: 'job-rm', scenario: 'job', tab: 'wifi', rm: true },
 ];
@@ -172,6 +178,16 @@ const MEASURE_FOR = (tab) => `(() => {
 		const wifiH = head(cards[0]);
 		if (!/Внешняя сеть|Uplink network/.test(wifiH)) {
 			return { ok: false, why: 'карточка [0] не про Wi-Fi, заголовок: ' + JSON.stringify(wifiH) };
+		}
+	} else if (tab === 'bridge') {
+		const bH = head(cards[0]);
+		if (!/Проброс|bridge/i.test(bH)) {
+			return { ok: false, why: 'карточка [0] не про проброс, заголовок: ' + JSON.stringify(bH) };
+		}
+		// Скелетон значит, что состояние ещё едет: числа снялись бы с
+		// заглушки, а не с карточки.
+		if (cards[0].querySelector('.skel')) {
+			return { ok: false, why: 'карточка проброса ещё в скелетоне' };
 		}
 	} else {
 		const subH = head(cards[cards.length - 1]);

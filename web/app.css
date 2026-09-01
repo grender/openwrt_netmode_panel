@@ -490,6 +490,47 @@ button:disabled { cursor: not-allowed; }
 	   десктопной секции выше; ширину колонок задаёт .full в разметке. */
 }
 
+/* ─────────── проброс LAN в uplink ─────────── */
+
+/* Строки диагностики: подпись слева, значение справа, обе в одну строку.
+   Значение — моноширинным: рядом стоят адреса и числа, и пропорциональный
+   шрифт делает столбец рваным. Перенос значения разрешён (адрес с маской и
+   шлюзом на 320px не влезает), подпись не жмётся ниже 10ch — иначе она
+   схлопывается в многоточие раньше, чем начнёт переноситься значение. */
+.diags { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
+.diag {
+	display: flex; gap: 10px; align-items: baseline; justify-content: space-between;
+	font-size: 13px; line-height: 1.4;
+}
+.diag-k { color: var(--muted-2); flex: 0 1 auto; min-width: 10ch; }
+.diag-v { font-family: var(--mono); color: var(--fg-2); text-align: right; min-width: 0; }
+
+/* Две кнопки-сегмента на тёмной карточке: у .modes фон посчитан для цветного
+   баннера, здесь он тонет. Класс добавочный, чтобы не трогать баннерный. */
+.modes.sets-2 { background: #14181c; margin-top: 8px; }
+.modes.sets-2 button { color: var(--muted); }
+.modes.sets-2 button[aria-pressed="true"] { background: #22282e; color: var(--fg); }
+
+/* Кнопки действий: на телефоне колонкой, на десктопе в ряд — «Включить» и
+   «Проверить» равнозначны по ширине и читаются парой. */
+.bridge-acts { display: flex; flex-direction: column; gap: 9px; }
+.bridge-acts .wide { margin-top: 12px; }
+
+/* Чекбокс — единственный в панели. Флекс-строка, а не блок: подпись обязана
+   стоять рядом с квадратом, а не под ним. accent-color красит его в цвет
+   ссылок вместо системного синего, который на тёмном фоне выпадает. */
+.field.check { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 6px; }
+.field.check input[type="checkbox"] {
+	width: 22px; height: 22px; min-height: 0; flex: none; margin-top: 1px;
+	accent-color: var(--link);
+}
+.field.check > span { display: inline; margin: 0; font-size: 14px; color: var(--fg-2); }
+
+@media (min-width: 900px) {
+	.bridge-acts { flex-direction: row-reverse; }
+	.bridge-acts .wide { flex: 1; }
+}
+
 /* ─────────── ожидание ─────────── */
 
 /* Секция стоит последней в файле не для красоты. У button[aria-busy]:disabled

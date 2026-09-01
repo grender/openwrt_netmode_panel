@@ -183,6 +183,11 @@ function App() {
 	const [nets, setNets] = useState();
 	const [scan, setScan] = useState(null);
 	const [logs, setLogs] = useState();
+	// Состояние проброса — то же трёхзначное соглашение: undefined «ещё не
+	// спрашивали» (скелетон), null «спросили, не ответили» (отказ), объект.
+	const [bridge, setBridge] = useState();
+	const [bridgeSheet, setBridgeSheet] = useState(false);
+	const [bridgeFailHidden, setBridgeFailHidden] = useState('');
 	const [busy, setBusy] = useState('');
 	const [sheet, setSheet] = useState(null);
 	const [toast, setToast] = useState(null);
@@ -394,7 +399,7 @@ function App() {
 	// панель показывала устаревший список как актуальный до F5. Отброшенный
 	// ответ не пишет ничего, в том числе и null: чужой отказ не вправе гасить
 	// данные, которые свежее его самого.
-	const seq = useRef({ nikki: 0, sets: 0, nets: 0, logs: 0 });
+	const seq = useRef({ nikki: 0, sets: 0, nets: 0, logs: 0, bridge: 0 });
 	// Отпечаток, за которым список уже сходили. Живёт рядом с loadNets, потому
 	// что пишет его только loadNets — и только получив ответ.
 	const seenFp = useRef(null);
@@ -408,6 +413,9 @@ function App() {
 	const loadNikki = () => grab('nikki', '/api/nikki/proxies', setNikki);
 	const loadSets = () => grab('sets', '/api/b4/sets', setSets);
 	const loadLogs = () => grab('logs', '/api/logs?n=5', setLogs);
+	// probe=1 добавляет пинги ПК и шлюза — они стоят секунд, поэтому идут
+	// только по кнопке «Проверить», а не при каждом заходе на вкладку.
+	const loadBridge = (probe) => grab('bridge', '/api/bridge' + (probe ? '?probe=1' : ''), setBridge);
 	// fp — отпечаток, ПОД КОТОРЫЙ уехал запрос. Отметка о нём ставится по факту
 	// записи ответа, а не перед отправкой: отметка до запроса означала, что
 	// разовый 503 запирает карточку насмерть — конфигурация больше не менялась,
@@ -467,7 +475,7 @@ function App() {
 	// он пересоздаётся каждым тиком, и это здесь не дефект, а движок. Что
 	// делает такую зависимость безопасной — retryAt: без него получились бы
 	// обещанные два запроса в секунду навсегда.
-	const retryAt = useRef({ b4: 0, nikki: 0, nets: 0 });
+	const retryAt = useRef({ b4: 0, nikki: 0, nets: 0, bridge: 0 });
 	useEffect(() => {
 		const now = Date.now();
 		const again = (name, up, data, load) => {
@@ -478,6 +486,42 @@ function App() {
 		if (mode === 'b4') again('b4', b4Up, sets, loadSets);
 		if (mode === 'nikki') again('nikki', nikkiUp, nikki, loadNikki);
 	}, [status, mode, b4Up, nikkiUp, sets, nikki]);
+
+	// Состояние моста тянется при заходе на вкладку и перечитывается, когда
+	// джоб моста завершился.
+	//
+	// Не в общем опросе намеренно: /api/bridge читает две конфигурации и
+	// зовёт скрипт, а /api/status ходит раз в секунду — это была бы плата
+	// за вкладку, на которую никто не смотрит.
+	//
+	// Ключ перечитывания — не «джоб пропал», а СМЕНА состояния running на
+	// не-running: джоб живёт в статусе ещё пять секунд после завершения, и
+	// «пропал» наступает позже, чем правда о конфигурации.
+	// Смотрим на status.job, а не на разобранный ниже job: хуки обязаны
+	// стоять ДО раннего возврата «статуса ещё нет», а там разбор с засевом
+	// ещё не выполнен. Для перечитывания это и не нужно — засев говорит о
+	// том, что операция НАЧАЛАСЬ, а перечитывать надо, когда она кончилась,
+	// и об этом знает именно опрос.
+	const bridgeJobRan = useRef(false);
+	const sJobKind = status && status.job && status.job.kind;
+	const sJobState = status && status.job && status.job.state;
+	useEffect(() => {
+		if (tab !== 'bridge') return;
+		const running = sJobKind === 'bridge' && sJobState === 'running';
+		const justFinished = bridgeJobRan.current && !running;
+		bridgeJobRan.current = running;
+		if (bridge === undefined || justFinished) loadBridge();
+	}, [tab, sJobKind, sJobState]);
+
+	// Досылка при отказе — тем же приёмом и по той же причине, что у списков
+	// движков: разовый 503 иначе оставлял бы вкладку в «не отвечает» до F5.
+	useEffect(() => {
+		if (tab !== 'bridge' || bridge !== null) return;
+		const now = Date.now();
+		if (now < retryAt.current.bridge) return;
+		retryAt.current.bridge = now + RETRY_MS;
+		loadBridge();
+	}, [status, tab, bridge]);
 
 	// Список сохранённых сетей перечитывается по отпечатку wireless.
 	//
@@ -708,6 +752,27 @@ function App() {
 		}
 	};
 
+	// Один вызов на все три кнопки моста: отпечаток из свежего состояния,
+	// коды устаревания лечатся перечитыванием — приём postUpstream.
+	// body === null — запрос без тела (демонтаж).
+	const postBridge = async (path, body) => {
+		try {
+			const r = await api(path, {
+				method: 'POST',
+				headers: { 'If-Match': bridge && bridge.fingerprint },
+				body: body === null ? undefined : JSON.stringify(body),
+			}, T_MODE);
+			sow(r);
+			return r;
+		} catch (e) {
+			if (STALE_CODES.has(e.code) || e.code === 'already_enabled'
+				|| e.code === 'already_disabled' || e.code === 'already_set') {
+				await loadBridge();
+			}
+			throw e;
+		}
+	};
+
 	// Домашняя сеть названа по имени: обещание «ваши устройства не отвалятся»
 	// проверяемо, только если сказано, про какую сеть оно. Прочерк при
 	// неизвестном ssid — пустое место в середине фразы читается как обрыв.
@@ -765,6 +830,16 @@ function App() {
 	// нужное поведение, и крестик его не отменяет: он про «я прочитал», а
 	// не про «этого не было».
 	const upFailKey = upFail ? [upFail.at, upFail.ssid, upFail.reason].join('|') : '';
+
+	// Провал операции моста — та же пара каналов, что у переключения сети:
+	// машинную причину знает только last_fail (он переживает обрыв связи,
+	// а её рвёт сам network reload), подробность добавляет job.error, пока
+	// джоб виден в статусе.
+	const bridgeFailed = failed && failed.kind === 'bridge' ? failed : null;
+	const bridgeFail = running && running.kind === 'bridge' ? null
+		: (bridge && bridge.last_fail) || (bridgeFailed && { action: bridgeFailed.arg, reason: '' });
+	const bridgeFailKey = bridgeFail
+		? [bridgeFail.at, bridgeFail.action, bridgeFail.reason].join('|') : '';
 
 	return html`
 		<${Top} s=${status} t=${t} lang=${lang} setLang=${setLang} onNikkiOpen=${onNikkiOpen} />
@@ -878,8 +953,24 @@ function App() {
 					onClose=${() => setFailHidden(upFailKey)} />`}`}
 
 			${tab === 'bridge' && html`
-			<div class="card full"><h2>${t('bridge.title')}</h2>
-				<p class="hint">${t('bridge.stub')}</p></div>`}
+			<!-- ExecutorsNote и здесь: без netmode-bridge кнопки вкладки
+			     запишут намерение и не применят его — узнать об этом после
+			     нажатия значит узнать в худший момент. -->
+			<${ExecutorsNote} s=${status} t=${t} />
+
+			<${BridgeCard} data=${bridge} t=${t} busy=${busy} locked=${locked}
+				onProbe=${() => act('bridge:probe', () => loadBridge(true))}
+				onOpenSheet=${() => setBridgeSheet(true)}
+				onDisable=${() => {
+					if (!confirm(t('bridge.confirm.disable'))) return;
+					act('bridge:disable', () => postBridge('/api/bridge/disable', null));
+				}}
+				onAccess=${(on) => act('bridge:access', () => postBridge('/api/bridge/access', { enabled: on }))} />
+
+			${bridgeFail && bridgeFailKey !== bridgeFailHidden && html`
+				<${BridgeFailNote} fail=${bridgeFail}
+					detail=${(bridgeFailed && bridgeFailed.error) || bridgeFail.detail} t=${t}
+					onClose=${() => setBridgeFailHidden(bridgeFailKey)} />`}`}
 		</div>
 
 		${sheet && html`
@@ -963,6 +1054,26 @@ function App() {
 						}
 					}, loadNets);
 				}} />`}
+
+		${bridgeSheet && bridge && html`
+			<${BridgeSheet} state=${bridge} t=${t} busy=${busy} locked=${locked}
+				onClose=${() => setBridgeSheet(false)}
+				onSubmit=${(body, setErr) => act('bridge:enable', async () => {
+					try {
+						await postBridge('/api/bridge/enable', body);
+						setBridgeSheet(false);
+					} catch (e) {
+						// Единственный отказ, который лечится согласием, а не
+						// правкой формы. Спрашиваем и повторяем один раз;
+						// отказ = не сделано ничего (гарантирует демон).
+						if (e.code !== 'relayd_missing') { setErr(describe(e, t)); return; }
+						if (!confirm(t('bridge.confirm.install'))) return;
+						try {
+							await postBridge('/api/bridge/enable', { ...body, install: true });
+							setBridgeSheet(false);
+						} catch (e2) { setErr(describe(e2, t)); }
+					}
+				})} />`}
 
 		<${Foot} s=${status} t=${t} lang=${lang} stale=${stale} />
 	`;
@@ -1435,13 +1546,6 @@ const REASONS = new Set(['apply_failed', 'busy', 'prereq_missing', 'executor_mis
 	'stayed_on_previous', 'other_ssid', 'not_associated', 'no_ipv4', 'unverifiable',
 	'stale_draft']);
 
-// Тот же закрытый набор для операций проброса (ADR-0030). Отдельный, а не
-// расширенный REASONS: у моста своя таксономия, свои ключи словаря
-// (bridge.fail.*) и свой слот last_fail. Сведи их в один — и панель
-// печатала бы «осталась на прежней сети» про включение моста.
-const BRIDGE_REASONS = new Set(['apply_failed', 'busy', 'prereq_missing', 'executor_missing',
-	'install_failed', 'no_iface', 'relay_down', 'unverifiable', 'stale_draft']);
-
 // Провал переключения — один блок, а не два, хотя каналов доклада два.
 //
 // Демон рапортует и джобом (failed + job.error — тому, кто смотрит сейчас),
@@ -1804,6 +1908,203 @@ function NetworkSheet({ sheet, t, busy, locked, savedSsids, onSave, onSaveConnec
 					<!-- «Отмена» не блокируется никогда: это выход, а не действие.
 					     Запирать выход из формы из-за постороннего действия — как
 					     раз то, во что превращался disabled в роли мьютекса. -->
+					<button class="wide" onClick=${onClose}>${t('wifi.cancel')}</button>
+				</div>
+			</div>
+		</div>`;
+}
+
+// ─────────── проброс LAN в uplink ───────────
+
+// Строка диагностики. «Не прочитано» не красится в тревожный цвет: null
+// значит «не спросили», а не «сломано», — красный отправлял бы чинить
+// исправное.
+function DiagRow({ label, value, tone }) {
+	const cls = tone === 'ok' ? 'lat-ok' : tone === 'bad' ? 'lat-bad' : tone === 'warn' ? 'lat-warn' : '';
+	return html`
+		<div class="diag">
+			<span class="diag-k">${label}</span>
+			<span class="diag-v ${cls}">${value}</span>
+		</div>`;
+}
+
+function BridgeCard({ data, t, busy, locked, onProbe, onOpenSheet, onDisable, onAccess }) {
+	const head = (body) => html`<div class="card full"><h2>${t('bridge.title')}</h2>${body}</div>`;
+	// Трёхзначное соглашение соблюдается дословно: скелетон, отказ, данные.
+	if (data === undefined) return head(html`<${Skel} n=${3} />`);
+	if (data === null) return head(html`<div class="empty">${t('bridge.down')}</div>`);
+
+	const enabled = data.enabled;
+	const port = data.port;
+	const relayd = data.relayd;
+	const up = data.uplink;
+	const probes = data.probes;
+	const dash = '—';
+	// Флап линка молча ломает схему: на живом роутере счётчик дошёл до 241
+	// при работающей на вид конфигурации. Порог 20 — заведомо больше, чем
+	// несколько переподключений кабеля за жизнь роутера.
+	const flaps = port && port.carrier_changes;
+	const flapy = flaps != null && flaps > 20;
+
+	return head(html`
+		<p class="hint tight">${enabled ? t('bridge.on.text', { ip: data.pc_ip || dash })
+			: t('bridge.off.text')}</p>
+
+		<div class="diags">
+			<${DiagRow} label=${t('bridge.diag.state')}
+				value=${enabled ? t('bridge.state.on') : t('bridge.state.off')}
+				tone=${enabled ? 'ok' : ''} />
+			<${DiagRow} label=${t('bridge.diag.relayd')}
+				value=${!relayd ? t('bridge.unknown')
+					: !relayd.installed ? t('bridge.relayd.absent')
+						: relayd.running ? t('bridge.relayd.running') : t('bridge.relayd.stopped')}
+				tone=${!relayd ? '' : relayd.running ? 'ok' : enabled ? 'bad' : ''} />
+			<${DiagRow} label=${t('bridge.diag.port')}
+				value=${!port ? t('bridge.unknown')
+					: port.carrier
+						? t('bridge.port.up', { name: port.name, speed: port.speed_mbps == null ? dash : port.speed_mbps })
+						: t('bridge.port.down', { name: port.name })}
+				tone=${!port ? '' : port.carrier ? 'ok' : 'warn'} />
+			${flaps != null && html`
+				<${DiagRow} label=${t('bridge.diag.flaps')}
+					value=${flapy ? t('bridge.flaps.many', { n: flaps }) : String(flaps)}
+					tone=${flapy ? 'bad' : ''} />`}
+			<${DiagRow} label=${t('bridge.diag.uplink')}
+				value=${!up || !up.up ? t('bridge.uplink.down')
+					: t('bridge.uplink.up', { addr: up.address || dash, mask: up.mask || dash, gw: up.gateway || dash })}
+				tone=${up && up.up ? 'ok' : 'bad'} />
+			${enabled && html`
+				<${DiagRow} label=${t('bridge.diag.leg')} value=${data.leg_ip || dash} />`}
+			${probes && html`
+				<${DiagRow} label=${t('bridge.diag.pc')}
+					value=${!probes.pc ? t('bridge.unknown')
+						: probes.pc.answered ? t('bridge.probe.ok') : t('bridge.probe.silent')}
+					tone=${!probes.pc ? '' : probes.pc.answered ? 'ok' : 'bad'} />
+				<${DiagRow} label=${t('bridge.diag.gw')}
+					value=${!probes.gateway ? t('bridge.unknown')
+						: probes.gateway.answered ? t('bridge.probe.ok') : t('bridge.probe.silent')}
+					tone=${!probes.gateway ? '' : probes.gateway.answered ? 'ok' : 'bad'} />`}
+		</div>
+
+		${enabled && html`
+			<!-- Сегмент из двух кнопок, как переключатель режимов: своего
+			     контрола «вкл/выкл» в панели нет, а второй язык для того же
+			     смысла — это два разных контрола для скринридера. -->
+			<p class="hint tight">${t('bridge.access.label')}</p>
+			<div class="modes sets-2">
+				${[false, true].map((v) => html`
+					<button aria-pressed=${!!data.ap_access === v} disabled=${locked || (!!data.ap_access === v)}
+						aria-busy=${on(busy, 'bridge', 'access')}
+						onClick=${() => onAccess(v)}>${v ? t('bridge.access.on') : t('bridge.access.off')}</button>`)}
+			</div>
+			<p class="hint tight">${t('bridge.access.hint')}</p>`}
+
+		<div class="bridge-acts">
+			${enabled
+				? html`<button class="wide" disabled=${locked} aria-busy=${on(busy, 'bridge', 'disable')}
+						onClick=${onDisable}>
+						${on(busy, 'bridge', 'disable') ? html`<${Spin} /> ${t('bridge.disabling')}` : t('bridge.disable')}</button>`
+				: html`<button class="wide primary" disabled=${locked} onClick=${onOpenSheet}>${t('bridge.enable')}</button>`}
+			<button class="wide" disabled=${locked} aria-busy=${on(busy, 'bridge', 'probe')} onClick=${onProbe}>
+				${on(busy, 'bridge', 'probe') ? html`<${Spin} /> ${t('bridge.probing')}` : t('bridge.probe')}</button>
+		</div>`);
+}
+
+// Закрытый набор причин моста — тот же, что allBridgeReasons в демоне.
+// Отдельный от REASONS, а не расширение его: у моста своя таксономия, свои
+// ключи словаря (bridge.fail.*) и свой слот last_fail; сведи их в один — и
+// панель печатала бы «осталась на прежней сети» про включение моста.
+// Нужен ровно затем, чтобы отличить известную причину от незнакомой: makeT
+// при промахе вернёт сам ключ, и в интерфейсе напечаталось бы
+// «bridge.fail.plasma.title».
+const BRIDGE_REASONS = new Set(['apply_failed', 'busy', 'prereq_missing', 'executor_missing',
+	'install_failed', 'no_iface', 'relay_down', 'unverifiable', 'stale_draft']);
+
+function BridgeFailNote({ fail, detail, t, onClose }) {
+	const key = BRIDGE_REASONS.has(fail.reason) ? fail.reason : 'unknown';
+	return html`
+		<div class="note err full dismissable">
+			<${CloseX} t=${t} onClose=${onClose} />
+			<h3>${t('bridge.fail.' + key + '.title')}</h3>
+			<p>${t('bridge.fail.' + key + '.text')}</p>
+			${detail && html`<p class="detail">${detail}</p>`}
+		</div>`;
+}
+
+// ─────────── форма включения проброса ───────────
+
+// Валидация повторяет серверную по той же причине, что у NetworkSheet:
+// ошибка формы обязана появиться В ФОРМЕ, а не тостом после круга к
+// серверу. Главной остаётся серверная — панель не источник правды.
+function BridgeSheet({ state, t, busy, locked, onClose, onSubmit }) {
+	const up = state.uplink || {};
+	const [leg, setLeg] = useState('');
+	const [pc, setPc] = useState(state.pc_ip || '');
+	const [access, setAccess] = useState(!!state.ap_access);
+	const [err, setErr] = useState('');
+
+	const ip4 = (v) => /^(\d{1,3}\.){3}\d{1,3}$/.test(v)
+		&& v.split('.').every((o) => Number(o) >= 0 && Number(o) <= 255);
+	// Маска — из ЖИВОГО uplink, а не литерал /24: сеть за роутером бывает
+	// и /16, и /22.
+	const sameNet = (a, b, bits) => {
+		if (!ip4(a) || !ip4(b) || !bits) return false;
+		const n = (v) => v.split('.').reduce((acc, o) => (acc * 256) + Number(o), 0);
+		const m = bits === 0 ? 0 : (-1 << (32 - bits)) >>> 0;
+		return ((n(a) & m) >>> 0) === ((n(b) & m) >>> 0);
+	};
+
+	const submit = () => {
+		if (!ip4(leg)) { setErr(t('bridge.err.leg')); return; }
+		if (!ip4(pc)) { setErr(t('bridge.err.pc')); return; }
+		if (!up.up || !up.address) { setErr(t('bridge.err.uplink')); return; }
+		if (!sameNet(leg, up.address, up.mask) || !sameNet(pc, up.address, up.mask)) {
+			setErr(t('bridge.err.subnet', { net: up.address + '/' + up.mask })); return;
+		}
+		if (leg === pc || leg === up.address || leg === up.gateway
+			|| pc === up.address || pc === up.gateway) {
+			setErr(t('bridge.err.conflict')); return;
+		}
+		onSubmit({ leg_ip: leg, pc_ip: pc, ap_access: access }, setErr);
+	};
+
+	return html`
+		<div class="sheet-bg" onClick=${(e) => e.target === e.currentTarget && onClose()}>
+			<div class="sheet">
+				<h3>${t('bridge.sheet.title')}</h3>
+				<p class="hint tight">${t('bridge.sheet.intro', {
+					net: up.address ? up.address + '/' + up.mask : '—' })}</p>
+
+				<label class="field">
+					<span>${t('bridge.field.leg')}</span>
+					<input value=${leg} onInput=${(e) => { setLeg(e.target.value); setErr(''); }}
+						inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.0.85" />
+					<p class="hint tight">${t('bridge.field.leg.hint')}</p>
+				</label>
+				<label class="field">
+					<span>${t('bridge.field.pc')}</span>
+					<input value=${pc} onInput=${(e) => { setPc(e.target.value); setErr(''); }}
+						inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.0.90" />
+					<p class="hint tight">${t('bridge.field.pc.hint')}</p>
+				</label>
+				<label class="field check">
+					<input type="checkbox" checked=${access}
+						onChange=${(e) => setAccess(e.target.checked)} />
+					<span>${t('bridge.field.access')}</span>
+				</label>
+				<p class="hint tight">${t('bridge.field.access.hint')}</p>
+
+				${err && html`<p class="hint tight" style="color:var(--bad)">${err}</p>`}
+				<!-- Предупреждение о разрыве стоит В ФОРМЕ, а не в confirm:
+				     применение пересобирает бридж, и панель у ПК за этим самым
+				     портом на секунды теряет связь. Узнать об этом после
+				     нажатия — значит решить, что всё сломалось. -->
+				<p class="hint tight" style="color:var(--warn)">${t('bridge.sheet.warn')}</p>
+
+				<div class="sheet-actions">
+					<button class="wide primary" disabled=${!!busy || locked}
+						aria-busy=${on(busy, 'bridge', 'enable')} onClick=${submit}>
+						${on(busy, 'bridge', 'enable') ? html`<${Spin} /> ${t('bridge.enabling')}` : t('bridge.enable')}</button>
 					<button class="wide" onClick=${onClose}>${t('wifi.cancel')}</button>
 				</div>
 			</div>
