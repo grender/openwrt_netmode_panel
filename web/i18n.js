@@ -40,6 +40,19 @@ export const DICT = {
 		'mode.hint': 'Одно нажатие — переключение занимает 5–15 секунд',
 		'mode.hint.busy': 'Идёт операция, кнопки заблокированы',
 
+		// Вкладки. Подписи короткие намеренно: сегмент-контрол делит ширину
+		// телефона на три, и длинное слово сломало бы ряд.
+		'tabs.wifi': 'Wi-Fi',
+		'tabs.bypass': 'Обход',
+		'tabs.bridge': 'Проброс',
+		// Пустое состояние ОБЩЕГО слота операции. Не про смену режима, как
+		// mode.hint: слот виден на всех вкладках, в том числе там, где кнопок
+		// режима нет вовсе.
+		'job.hint': 'Панель выполняет одну операцию за раз',
+		// Заглушка вкладки проброса до следующей фазы: честнее пустой карточки.
+		'bridge.title': 'Проброс LAN в uplink',
+		'bridge.stub': 'Управление пробросом появится в следующей фазе. Пока схема настраивается только по ssh.',
+
 		'job.left': 'осталось ~{sec} с',
 		'job.blocked': 'кнопки заблокированы',
 
@@ -361,6 +374,13 @@ export const DICT = {
 
 		'mode.hint': 'One tap — switching takes 5–15 seconds',
 		'mode.hint.busy': 'Operation in progress, buttons are locked',
+
+		'tabs.wifi': 'Wi-Fi',
+		'tabs.bypass': 'Bypass',
+		'tabs.bridge': 'Bridge',
+		'job.hint': 'The panel runs one operation at a time',
+		'bridge.title': 'LAN-to-uplink bridge',
+		'bridge.stub': 'Bridge management arrives in the next phase. For now the setup is ssh-only.',
 
 		'job.left': '~{sec}s left',
 		'job.blocked': 'buttons locked',

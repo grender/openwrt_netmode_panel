@@ -71,9 +71,19 @@ button:disabled { cursor: not-allowed; }
 	background: #0c0e10; border-bottom: 1px solid var(--line);
 	flex-wrap: wrap;
 }
-.top-id { display: flex; align-items: baseline; gap: 12px; min-width: 0; flex-wrap: wrap; }
-.host { font: 600 15px var(--mono); letter-spacing: .02em; }
-.ap-meta { font: 12.5px var(--mono); color: var(--muted-2); }
+/* nowrap + многоточие на ap-meta, а не flex-wrap: высота шапки обязана не
+   зависеть от длины содержимого. Замер C1 сравнивает покой и джоб между
+   фикстурами с РАЗНЫМИ режимами (nikki и b4) — разные подписи чипа и ссылок
+   при переносе давали шапке то одну строку, то две, и карточки прыгали на
+   27px ровно в момент старта операции. Урезанный «grenderNet · 5G…» на
+   узком телефоне — меньшая цена, чем прыжок всего содержимого. */
+.top-id { display: flex; align-items: baseline; gap: 12px; min-width: 0; flex-wrap: nowrap; }
+.host { font: 600 15px var(--mono); letter-spacing: .02em; flex: none; }
+.top-id .mode-chip { flex: none; }
+.ap-meta {
+	font: 12.5px var(--mono); color: var(--muted-2);
+	min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .top-links { display: flex; gap: 8px; flex: none; align-items: center; }
 /* Кнопка рисуется только тогда, когда адрес панели известен, поэтому здесь
    остался один <a> и вариант на <button> (.toplink.off) удалён. Серая
@@ -427,6 +437,57 @@ button:disabled { cursor: not-allowed; }
 	}
 	.sheet-actions { flex-direction: row-reverse; }
 	.sheet-actions .wide { margin-top: 0; }
+}
+
+/* ─────────── вкладки и общий слот операции ─────────── */
+
+/* Сегмент-контрол по образцу .modes: та же геометрия «пилюля в корыте».
+   Фон свой, а не rgba из .modes: тот считался на цветном баннере, а табы
+   лежат на тёмном фоне страницы. */
+.tabs { display: flex; gap: 4px; background: #14181c; border-radius: var(--r); padding: 4px; margin: 12px 16px 0; }
+.tabs button {
+	flex: 1; min-height: 46px; border: 0; border-radius: 9px;
+	font: 600 14px var(--sans); background: transparent; color: var(--muted);
+	white-space: nowrap;
+}
+.tabs button[aria-pressed="true"] { background: #22282e; color: var(--fg); }
+/* Текущая вкладка disabled всегда (нажимать её незачем), но приглушать её
+   нельзя: выбранное состояние — это ответ на вопрос «где я», и гаснуть он
+   не должен. Тот же приём, что у кнопки текущего режима в .modes. */
+.tabs button[aria-pressed="true"]:disabled { opacity: 1; cursor: default; }
+
+/* Полоса слота операции между табами и содержимым вкладки. Отступы — свои,
+   а не от .wrap: слот не участвует в сетке карточек и не должен наследовать
+   её колонки. margin-top у .slot гасится: вертикальный ритм задаёт полоса. */
+.jobstrip { padding: 12px 16px 0; }
+.jobstrip .slot { margin-top: 0; }
+/* Фон и рамка заданы явно: .job считался на цветном баннере (белый с альфой),
+   а на тёмном фоне страницы той же альфы едва видно. Карточная пара
+   фон/рамка делает слот читаемым сам по себе. */
+.jobstrip .job { background: var(--card-2); border: 1px solid var(--line); }
+/* Провал: селектор с .jobstrip, потому что пара выше подняла специфичность
+   фона до (0,2,0), и голое .job.bad проиграло бы ей. Токены те же, что у
+   .note.err, — провал везде выглядит одинаково. */
+.jobstrip .job.bad { background: var(--bad-bg); border-color: var(--bad-line); color: var(--bad); }
+
+/* Чип режима в шапке — компактная замена уехавшему на вкладку баннеру.
+   Цвета — ровно баннерные (та же пара фон/текст), чтобы чип и баннер
+   читались как одно и то же состояние в двух местах. */
+.mode-chip.m-nikki { background: var(--nikki); color: #fff; }
+.mode-chip.m-b4 { background: var(--b4); color: #0f1113; }
+.mode-chip.m-off { background: var(--off); color: var(--fg); }
+.mode-chip.m-unknown { background: #3a2a2a; color: #f0c3bc; }
+
+/* Баннер режимов теперь живёт внутри сетки .wrap (вкладка «Обход») — ему
+   положено карточное скругление; сам .banner его не несёт, потому что был
+   полосой во всю ширину страницы. */
+.wrap > .banner { border-radius: var(--r-lg); }
+
+@media (min-width: 900px) {
+	.tabs { margin: 14px 26px 0; }
+	.jobstrip { padding: 14px 26px 0; }
+	/* Внутри сетки у баннера остаётся его собственный флекс-лейаут из общей
+	   десктопной секции выше; ширину колонок задаёт .full в разметке. */
 }
 
 /* ─────────── ожидание ─────────── */

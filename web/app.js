@@ -70,6 +70,19 @@ const START_GRACE = 20000;
 // секундного долбления роутера, которое на медленном канале само себе мешает.
 const RETRY_MS = 5000;
 
+// ─────────── вкладки ───────────
+
+// Закрытый список разделов. Текущую вкладку хранит ХЕШ адреса, а не состояние
+// и не localStorage: хеш переживает перезагрузку страницы силами браузера,
+// работает с кнопкой «назад» и виден в адресной строке — ссылку на конкретный
+// раздел можно унести как есть. Незнакомое значение сводится к 'wifi' молча:
+// битый хеш — не повод для пустого экрана.
+const TAB_IDS = ['wifi', 'bypass', 'bridge'];
+const tabFromHash = () => {
+	const h = location.hash.slice(1);
+	return TAB_IDS.includes(h) ? h : 'wifi';
+};
+
 // ─────────── утилиты ───────────
 
 // Таймаут обязателен на каждом запросе: зависший (именно зависший, а не
@@ -155,6 +168,8 @@ const Skel = ({ n = 3, cls = '', wrap = 'rows' }) => html`
 
 function App() {
 	const [lang, setLang] = useState(() => localStorage.getItem('netmode.lang') || 'ru');
+	// Отражение хеша, не источник: пишет сюда только слушатель hashchange ниже.
+	const [tab, setTab] = useState(tabFromHash);
 	const [status, setStatus] = useState(null);
 	const [stale, setStale] = useState(false);
 	// undefined, а не null: «ещё не спрашивали» и «спросили, не ответили» —
@@ -277,6 +292,19 @@ function App() {
 
 	const t = makeT(lang);
 	useEffect(() => { localStorage.setItem('netmode.lang', lang); document.documentElement.lang = lang; }, [lang]);
+
+	// Вкладка живёт в хеше, состояние — лишь его отражение. Слушаем hashchange,
+	// а не переключаем состояние в обработчике клика: кнопка «назад» браузера
+	// и правка адреса руками обязаны работать так же, как нажатие на таб, —
+	// иначе у вкладки оказалось бы два источника правды, и они бы разъехались.
+	useEffect(() => {
+		const onHash = () => setTab(tabFromHash());
+		window.addEventListener('hashchange', onHash);
+		return () => window.removeEventListener('hashchange', onHash);
+	}, []);
+	// Повторный клик по текущему табу события не даёт (хеш не меняется), но и
+	// не нужен: кнопка текущей вкладки disabled — как у переключателя режимов.
+	const goTab = (id) => { location.hash = id; };
 
 	// Опрос статуса. Провал не гасит панель: показываем последнее известное
 	// состояние и честно помечаем его устаревшим — пустой экран в момент,
@@ -740,43 +768,46 @@ function App() {
 
 	return html`
 		<${Top} s=${status} t=${t} lang=${lang} setLang=${setLang} onNikkiOpen=${onNikkiOpen} />
-		<${Banner} s=${status} t=${t} svc=${svc} running=${running} failed=${failed} busy=${busy} locked=${locked}
-			skew=${skew.current}
-			onMode=${(m) => act('mode:' + m, async () => {
-				const r = await api('/api/mode', { method: 'POST', body: JSON.stringify({ mode: m }) }, T_MODE);
-				// Джоб из 202 — не заглушка: в нём настоящие started_at
-				// и eta_sec, поэтому обратный отсчёт стартует верным.
-				sow(r);
-			})} />
+		<${Tabs} tab=${tab} t=${t} onTab=${goTab} />
+
+		<!-- Слот операции стоит НАД содержимым вкладки и вне её намеренно:
+		     джоб один на весь демон (очереди нет), запускается с любой
+		     вкладки, а смотреть на его ход владелец может с любой другой.
+		     Спрятанный внутрь вкладки, прогресс исчезал бы при переходе —
+		     и панель снова молчала бы про идущую операцию. -->
+		<${JobSlot} running=${running} failed=${failed} locked=${locked} skew=${skew.current} t=${t} />
 
 		<${Toasts} toast=${toast} t=${t} onClose=${dropToast}
 			onCta=${() => setTimeout(dropToast, 0)} />
 
 		<div class="wrap">
-			<!-- Причина провала живёт здесь, а не в баннере рядом со своим
+			${tab === 'bypass' && html`
+			<${ModesCard} s=${status} t=${t} svc=${svc} running=${running} busy=${busy} locked=${locked}
+				onMode=${(m) => act('mode:' + m, async () => {
+					const r = await api('/api/mode', { method: 'POST', body: JSON.stringify({ mode: m }) }, T_MODE);
+					// Джоб из 202 — не заглушка: в нём настоящие started_at
+					// и eta_sec, поэтому обратный отсчёт стартует верным.
+					sow(r);
+				})} />
+
+			<!-- Причина провала живёт здесь, а не в слоте рядом со своим
 			     заголовком. Сообщения демона длинные (internal/httpapi/
-			     modehandler.go:129), а слот баннера держит постоянную высоту —
+			     modehandler.go:129), а слот держит постоянную высоту —
 			     внутри него такой текст пришлось бы обрезать, а обрезанное
 			     сообщение об ошибке хуже отсутствующего: оно выглядит полным.
 			     .note — то место, где сообщения в этой панели уже живут: 14px
 			     на --bad-bg во всю ширину, и растёт оно вниз, никуда не толкая
-			     карточки. Заголовок остаётся в баннере, прямо над этой
-			     строкой, — вместе они читаются как одно сообщение.
-			     У upstream этот блок пропускается: его причину показывает
-			     UpstreamFailNote ниже, рядом с карточкой сети, и текст демона
-			     уходит туда же вторым планом. Здесь он был бы второй копией
-			     одной и той же неудачи, да ещё и посреди страницы nikki/b4,
-			     никак не рядом с тем, что её вызвало. -->
+			     карточки. Заголовок остаётся в слоте — вместе они читаются
+			     как одно сообщение (слот глобален, так что заголовок виден
+			     и здесь). У upstream этот блок пропускается: его причину
+			     показывает UpstreamFailNote на вкладке Wi-Fi, рядом
+			     с карточкой сети, и текст демона уходит туда же вторым
+			     планом. Здесь он был бы второй копией одной и той же
+			     неудачи, никак не рядом с тем, что её вызвало. -->
 			${failed && failed.error && failed.kind !== 'upstream' && html`
 				<div class="note err full"><p>${failed.error}</p></div>`}
 
-			<!-- Перед SelectionNote: неоднозначный выбор чинится кнопкой в
-			     панели, а отсутствие исполнителя не чинится ничем из того,
-			     что здесь нарисовано. Совет «нажмите» под советом «нажимать
-			     бесполезно» читается как противоречие. -->
 			<${ExecutorsNote} s=${status} t=${t} />
-
-			<${SelectionNote} s=${status} t=${t} />
 
 			${status.mode === 'nikki' && html`
 				<${NikkiCard} data=${nikki} svc=${svc.nikki} t=${t} busy=${busy} locked=${locked}
@@ -794,6 +825,26 @@ function App() {
 			${status.mode === 'off' && html`
 				<div class="card"><h2>${t('mode.off')}</h2>
 					<p class="hint">${t('sub.off')}</p></div>`}
+
+			<${SubCard} s=${status} logs=${logs} t=${t} lang=${lang} busy=${busy}
+				onUpdate=${() => act('sub', async () => {
+					sow(await api('/api/subscription/update', { method: 'POST' }));
+				// Обновление подписки — это то, что ПРОИЗВОДИТ список узлов
+				// Nikki, поэтому перечитываем и его, а не только журнал.
+				}, async () => { await loadLogs(); await loadNikki(); })} />`}
+
+			${tab === 'wifi' && html`
+			<!-- ExecutorsNote рисуется на ОБЕИХ рабочих вкладках, и это не
+			     дубль: смысл блока — предупредить ДО нажатия, а самое опасное
+			     нажатие живёт именно здесь (переключение сети коммитит
+			     конфигурацию до применения). Спрятать его на соседней вкладке
+			     значило бы вернуть «узнал после нажатия» ровно там, где блок
+			     заводили. Перед SelectionNote: неоднозначный выбор чинится
+			     кнопкой в панели, а отсутствие исполнителя не чинится ничем
+			     из того, что здесь нарисовано. -->
+			<${ExecutorsNote} s=${status} t=${t} />
+
+			<${SelectionNote} s=${status} t=${t} />
 
 			<${WifiCard} nets=${nets} scan=${scan} t=${t} busy=${busy} locked=${locked} status=${status}
 				onScan=${() => act('scan', async () => setScan(await api('/api/wifi/scan', null, T_SCAN)))}
@@ -824,14 +875,11 @@ function App() {
 			${upFail && upFailKey !== failHidden && html`
 				<${UpstreamFailNote} fail=${upFail}
 					detail=${(upFailed && upFailed.error) || upFail.detail} t=${t}
-					onClose=${() => setFailHidden(upFailKey)} />`}
+					onClose=${() => setFailHidden(upFailKey)} />`}`}
 
-			<${SubCard} s=${status} logs=${logs} t=${t} lang=${lang} busy=${busy}
-				onUpdate=${() => act('sub', async () => {
-					sow(await api('/api/subscription/update', { method: 'POST' }));
-				// Обновление подписки — это то, что ПРОИЗВОДИТ список узлов
-				// Nikki, поэтому перечитываем и его, а не только журнал.
-				}, async () => { await loadLogs(); await loadNikki(); })} />
+			${tab === 'bridge' && html`
+			<div class="card full"><h2>${t('bridge.title')}</h2>
+				<p class="hint">${t('bridge.stub')}</p></div>`}
 		</div>
 
 		${sheet && html`
@@ -1107,10 +1155,16 @@ function Top({ s, t, lang, setLang, onNikkiOpen }) {
 	// кнопке Nikki всё ещё может не открыть панель (нет api_secret, не скачан
 	// дашборд) — на это отвечает nikkiPanel кодом отказа, и это уже настоящий
 	// ответ, а не догадка панели по пустому links.nikki.
+	// Чип режима — компактная замена баннеру, который уехал на вкладку
+	// «Обход»: какой режим включён — первое, ради чего панель открывают,
+	// и ответ обязан быть виден с любой вкладки. Цвет тот же, что у баннера
+	// (m-*), поэтому связь «чип — баннер» читается без слов.
+	const m = ['nikki', 'b4', 'off'].includes(s.mode) ? s.mode : 'unknown';
 	return html`
 		<div class="top">
 			<div class="top-id">
 				<span class="host">${s.hostname || 'netmoded'}</span>
+				<span class="chip mode-chip m-${m}">${t('mode.' + m)}</span>
 				${ap.ssid && html`<span class="ap-meta">${t('ap.broadcasts', { ssid: ap.ssid })}${meta ? ' · ' + meta : ''}</span>`}
 			</div>
 			<div class="top-links">
@@ -1141,7 +1195,23 @@ function Top({ s, t, lang, setLang, onNikkiOpen }) {
 		</div>`;
 }
 
-// ─────────── баннер ───────────
+// ─────────── вкладки ───────────
+
+// Сегмент-контрол по образцу .modes, а не ARIA-табы с role="tablist": в панели
+// уже есть ровно один язык для «нажата одна из N» — aria-pressed, и второй
+// словарь для того же смысла читался бы скринридером как другой вид контрола.
+// Кнопка текущей вкладки disabled по той же причине, что у кнопки текущего
+// режима: нажимать её незачем, а приглушения не будет (см. CSS .tabs).
+function Tabs({ tab, t, onTab }) {
+	return html`
+		<nav class="tabs">
+			${TAB_IDS.map((id) => html`
+				<button aria-pressed=${tab === id} disabled=${tab === id}
+					onClick=${() => onTab(id)}>${t('tabs.' + id)}</button>`)}
+		</nav>`;
+}
+
+// ─────────── слот операции ───────────
 
 // Заголовок провала — явной таблицей, как jobText, а не склейкой
 // t('job.fail.' + kind): makeT при промахе возвращает сам ключ, и заявленный
@@ -1153,9 +1223,83 @@ const failText = (j, t) => (j.kind === 'mode' ? t('job.fail.mode', { mode: j.arg
 		// где нажимали, и там же переведённая машинная причина.
 		: j.kind === 'upstream' ? t('job.fail.upstream') : t('job.fail'));
 
+// Слот операции. Бывшая часть баннера режимов, теперь общий для всех вкладок:
+// джоб в демоне один (очереди нет, ADR-0013), запускается с любой вкладки,
+// и его ход обязан быть виден с любой другой — спрятанный внутрь вкладки,
+// прогресс исчезал бы при переходе, и панель молчала бы про идущую операцию.
+//
 // skew по умолчанию ноль: без него забытый проп дал бы NaN в ширине полоски,
 // то есть невалидный style, а не заметную ошибку.
-function Banner({ s, t, svc, running, failed, busy, locked, skew = 0, onMode }) {
+function JobSlot({ running, failed, locked, skew = 0, t }) {
+	// Прогресс считается по running, а не по job: у доигранного джоба, который
+	// демон держит в статусе ещё пять секунд, отсчитывать нечего.
+	//
+	// «Сейчас» берётся в системе отсчёта РОУТЕРА: started_at и eta_sec заданы
+	// его часами, а тикает время в браузере. Голая разность Date.now() минус
+	// started_at вычитает одни часы из других и на коробке без RTC (у которой
+	// не поднялся upstream — тот самый случай, ради которого панель и делается)
+	// врёт на часы: полоска либо мгновенно упирается в 99% с «осталось 0 с»,
+	// либо не сдвигается вовсе. Сдвиг измерен по последнему ответу статуса
+	// (см. skew в App) и обнуляется сам собой на роутере с верным временем.
+	const now = Date.now() + skew;
+	const gone = running ? (now - new Date(running.started_at)) / 1000 : 0;
+	const pct = running && running.eta_sec
+		? Math.min(99, Math.max(0, Math.round((gone / running.eta_sec) * 100)))
+		: 0;
+	const left = running && running.eta_sec
+		? Math.max(0, running.eta_sec - Math.round(gone))
+		: null;
+
+	// Содержимое слота — ровно одно из трёх, и последняя ветка обязана быть
+	// else, а не `&&`. Слот держит высоту призраком, поэтому пустое содержимое
+	// даёт не «ничего», а дыру ровно в высоту .job под табами. Здесь всегда
+	// есть что сказать: пока нечего показывать про операцию, показывается
+	// подсказка — общая (job.hint), а не про смену режима: слот виден и там,
+	// где кнопок режима нет вовсе.
+	const slot = () => {
+		if (running) {
+			return html`
+				<div class="job">
+					<div class="job-row">
+						<span class="blink">${jobText(running, t)}</span>
+						<span style="font-family:var(--mono);opacity:.8">
+							${left != null ? t('job.left', { sec: left }) : t('job.blocked')}</span>
+					</div>
+					<div class="bar"><i style="width:${pct}%"></i></div>
+				</div>`;
+		}
+		// Только заголовок: причина уехала в .note err на свою вкладку — см. App.
+		if (failed) {
+			return html`<div class="job bad"><div class="job-row"><span>${failText(failed, t)}</span></div></div>`;
+		}
+		return html`<div class="hint" style="opacity:.8">${locked ? t('mode.hint.busy') : t('job.hint')}</div>`;
+	};
+
+	// Слот постоянной высоты. Подсказка, идущий джоб и провал — три состояния
+	// одного места, а не три блока, приходящих и уходящих из потока: старт
+	// джоба иначе разом убирал бы .hint и добавлял ~74px, и содержимое
+	// вкладки уезжало бы вниз ровно в тот момент, когда владелец смотрит,
+	// сработало ли нажатие. Высоту держит призрак — безусловно, потому что
+	// держать её больше нечем: он не смотрит ни на running, ни на failed,
+	// иначе исчезал бы вместе с тем, что замещает. Неразрывный пробел, а не
+	// пустой span: высоту строки задают метрики шрифта, и без единого символа
+	// их нечему задать. Символом, а не сущностью &#160;, — htm сущности не
+	// разбирает и напечатал бы их как текст.
+	return html`
+		<div class="jobstrip">
+			<div class="slot">
+				<div class="job ghost" aria-hidden="true">
+					<div class="job-row"><span>${'\u00a0'}</span></div>
+					<div class="bar"></div>
+				</div>
+				${slot()}
+			</div>
+		</div>`;
+}
+
+// ─────────── карточка режимов (вкладка «Обход») ───────────
+
+function ModesCard({ s, t, svc, running, busy, locked, onMode }) {
 	const m = ['nikki', 'b4', 'off'].includes(s.mode) ? s.mode : 'unknown';
 	const ssid = s.configured_ssid || s.associated_ssid;
 
@@ -1191,51 +1335,15 @@ function Banner({ s, t, svc, running, failed, busy, locked, skew = 0, onMode }) 
 		? (online ? t('net.tip.online', { ssid }) : t('net.tip.offline', { ssid }))
 		: t('net.nossid');
 
-	// Прогресс считается по running, а не по job: у доигранного джоба, который
-	// демон держит в статусе ещё пять секунд, отсчитывать нечего.
-	//
-	// «Сейчас» берётся в системе отсчёта РОУТЕРА: started_at и eta_sec заданы
-	// его часами, а тикает время в браузере. Голая разность Date.now() минус
-	// started_at вычитает одни часы из других и на коробке без RTC (у которой
-	// не поднялся upstream — тот самый случай, ради которого панель и делается)
-	// врёт на часы: полоска либо мгновенно упирается в 99% с «осталось 0 с»,
-	// либо не сдвигается вовсе. Сдвиг измерен по последнему ответу статуса
-	// (см. skew в App) и обнуляется сам собой на роутере с верным временем.
-	const now = Date.now() + skew;
-	const gone = running ? (now - new Date(running.started_at)) / 1000 : 0;
-	const pct = running && running.eta_sec
-		? Math.min(99, Math.max(0, Math.round((gone / running.eta_sec) * 100)))
-		: 0;
-	const left = running && running.eta_sec
-		? Math.max(0, running.eta_sec - Math.round(gone))
-		: null;
-
-	// Содержимое слота — ровно одно из трёх, и последняя ветка обязана быть
-	// else, а не `&&`. Слот держит высоту призраком, поэтому пустое содержимое
-	// даёт не «ничего», а дыру ровно в высоту .job под кнопками режимов.
-	// Здесь всегда есть что сказать: пока нечего показывать про операцию,
-	// показывается подсказка.
-	const slot = () => {
-		if (running) {
-			return html`
-				<div class="job">
-					<div class="job-row">
-						<span class="blink">${jobText(running, t)}</span>
-						<span style="font-family:var(--mono);opacity:.8">
-							${left != null ? t('job.left', { sec: left }) : t('job.blocked')}</span>
-					</div>
-					<div class="bar"><i style="width:${pct}%"></i></div>
-				</div>`;
-		}
-		// Только заголовок: причина уехала в .note err в .wrap — см. App.
-		if (failed) {
-			return html`<div class="job bad"><div class="job-row"><span>${failText(failed, t)}</span></div></div>`;
-		}
-		return html`<div class="hint" style="opacity:.8">${locked ? t('mode.hint.busy') : t('mode.hint')}</div>`;
-	};
-
+	// Разметка осталась баннерной — .banner и его цвета фоном и есть главная
+	// индикация режима, — но живёт блок теперь в сетке .wrap на вкладке
+	// «Обход», поэтому full (во всю ширину сетки) и скругление в CSS. Слота
+	// операции внутри больше нет: он общий и стоит над вкладками (JobSlot).
+	// Его место под кнопками занял статичный hint про цену переключения —
+	// раньше эту фразу показывало пустое состояние слота, и терять её нельзя:
+	// она предупреждает про 5–15 секунд разрыва ДО нажатия.
 	return html`
-		<div class="banner m-${m}">
+		<div class="banner full m-${m}">
 			<div class="headline">
 				<h1>${t('title.' + m)}</h1>
 				<div class="sub">${sub}</div>
@@ -1256,28 +1364,7 @@ function Banner({ s, t, svc, running, failed, busy, locked, skew = 0, onMode }) 
 							onClick=${() => onMode(id)}>
 							${on(busy, 'mode', id) && html`<${Spin} /> `}${t('mode.' + id)}</button>`)}
 				</div>
-				<!-- Слот постоянной высоты. Подсказка, идущий джоб и провал —
-				     три состояния одного места, а не три блока, приходящих
-				     и уходящих из потока: раньше старт джоба разом убирал .hint
-				     и добавлял ~74px, и карточки под баннером уезжали вниз
-				     ровно в тот момент, когда владелец смотрит, сработало ли
-				     нажатие. Высоту держит призрак — безусловно, потому что
-				     держать её больше нечем: он не смотрит ни на running, ни на
-				     failed, иначе исчезал бы вместе с тем, что замещает.
-				     Неразрывный пробел, а не пустой span: высоту строки задают
-				     метрики шрифта, и без единого символа их нечему задать.
-				     Символом, а не сущностью &#160;, — htm сущности не
-				     разбирает и напечатал бы их как текст.
-				     И .job, и .hint обязаны быть детьми .slot: до прямых детей
-				     .side десктопное .slot{width:100%} не дотянется, и на
-				     широком экране вернётся третья строка флекса. -->
-				<div class="slot">
-					<div class="job ghost" aria-hidden="true">
-						<div class="job-row"><span>${'\u00a0'}</span></div>
-						<div class="bar"></div>
-					</div>
-					${slot()}
-				</div>
+				<div class="hint" style="opacity:.8">${t('mode.hint')}</div>
 			</div>
 		</div>`;
 }

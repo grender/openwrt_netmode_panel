@@ -62,27 +62,37 @@ const T_TOTAL = 180000;  // прогон целиком
 const WIDTHS = [320, 390, 1440];
 
 // Состояния. scenario — имя из SCENARIOS мока (web/mock-server.mjs), rm —
-// эмуляция prefers-reduced-motion: reduce.
+// эмуляция prefers-reduced-motion: reduce, tab — вкладка панели (хеш адреса):
+// после разделения на вкладки одна и та же фикстура рисует РАЗНУЮ разметку
+// в зависимости от хеша, и состояние без вкладки перестало быть состоянием.
 //
 // Пары «покой/джоб» повторяются с rm намеренно: в @media
 // (prefers-reduced-motion: reduce) панель гасит анимации (app.css), и если
 // правило заодно тронет размеры, слот перестанет держать высоту ровно у тех
 // владельцев, которые попросили меньше движения.
+//
+// job-fail-* мерятся на вкладке bypass: блок .note.err с текстом ошибки
+// режима теперь живёт там (web/app.js), и «карточки сдвигаются ровно на его
+// высоту» — объявленное поведение именно этой вкладки. single-bypass /
+// job-bypass — та же пара покой/джоб, но для bypass: слот общий, а карточки
+// под ним у каждой вкладки свои, и держать высоту он обязан на обеих.
 const STATES = [
-	{ key: 'single', scenario: 'single', rm: false },
-	{ key: 'job', scenario: 'job', rm: false },
-	{ key: 'job-fail-short', scenario: 'job-fail-short', rm: false },
-	{ key: 'job-fail-long', scenario: 'job-fail-long', rm: false },
-	{ key: 'upstream-fail-seen', scenario: 'upstream-fail-seen', rm: false },
-	{ key: 'upstream-fail-long', scenario: 'upstream-fail-long', rm: false },
-	{ key: 'upstream-job-long', scenario: 'upstream-job-long', rm: false },
-	{ key: 'upstream-long-list', scenario: 'upstream-long-list', rm: false },
-	{ key: 'ambiguous', scenario: 'ambiguous', rm: false },
+	{ key: 'single', scenario: 'single', tab: 'wifi', rm: false },
+	{ key: 'job', scenario: 'job', tab: 'wifi', rm: false },
+	{ key: 'single-bypass', scenario: 'single', tab: 'bypass', rm: false },
+	{ key: 'job-bypass', scenario: 'job', tab: 'bypass', rm: false },
+	{ key: 'job-fail-short', scenario: 'job-fail-short', tab: 'bypass', rm: false },
+	{ key: 'job-fail-long', scenario: 'job-fail-long', tab: 'bypass', rm: false },
+	{ key: 'upstream-fail-seen', scenario: 'upstream-fail-seen', tab: 'wifi', rm: false },
+	{ key: 'upstream-fail-long', scenario: 'upstream-fail-long', tab: 'wifi', rm: false },
+	{ key: 'upstream-job-long', scenario: 'upstream-job-long', tab: 'wifi', rm: false },
+	{ key: 'upstream-long-list', scenario: 'upstream-long-list', tab: 'wifi', rm: false },
+	{ key: 'ambiguous', scenario: 'ambiguous', tab: 'wifi', rm: false },
 	// База сравнения для длинных состояний. Само по себе это состояние ничего
 	// не проверяет — оно нужно C3/C4 (см. BASE ниже).
-	{ key: 'single-long', scenario: 'single-long', rm: false },
-	{ key: 'single-rm', scenario: 'single', rm: true },
-	{ key: 'job-rm', scenario: 'job', rm: true },
+	{ key: 'single-long', scenario: 'single-long', tab: 'wifi', rm: false },
+	{ key: 'single-rm', scenario: 'single', tab: 'wifi', rm: true },
+	{ key: 'job-rm', scenario: 'job', tab: 'wifi', rm: true },
 ];
 
 const REST = 'single';
@@ -94,14 +104,14 @@ const JOB = 'job';
 //
 // UpstreamFailNote стоит НИЖЕ карточки Wi-Fi (web/app.js: «Ниже WifiCard,
 // а не выше: причина провала обязана стоять рядом с тем местом, где
-// нажимали»), поэтому первую карточку он не двигает вовсе — это C4, — а
-// последнюю двигает обязательно, и это C3.
+// нажимали») и на вкладке wifi замыкает сетку, поэтому карточку он не
+// двигает вовсе — это C4, — а низ .wrap растит обязательно, и это C3.
 //
-// job-fail-short/long сюда не входят: там .note.err.full выносится в начало
-// .wrap, ВЫШЕ всех карточек, и двигает их все. Это объявленное поведение
-// (web/README.md, «Критерий», пункт 2: число больше ровно на высоту блока
-// с текстом ошибки), а не регрессия, и требовать от него C4 значило бы
-// требовать отмены принятого решения.
+// job-fail-short/long сюда не входят: их .note.err.full живёт на вкладке
+// bypass ниже баннера режимов и двигает карточки под собой. Это объявленное
+// поведение (web/README.md, «Критерий», пункт 2: число больше ровно на
+// высоту блока с текстом ошибки), а не регрессия, и требовать от него C4
+// значило бы требовать отмены принятого решения.
 const UPSTREAM_FAIL = ['upstream-fail-seen', 'upstream-fail-long'];
 
 // С ЧЕМ сравнивать каждое из них. Не с REST для всех подряд — и это не
@@ -146,23 +156,36 @@ const BASE = {
 // врёт: он считает по типу элемента среди братьев, а перед карточками в .wrap
 // стоят div.note (провал джоба) и div.note (SelectionNote) — тоже DIV. Номер
 // поехал бы, причём в разных состояниях по-разному.
-const MEASURE = `(() => {
+const MEASURE_FOR = (tab) => `(() => {
+	const tab = ${JSON.stringify(tab)};
+	// Сначала — что открыта НУЖНАЯ вкладка: хеш из адреса мог не примениться
+	// (битый tabFromHash), и тогда все числа снялись бы с чужой разметки.
+	const pressed = document.querySelector('.tabs button[aria-pressed="true"]');
+	if (!pressed) return { ok: false, why: 'нет нажатой кнопки вкладки (.tabs)' };
 	const cards = Array.from(document.querySelectorAll('.wrap .card'));
-	if (cards.length < 2) return { ok: false, why: 'карточек в .wrap: ' + cards.length + ', нужно не меньше двух' };
+	if (cards.length < 1) return { ok: false, why: 'в .wrap нет ни одной карточки' };
 	const head = (c) => { const h = c.querySelector('h2'); return h ? h.textContent.trim() : '(нет h2)'; };
-	const wifiH = head(cards[1]);
-	if (!/Внешняя сеть|Uplink network/.test(wifiH)) {
-		return { ok: false, why: 'карточка [1] не про Wi-Fi, заголовок: ' + JSON.stringify(wifiH) };
+	// Структурный якорь у каждой вкладки свой: на wifi первой (и единственной)
+	// карточкой обязана быть карточка внешней сети, на bypass последней —
+	// подписка. Совпадение якоря доказывает и вкладку, и что статус доехал.
+	if (tab === 'wifi') {
+		const wifiH = head(cards[0]);
+		if (!/Внешняя сеть|Uplink network/.test(wifiH)) {
+			return { ok: false, why: 'карточка [0] не про Wi-Fi, заголовок: ' + JSON.stringify(wifiH) };
+		}
+	} else {
+		const subH = head(cards[cards.length - 1]);
+		if (!/Подписка|Subscription/.test(subH)) {
+			return { ok: false, why: 'последняя карточка не про подписку, заголовок: ' + JSON.stringify(subH) };
+		}
 	}
-	const subH = head(cards[cards.length - 1]);
-	if (!/Подписка|Subscription/.test(subH)) {
-		return { ok: false, why: 'последняя карточка не про подписку, заголовок: ' + JSON.stringify(subH) };
-	}
-	const slot = document.querySelector('.slot');
-	if (!slot) return { ok: false, why: 'в баннере нет .slot' };
+	const slot = document.querySelector('.jobstrip .slot');
+	if (!slot) return { ok: false, why: 'нет общего слота (.jobstrip .slot)' };
 
 	const top = (el) => el.getBoundingClientRect().top;
-	const row = cards[1].querySelector('.row');
+	const row = cards[0].querySelector('.row');
+	const wrap = document.querySelector('.wrap:not(.toasts)');
+	if (!wrap) return { ok: false, why: 'нет .wrap с карточками' };
 
 	// Узлы, у которых содержимое шире их самих. Это НЕ критерий, а число
 	// в отчёт: перенос кнопок в .row объявлен осознанной ценой (app.css),
@@ -226,8 +249,12 @@ const MEASURE = `(() => {
 	return {
 		ok: true,
 		card1Top: top(cards[0]),
-		wifiTop: top(cards[1]),
-		subTop: top(cards[cards.length - 1]),
+		lastTop: top(cards[cards.length - 1]),
+		// Низ сетки, а не позиция «карточки под блоком провала»: на вкладке
+		// wifi блок провала переключения — ПОСЛЕДНИЙ элемент сетки, ниже него
+		// карточек нет, и доказать его физическое появление (C3) может только
+		// рост низа .wrap.
+		wrapBottom: wrap.getBoundingClientRect().bottom,
 		slotH: slot.getBoundingClientRect().height,
 		rowH: row ? row.getBoundingClientRect().height : null,
 		docW: document.documentElement.scrollWidth,
@@ -409,13 +436,13 @@ const evalJS = async (cdp, expr) => {
 // дорисовывается волнами: сперва статус (карточки режима), потом
 // /api/wifi/networks и /api/logs — между волнами разметка выглядит
 // законченной, но числа ещё поедут.
-const settle = async (cdp) => {
+const settle = async (cdp, tab) => {
 	phase.what = 'стабилизация метрик';
 	const till = Date.now() + T_SETTLE;
 	let prevJSON = '';
 	let last = null;
 	while (Date.now() < till) {
-		const m = await evalJS(cdp, MEASURE);
+		const m = await evalJS(cdp, MEASURE_FOR(tab));
 		const j = JSON.stringify(m);
 		if (m.ok && j === prevJSON) return m;
 		prevJSON = j;
@@ -435,7 +462,7 @@ const padL = (s, n) => String(s).padStart(n);
 
 const printTable = (results) => {
 	const cols = [
-		['card1Top', 9], ['wifiTop', 9], ['subTop', 9], ['slotH', 7],
+		['card1Top', 9], ['lastTop', 9], ['wrapBot', 9], ['slotH', 7],
 		['rowH', 7], ['docW', 6], ['winW', 6], ['overflow', 8],
 	];
 	for (const w of WIDTHS) {
@@ -444,7 +471,7 @@ const printTable = (results) => {
 		for (const st of STATES) {
 			const m = results[w][st.key];
 			const cells = [
-				num(m.card1Top), num(m.wifiTop), num(m.subTop), num(m.slotH),
+				num(m.card1Top), num(m.lastTop), num(m.wrapBottom), num(m.slotH),
 				num(m.rowH), String(m.docW), String(m.winW), String(m.overflowers.length),
 			];
 			console.log(pad(st.key, 20) + cells.map((v, i) => padL(v, cols[i][1])).join(''));
@@ -491,8 +518,11 @@ const checkCriteria = (results) => {
 	// высоту призраком из той же разметки, поэтому равенство обязано быть
 	// ТОЧНЫМ. Расхождение в 1px означает, что призрак собран не из того, что
 	// замещает, — то есть прыжок вернётся, просто уменьшенный.
+	// Пара для bypass добавлена после разделения на вкладки: слот один, но
+	// карточки под ним у каждой вкладки свои, и держать их обязан на обеих.
 	for (const w of WIDTHS) {
-		for (const [a, b] of [[REST, JOB], [REST + '-rm', JOB + '-rm']]) {
+		for (const [a, b] of [[REST, JOB], [REST + '-rm', JOB + '-rm'],
+			['single-bypass', 'job-bypass']]) {
 			if (R(w, a).card1Top !== R(w, b).card1Top) {
 				bad.push(`C1: ${w}px — card1Top ${a}=${num(R(w, a).card1Top)} ≠ ${b}=${num(R(w, b).card1Top)}`);
 			}
@@ -519,13 +549,14 @@ const checkCriteria = (results) => {
 	}
 
 	// C3. Доказательство, что замер физически видит появление блока провала.
-	// Старая точка (card1Top) этого не могла в принципе: UpstreamFailNote стоит
-	// ниже неё, и при любой поломке блока число не дрогнуло бы.
+	// Точка — низ .wrap, а не карточка под блоком: на вкладке wifi блок
+	// провала переключения стоит ПОСЛЕДНИМ в сетке, карточек ниже нет, и
+	// расти от его появления умеет только низ сетки.
 	for (const w of WIDTHS) {
 		for (const s of UPSTREAM_FAIL) {
 			const b = BASE[s];
-			if (!(R(w, s).subTop > R(w, b).subTop)) {
-				bad.push(`C3: ${w}px — subTop ${s}=${num(R(w, s).subTop)} не больше ${b}=${num(R(w, b).subTop)}`);
+			if (!(R(w, s).wrapBottom > R(w, b).wrapBottom)) {
+				bad.push(`C3: ${w}px — wrapBottom ${s}=${num(R(w, s).wrapBottom)} не больше ${b}=${num(R(w, b).wrapBottom)}`);
 			}
 		}
 	}
@@ -540,16 +571,12 @@ const checkCriteria = (results) => {
 			const base = BASE[s];
 			if (R(w, s).card1Top !== R(w, base).card1Top) {
 				const d1 = R(w, s).card1Top - R(w, base).card1Top;
-				const d2 = R(w, s).wifiTop - R(w, base).wifiTop;
-				// Разложение сдвига, без которого сообщение не чинится. Равные
-				// дельты у первой и второй карточки означают, что вырос кто-то
-				// НАД .wrap — шапка или баннер, — и блок провала тут ни при чём:
-				// он стоит ниже обеих. Разные дельты — это уже он.
-				const where = d1 === d2
-					? 'сдвиг пришёл сверху (шапка/баннер), блок провала карточки не двигал'
-					: 'сдвиг между карточками — виноват блок провала';
+				// Блок провала стоит НИЖЕ единственной карточки вкладки wifi,
+				// двигать её он не умеет физически — значит, любой сдвиг здесь
+				// пришёл сверху: шапка, табы, общий слот или заметки над
+				// карточкой. Это и есть то, что C4 ловит.
 				bad.push(`C4: ${w}px — card1Top ${s}=${num(R(w, s).card1Top)} ≠ ${base}=${num(R(w, base).card1Top)}`
-					+ ` (Δ${num(d1)}, у wifiTop Δ${num(d2)}: ${where})`);
+					+ ` (Δ${num(d1)}: вырос кто-то НАД карточкой — шапка/табы/слот/заметки)`);
 			}
 		}
 	}
@@ -649,11 +676,13 @@ async function main() {
 			});
 			phase.what = 'навигация';
 			// Подписка ДО навигации — см. cdp.wait. Нонс в адресе гарантирует
-			// настоящую навигацию, а не «мы уже здесь».
+			// настоящую навигацию, а не «мы уже здесь»: смена одного хеша
+			// навигацией не считается, и без нонса состояние с той же вкладкой
+			// осталось бы на старой странице со старым сценарием.
 			const loaded = cdp.wait('Page.loadEventFired', T_SETTLE);
-			await cdp.send('Page.navigate', { url: `${base}/?geom=${++nonce}` });
+			await cdp.send('Page.navigate', { url: `${base}/?geom=${++nonce}#${st.tab}` });
 			await loaded;
-			results[w][st.key] = await settle(cdp);
+			results[w][st.key] = await settle(cdp, st.tab);
 		}
 	}
 
