@@ -1,0 +1,22 @@
+{
+  "fingerprint": "sha256:dead10cc0ffee123",
+  "enabled": true,
+  "leg_ip": "192.168.0.85",
+  "pc_ip": "192.168.0.90",
+  "ap_access": false,
+  "relayd": { "installed": true, "running": false },
+  "port": { "name": "eth1", "carrier": false, "speed_mbps": null, "carrier_changes": 241 },
+  "uplink": {
+    "up": true,
+    "address": "192.168.0.234",
+    "mask": 24,
+    "gateway": "192.168.0.1",
+    "device": "phy0.0-sta0"
+  },
+  "last_fail": {
+    "action": "enable",
+    "reason": "relay_down",
+    "detail": "интерфейс проброса поднят, но процесс relayd не запустился — ПК не будет виден uplink-сети",
+    "at": "2026-09-01T14:20:11Z"
+  }
+}

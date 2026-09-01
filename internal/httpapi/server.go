@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"netmoded/internal/b4"
@@ -70,7 +71,17 @@ type Server struct {
 	// fails — последняя неудачная смена внешней сети. Один слот в памяти,
 	// перезапуск не переживает (ADR-0025).
 	fails *failStore
-	mux   *http.ServeMux
+	// bridgeFails — тот же слот для операций проброса (ADR-0030). Второй
+	// экземпляр, а не общий: у моста своя таксономия и своё поле в ответе,
+	// и смешав их, панель показывала бы неудачу переключения сети на
+	// вкладке проброса.
+	bridgeFails *bridgeFailStore
+	// Кэш проб моста: ping держит запрос секунды, а вкладку панель
+	// перезапрашивает часто.
+	bridgeProbeMu  sync.Mutex
+	bridgeProbeVal *BridgeProbes
+	bridgeProbeAt  time.Time
+	mux            *http.ServeMux
 }
 
 // apiError — единая форма ошибки (docs/contracts/errors.md).
@@ -112,6 +123,7 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 		fails:  &failStore{},
 		mux:    http.NewServeMux(),
 	}
+	s.bridgeFails = &bridgeFailStore{}
 	s.led = led.New(cfg.LEDRoot, s.logf)
 	s.sched = sched.New(ex, s.logs, cfg.SubInterval, s.logf)
 	s.status.jobs = s.jobs
@@ -224,6 +236,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/wifi/scan", s.handleWifiScan)
 	s.mux.HandleFunc("POST /api/mode", s.handleMode)
 	s.mux.HandleFunc("POST /api/upstream", s.handleUpstream)
+	s.mux.HandleFunc("GET /api/bridge", s.handleBridge)
+	s.mux.HandleFunc("POST /api/bridge/enable", s.handleBridgeEnable)
+	s.mux.HandleFunc("POST /api/bridge/disable", s.handleBridgeDisable)
+	s.mux.HandleFunc("POST /api/bridge/access", s.handleBridgeAccess)
 	s.mux.HandleFunc("GET /api/nikki/proxies", s.handleNikkiProxies)
 	s.mux.HandleFunc("GET /api/nikki/panel", s.handleNikkiPanel)
 	s.mux.HandleFunc("POST /api/nikki/proxy", s.handleNikkiProxy)

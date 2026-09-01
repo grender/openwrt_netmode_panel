@@ -1435,6 +1435,13 @@ const REASONS = new Set(['apply_failed', 'busy', 'prereq_missing', 'executor_mis
 	'stayed_on_previous', 'other_ssid', 'not_associated', 'no_ipv4', 'unverifiable',
 	'stale_draft']);
 
+// Тот же закрытый набор для операций проброса (ADR-0030). Отдельный, а не
+// расширенный REASONS: у моста своя таксономия, свои ключи словаря
+// (bridge.fail.*) и свой слот last_fail. Сведи их в один — и панель
+// печатала бы «осталась на прежней сети» про включение моста.
+const BRIDGE_REASONS = new Set(['apply_failed', 'busy', 'prereq_missing', 'executor_missing',
+	'install_failed', 'no_iface', 'relay_down', 'unverifiable', 'stale_draft']);
+
 // Провал переключения — один блок, а не два, хотя каналов доклада два.
 //
 // Демон рапортует и джобом (failed + job.error — тому, кто смотрит сейчас),

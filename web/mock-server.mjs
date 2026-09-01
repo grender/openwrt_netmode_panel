@@ -71,6 +71,17 @@ const SCENARIOS = {
 	// а отсутствие там означает успех. Сценарий с именем «занято» двадцать
 	// секунд показывал удачное переключение — и на нём нельзя было ни
 	// посмотреть текст про занятое радио, ни поймать регрессию в нём.
+	// Сценарии проброса. Статус у них общий (мост живёт в своём
+	// GET /api/bridge), а различаются они фикстурой состояния моста —
+	// см. BRIDGE_FIXTURES ниже.
+	'bridge-off': 'status-single.json',
+	'bridge-on': 'status-single.json',
+	'bridge-no-relayd': 'status-single.json',
+	'bridge-fail': 'status-single.json',
+	'bridge-fail-iface': 'status-single.json',
+	'bridge-fail-relay': 'status-single.json',
+	'bridge-fail-install': 'status-single.json',
+	'bridge-busy': 'status-single.json',
 	'upstream-ok': 'status-single.json',
 	'upstream-fail-stale': 'status-single.json',
 	'upstream-fail-nokey': 'status-single.json',
@@ -557,6 +568,47 @@ const UPSTREAM_REASON = {
 	'upstream-no-executor': 'executor_missing',
 };
 
+// То же для сценариев проброса (ADR-0030). Отдельная таблица, а не общая:
+// наборы причин разные, и общая позволила бы моку отдать «no_ipv4» на
+// включение моста — код, которого демон в этом слоте не отдаст никогда.
+// Подмножество allBridgeReasons стережёт scripts/check-fail-reasons.sh.
+// Состояние проброса по сценарию. Фикстуры golden — те же файлы, что
+// сверяют Go-тесты (docs/api/examples), поэтому мок и демон показывают
+// панели одну и ту же форму, а не две похожие.
+const BRIDGE_FIXTURES = {
+	'bridge-on': 'bridge-enabled.json',
+	'bridge-no-relayd': 'bridge-no-relayd.json',
+	'bridge-fail': 'bridge-fail.json',
+};
+
+const BRIDGE_REASON = {
+	'bridge-fail-iface': 'no_iface',
+	'bridge-fail-relay': 'relay_down',
+	'bridge-fail-install': 'install_failed',
+	'bridge-busy': 'busy',
+};
+
+// Текст job.error для моста — дословно из internal/httpapi/bridgehandler.go
+// (runBridge): панель и мок обязаны показывать одну и ту же историю про
+// один и тот же код.
+const bridgeFailText = (reason) => {
+	if (reason === 'no_iface') {
+		return 'network reload прошёл, но интерфейс проброса не поднялся с адресом ' +
+			'192.168.0.85 за отведённое окно';
+	}
+	if (reason === 'relay_down') {
+		return 'интерфейс проброса поднят, но процесс relayd не запустился — ' +
+			'ПК не будет виден uplink-сети';
+	}
+	if (reason === 'install_failed') {
+		return 'netmode-bridge: установить relayd не удалось: apk add relayd отказал (код 9)';
+	}
+	if (reason === 'busy') {
+		return 'netmode-bridge: занято: применение уже идёт';
+	}
+	return 'операция проброса не удалась';
+};
+
 // Текст job.error — дословно из internal/httpapi/upstreamhandler.go
 // (associationError и verifySwitch): панель и мок обязаны показывать
 // человеку одну и ту же историю про один и тот же код.
@@ -723,6 +775,78 @@ async function handleAPI(req, res, u) {
 	}
 
 	// --- WiFi ---
+	// --- проброс LAN в uplink (ADR-0030) ---
+	//
+	// Порядок отказов повторяет internal/httpapi/bridgehandler.go: тело,
+	// затем отпечаток, затем предметные проверки, и только потом job_busy —
+	// занятость в реальности выясняется при СТАРТЕ джоба, то есть последней.
+	if (p === '/api/bridge' && method === 'GET') {
+		const body = await readJSON(BRIDGE_FIXTURES[state.scenario] || 'bridge-disabled.json');
+		// Пробы стоят секунды и потому идут только по запросу — как у демона.
+		if (u.searchParams.get('probe') === '1') {
+			body.probes = {
+				pc: body.enabled ? { answered: state.scenario === 'bridge-on' } : null,
+				gateway: { answered: true },
+				at: nowISO(),
+			};
+		}
+		return send(res, 200, body);
+	}
+	if (p.startsWith('/api/bridge/') && method === 'POST') {
+		const action = p.slice('/api/bridge/'.length);
+		if (!['enable', 'disable', 'access'].includes(action)) {
+			return fail(res, 404, 'not_found', 'Нет такой операции моста');
+		}
+		const cur = await readJSON(BRIDGE_FIXTURES[state.scenario] || 'bridge-disabled.json');
+		const ifMatch = req.headers['if-match'];
+		if (!ifMatch) {
+			return fail(res, 409, 'fingerprint_required',
+				'Нужен заголовок If-Match с отпечатком из GET /api/bridge');
+		}
+		if (ifMatch !== cur.fingerprint) {
+			return fail(res, 409, 'fingerprint_mismatch',
+				'Состояние изменилось с момента чтения — перечитайте и повторите');
+		}
+
+		if (action === 'enable') {
+			const body = await readBody(req);
+			const allowed = ['leg_ip', 'pc_ip', 'ap_access', 'install'];
+			if (Object.keys(body).some((k) => !allowed.includes(k))) {
+				return fail(res, 400, 'unsupported_field', 'В теле разрешены только ' + allowed.join(', '));
+			}
+			if (cur.enabled) {
+				return fail(res, 409, 'already_enabled', 'Проброс уже включён');
+			}
+			// Сценарий «пакета нет»: панель обязана спросить согласие и
+			// повторить с install:true — ровно этот путь тут и проверяется.
+			if (!cur.relayd.installed && !body.install) {
+				return fail(res, 409, 'relayd_missing',
+					'Пакет relayd не установлен. Панель спросит согласие и повторит с install:true.');
+			}
+		} else if (action === 'access') {
+			const body = await readBody(req);
+			if (!cur.enabled) {
+				return fail(res, 409, 'bridge_not_enabled',
+					'Проброс выключен — доступ настраивается поверх включённого');
+			}
+			if (!!cur.ap_access === !!body.enabled) {
+				return fail(res, 409, 'already_set', 'Доступ уже в запрошенном состоянии');
+			}
+		} else if (!cur.enabled) {
+			return fail(res, 409, 'already_disabled', 'Проброс не включён — демонтировать нечего');
+		}
+
+		if (busyJob()) return fail(res, 409, 'job_busy', 'Уже идёт другая операция');
+
+		const reason = BRIDGE_REASON[state.scenario];
+		const arg = action === 'access' ? 'access-on' : action;
+		const eta = action === 'enable' ? 30 : action === 'disable' ? 20 : 10;
+		startJob('bridge', arg, 'Операция проброса: ' + arg, eta, reason ? () => {
+			state.job.state = 'failed';
+			state.job.error = bridgeFailText(reason);
+		} : null);
+		return send(res, 202, { job: state.job });
+	}
 	if (p === '/api/wifi/scan' && method === 'GET') {
 		await new Promise((r) => setTimeout(r, 1200)); // скан не мгновенный
 		return send(res, 200, await readJSON('wifi-scan.json'));

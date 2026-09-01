@@ -79,6 +79,7 @@ tags:
   - name: nikki
   - name: b4
   - name: subscription
+  - name: bridge
 
 paths:
 
@@ -278,6 +279,291 @@ paths:
 
             `uci_unavailable` — `uci changes` или `uci show wireless` не
             отработали на пути записи.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/bridge:
+    get:
+      tags: [bridge]
+      summary: Состояние проброса LAN в uplink и его диагностика
+      description: |
+        Проброс делает ПК за LAN-портом видимым клиентам uplink-сети: VLAN2 на
+        порту → интерфейс `homelan` (`<бридж>.2`, статическая нога в
+        uplink-подсети) → `relayd` → `wwan` (ADR-0030).
+
+        **`enabled` ВЫВОДИТСЯ из живой конфигурации** (ADR-0002): наличие
+        интерфейсов `homelan` и `relay`, а не запомненный флаг. `ap_access` —
+        так же, по наличию форвардинга `lan`→`homelan`. Хранится ровно одно
+        значение — `pc_ip` в `/etc/config/netmode`: в живой сети его не
+        прочитать, пока ПК молчит.
+
+        **`uplink` читается на каждый запрос.** Во время разведки роутер
+        сменил внешнюю сеть при живой ноге моста (`raw/86`) — запомненная
+        подсеть врала бы, и валидация адресов пускала бы их в чужую сеть.
+
+        `relayd`, `port` и `uplink` равны `null`, если прочитать не удалось:
+        `null` — «спросили, не ответило», и панель рисует отказ, а не
+        выдумывает нули. `port.speed_mbps` равен `null` при лежащем линке —
+        sysfs отдаёт там `-1` (`raw/83`).
+
+        `?probe=1` добавляет `probes` — пинги ПК и uplink-шлюза. Проба стоит
+        секунды, поэтому по умолчанию её нет, а результат кэшируется на 10 с.
+      parameters:
+        - name: probe
+          in: query
+          required: false
+          schema: { type: string, enum: ["1"] }
+          description: >-
+            `1` — выполнить пинги ПК и шлюза и вернуть `probes`. Без параметра
+            поле отсутствует.
+      responses:
+        "200":
+          description: Состояние проброса.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BridgeState" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500":
+          description: "`parse_failed` — вывод `uci show` не разбирается."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "`uci_unavailable` — `uci show network` или `firewall` не отработали."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/bridge/enable:
+    post:
+      tags: [bridge]
+      summary: Включить проброс LAN в uplink (джоб)
+      description: |
+        Пишет партией в `network` и `firewall`: `vlan_filtering` на бридже,
+        две секции `bridge-vlan` (untagged VLAN1 и tagged VLAN2 на порту),
+        `lan.device` на VLAN1, интерфейс `homelan` со статическим адресом,
+        интерфейс `relay` (`proto relay`, `homelan`+`wwan`), зону `homelan` с
+        форвардингами в обе стороны с `wan` и `masq_src '!<uplink-подсеть>'`
+        на зоне `wan`.
+
+        **Firewall обязателен, а не «на всякий случай».** `relayd` форвардит
+        юникаст через маршрутизацию ядра, то есть netfilter применяется: без
+        зоны транзит режется дефолтным `REJECT` — измерено на живом роутере
+        2026-08-31.
+
+        **Все отказы — до первой записи** (ADR-0006): после коммита отказаться
+        нечем. Порядок проверок: синтаксис адресов → живой uplink → обе
+        принадлежности подсети и попарная различность → чужой стейджинг обоих
+        пакетов → `If-Match` → ровно один порт у бриджа → `relayd` установлен
+        (или дано согласие) → **проба занятости адреса ноги** → джоб.
+
+        Проба блокирующая: занятый адрес отвергается кодом `leg_ip_taken`.
+        Это решение владельца по живому разбирательству — IP-конфликт молча
+        ломал схему и маскировался тем, что роутер отвечал сам себе.
+
+        `install: true` — явное согласие на `apk add relayd`; без него
+        отсутствие пакета даёт `relayd_missing`, и **не делается ничего**.
+        Установка выполняется до первой записи uci: её отказ оставляет
+        конфигурацию нетронутой.
+
+        Исход — **по наблюдению** (ADR-0030): `network.interface.homelan
+        status` поднят с нужным адресом, затем процесс `relayd` жив. Код
+        возврата скрипта вердиктом не считается: `network reload` возвращает
+        `0` и при конфигурации, ведущей в никуда.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [leg_ip, pc_ip]
+              additionalProperties: false
+              properties:
+                leg_ip:
+                  type: string
+                  description: Адрес роутера в uplink-подсети — нога моста.
+                  examples: ["192.168.0.85"]
+                pc_ip:
+                  type: string
+                  description: >-
+                    Статический адрес ПК, настроенный на самом ПК. Демон его
+                    только хранит и использует для диагностики.
+                  examples: ["192.168.0.90"]
+                ap_access:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Открыть доступ к uplink-сети из Wi-Fi самого роутера
+                    (форвардинг `lan`→`homelan` + NAT LAN-подсети в адрес ноги).
+                install:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Согласие владельца на `apk add relayd`. Панель шлёт `true`
+                    только после подтверждения.
+      responses:
+        "202":
+          description: |
+            Записано, закоммичено, применение запущено. `kind: "bridge"`,
+            `arg: "enable"`, `eta_sec` 30 (60 с установкой relayd).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobEnvelope" }
+        "400":
+          description: |
+            `leg_ip_invalid` / `pc_ip_invalid` — адрес не IPv4.
+            `unsupported_field` — лишнее поле в теле.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: |
+            Отказ до первой записи: конфигурация не изменена, повтор безопасен.
+
+            - `already_enabled` — проброс уже включён; смена адресов делается
+              выключением и включением заново.
+            - `uplink_down` — внешняя сеть не подключена: мостить не во что, а
+              подсеть для валидации выводится только из неё.
+            - `ip_outside_subnet` — адрес ноги или ПК вне uplink-подсети.
+            - `ip_conflict` — адреса ноги, ПК, шлюза и `wwan` не попарно
+              различны.
+            - `leg_ip_taken` — выбранный адрес ноги **отвечает** в uplink-сети.
+            - `port_ambiguous` — у бриджа не ровно один порт: какой из них
+              ведёт к ПК, демон не угадывает (ADR-0019).
+            - `relayd_missing` — пакета нет, согласия на установку не дано.
+            - `lan_subnet_unknown` — при `ap_access` не вычислена подсеть LAN.
+            - `job_busy`, `fingerprint_required`, `fingerprint_mismatch`,
+              `foreign_staged_changes` — как у прочих операций записи.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: "`parse_failed` — вывод `uci show` или JSON скрипта не разбирается."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: |
+            `uci_unavailable` — `uci` не отработал на пути записи.
+            `bridge_unavailable` — `netmode-bridge status` не отработал.
+            `probe_failed` — занятость адреса проверить не удалось.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/bridge/disable:
+    post:
+      tags: [bridge]
+      summary: Выключить проброс — полный демонтаж (джоб)
+      description: |
+        Снимает всё: обе секции `bridge-vlan`, `vlan_filtering`, интерфейсы
+        `relay` и `homelan`, зону `homelan` с форвардингами, отрицание в
+        `masq_src` зоны `wan`, `bridge_pc_ip`; `lan.device` возвращается на
+        бридж без VLAN. Пакет `relayd` **остаётся установленным** — удалять
+        то, что владелец согласился поставить, никто не просил.
+
+        **Это не откат** (ADR-0006, ADR-0030): восстанавливается не снимок
+        «как было», а целевое состояние, заказанное нажатием.
+
+        **Секции ищутся по типу и содержимому, а не по именам `netmode_*`.**
+        Живой роутер несёт конфигурацию, собранную руками, с анонимными
+        секциями (`@bridge-vlan[0]`, `@zone[2]`) — демонтаж обязан уметь
+        разобрать и её. Анонимные удаляются в обратном порядке файла: индексы
+        `@type[N]` сдвигаются на каждом удалении.
+
+        Исход — по наблюдению: объект `network.interface.homelan` исчез,
+        процесс `relayd` не бежит.
+
+        Тело запроса не читается: у демонтажа нет параметров.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "202":
+          description: "`kind: \"bridge\"`, `arg: \"disable\"`, `eta_sec: 20`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: |
+            - `already_disabled` — демонтировать нечего: ни интерфейсов, ни
+              VLAN-секций, ни зон, ни отрицаний в `masq_src`. Проверка идёт по
+              **содержимому**, а не по флагу: после сорванного демонтажа
+              повторный вызов обязан дочищать остаток.
+            - `job_busy`, `fingerprint_required`, `fingerprint_mismatch`,
+              `foreign_staged_changes` — как у прочих операций записи.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: "`parse_failed` — вывод `uci show` не разбирается."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "`uci_unavailable` — `uci` не отработал на пути записи."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/bridge/access:
+    post:
+      tags: [bridge]
+      summary: Доступ к uplink-сети из точки доступа роутера (джоб)
+      description: |
+        Включает или выключает форвардинг `lan`→`homelan` и NAT LAN-подсети в
+        адрес ноги. NAT нужен потому, что uplink-сеть не знает маршрута в
+        LAN-подсеть роутера: без подмены адреса ответа не будет. Сужен до
+        `masq_src <lan-подсеть>`, чтобы транзит uplink↔ПК через ту же зону
+        оставался **без** подмены — ПК виден в uplink под своим адресом.
+
+        Правится только `firewall`, сеть не перечитывается.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              additionalProperties: false
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "202":
+          description: "`kind: \"bridge\"`, `arg` — `access-on` либо `access-off`, `eta_sec: 10`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobEnvelope" }
+        "400":
+          description: "`bad_request` / `unsupported_field` — тело не разбирается или несёт лишнее."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: |
+            - `bridge_not_enabled` — доступ настраивается поверх включённого
+              проброса.
+            - `already_set` — состояние уже запрошенное.
+            - `lan_subnet_unknown` — подсеть LAN не вычислена из `network.lan`.
+            - `job_busy`, `fingerprint_required`, `fingerprint_mismatch`,
+              `foreign_staged_changes` — как у прочих операций записи.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: "`parse_failed` — вывод `uci show` не разбирается."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "`uci_unavailable` — `uci` не отработал на пути записи."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1431,13 +1717,14 @@ components:
           examples: ["j-7f3a1c"]
         kind:
           type: string
-          enum: [mode, subscription, upstream]
+          enum: [mode, subscription, upstream, bridge]
         arg:
           type: string
           description: >
             Уточнение операции: для `kind=mode` это целевой режим
             (`nikki`|`b4`|`off`), для `subscription` — пустая строка, для
-            `upstream` — **ssid целевой сети, а не имя её секции**.
+            `upstream` — **ssid целевой сети, а не имя её секции**, для
+            `bridge` — действие (`enable`|`disable`|`access-on`|`access-off`).
             Панель строит подпись из `kind`+`arg` на своём языке, поэтому
             поле машинное и переводу не подлежит — но `netmode_1a2b3c4d`
             не сообщает человеку ничего, а `John24` сообщает. Имя секции
@@ -1465,6 +1752,167 @@ components:
         error:
           type: [string, "null"]
           description: Заполнено только при `failed`. Секретов не содержит.
+
+    BridgeState:
+      type: object
+      description: |
+        Состояние проброса LAN в uplink (ADR-0030). `enabled` и `ap_access`
+        ВЫВОДЯТСЯ из живой конфигурации, а не хранятся флагами; `uplink`
+        читается на каждый запрос — внешняя сеть меняется под ногой моста.
+      required: [fingerprint, enabled, ap_access, relayd, port, uplink, last_fail]
+      additionalProperties: false
+      properties:
+        fingerprint:
+          type: string
+          description: >-
+            Отпечаток пары пакетов `network`+`firewall` для `If-Match`:
+            операции моста пишут в оба, и правка любого обязана его сменить.
+          examples: ["sha256:1a2b3c4d5e6f7a8b"]
+        enabled:
+          type: boolean
+          description: >-
+            Выведено: есть интерфейсы `homelan` И `relay`. Не запомненный флаг.
+        leg_ip:
+          type: string
+          description: Адрес ноги роутера в uplink — из `network.homelan.ipaddr`.
+          examples: ["192.168.0.85"]
+        pc_ip:
+          type: string
+          description: >-
+            Единственное хранимое значение — `netmode.main.bridge_pc_ip`: в
+            живой сети адрес ПК не прочитать, пока ПК молчит.
+          examples: ["192.168.0.90"]
+        ap_access:
+          type: boolean
+          description: Выведено: есть форвардинг `lan`→`homelan`.
+        relayd:
+          type: [object, "null"]
+          description: >-
+            `null` — состояние прочитать не удалось. Панель рисует отказ, а не
+            выдумывает `false`.
+          required: [installed, running]
+          additionalProperties: false
+          properties:
+            installed: { type: boolean }
+            running:
+              type: boolean
+              description: >-
+                Процесс запускает netifd протоколом `relay`, а не наш старт
+                сервиса (`raw/84`).
+        port:
+          type: [object, "null"]
+          description: LAN-порт бриджа глазами sysfs; `null` — не прочитано.
+          required: [name, carrier, speed_mbps, carrier_changes]
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+              description: Выведено из конфигурации бриджа, никогда не литерал (ADR-0019).
+              examples: ["eth1"]
+            carrier: { type: boolean }
+            speed_mbps:
+              type: [integer, "null"]
+              description: >-
+                `null` при лежащем линке: sysfs отдаёт там `-1` (`raw/83`), и
+                ноль был бы выдуманным числом.
+            carrier_changes:
+              type: [integer, "null"]
+              description: >-
+                Счётчик перескоков линка — улика физического флапа. При
+                отладке 2026-08-31 он дошёл до 241 на цикле «поднялся —
+                упал через секунду».
+        uplink:
+          type: [object, "null"]
+          description: L3-состояние `wwan`; `null` — не прочитано.
+          required: [up]
+          additionalProperties: false
+          properties:
+            up: { type: boolean }
+            address: { type: string, examples: ["192.168.0.234"] }
+            mask: { type: integer, examples: [24] }
+            gateway: { type: string, examples: ["192.168.0.1"] }
+            device: { type: string, examples: ["phy0.0-sta0"] }
+        probes:
+          type: object
+          description: Только при `?probe=1`. Кэш 10 с.
+          required: [pc, gateway, at]
+          additionalProperties: false
+          properties:
+            pc:
+              type: [object, "null"]
+              required: [answered]
+              additionalProperties: false
+              properties:
+                answered: { type: boolean }
+            gateway:
+              type: [object, "null"]
+              required: [answered]
+              additionalProperties: false
+              properties:
+                answered: { type: boolean }
+            at: { type: string, format: date-time }
+        last_fail:
+          oneOf:
+            - $ref: "#/components/schemas/BridgeLastFail"
+            - type: "null"
+
+    BridgeLastFail:
+      type: object
+      description: |
+        Что не вышло при последней операции моста. Живёт в памяти демона и
+        переживает обрыв связи браузера, но не перезапуск демона (ADR-0025):
+        `network reload` рвёт связь ровно с тем, кто нажал.
+      required: [action, reason, at]
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          enum: [enable, disable, access-on, access-off]
+          description: То же значение, что было в `job.arg`.
+        reason:
+          type: string
+          enum:
+            - apply_failed
+            - busy
+            - prereq_missing
+            - executor_missing
+            - install_failed
+            - no_iface
+            - relay_down
+            - unverifiable
+            - stale_draft
+          description: |
+            Машинный код, набор закрыт. Каждый — про **наблюдаемое**:
+
+            - `apply_failed` — операция не состоялась по нашей стороне: запись,
+              разошедшийся отпечаток, отказ `uci commit` либо `network`/
+              `firewall reload` (код `4` скрипта). Подробность — в `detail`.
+            - `busy` — `flock` держит другой процесс (код `3`). Система не
+              тронута.
+            - `prereq_missing` — нет `flock`, `ubus`, `apk` или `ping` (код `7`).
+            - `executor_missing` — нет самого `/usr/local/bin/netmode-bridge`
+              или потерян бит исполнения: кода возврата не существует, ни один
+              глагол не звался. Виден заранее в `status.missing_executors`.
+            - `install_failed` — `apk add relayd` отказал (код `9`).
+              Конфигурация **не тронута**: установка идёт до первой записи.
+            - `no_iface` — применение прошло, а интерфейс `homelan` не пришёл
+              в ожидаемое состояние за окно наблюдения: при включении не
+              поднялся с нужным адресом, при демонтаже не исчез.
+            - `relay_down` — интерфейс в порядке, а процесс `relayd` не в
+              ожидаемом состоянии; сюда же попадает код `5` скрипта
+              («не остановился после демонтажа»).
+            - `unverifiable` — прочитать исход не удалось ни разу за окно.
+              Мы не знаем, что вышло, и говорим именно это, а не «не вышло».
+            - `stale_draft` — записанное осталось неопубликованным черновиком,
+              а отменить его не вышло. Владельцу идти в ssh и выполнить
+              `uci revert network` / `uci revert firewall`, иначе следующий
+              запрос вечно получит `foreign_staged_changes`.
+        detail:
+          type: string
+          description: >-
+            Человекочитаемая подробность, по-русски. Тот же текст, что в
+            `job.error` и в `logread`.
+        at: { type: string, format: date-time }
 
     LastFail:
       type: object

@@ -169,12 +169,18 @@ func NewFake() *Fake {
 // Список явный: молчаливое сопоставление по маске однажды подсунет
 // не тот файл, и тест пройдёт не на тех данных.
 var fixtureFiles = map[string]string{
-	"uci show wireless":                  "10-uci-show-wireless.txt",
-	"uci show network":                   "11-uci-show-network.txt",
-	"ubus network.wireless status":       "21-ubus-network-wireless-status.json",
-	"ubus iwinfo scan":                   "23-ubus-iwinfo-scan.json",
-	"ubus iwinfo info":                   "24-ubus-iwinfo-info.json",
-	"ubus network.interface.wwan status": "26-ubus-network-interface-wwan.json",
+	"uci show wireless": "10-uci-show-wireless.txt",
+	"uci show network":  "11-uci-show-network.txt",
+	// Снимок firewall сделан на роутере с СОБРАННЫМ ВРУЧНУЮ пробросом
+	// (анонимные секции @zone[2], @forwarding[1..2], отрицание в masq_src) —
+	// именно то состояние, которое обязан уметь демонтировать disable
+	// (ADR-0030). Тесты включения приводят его к «чистому» сами.
+	"uci show firewall":                     "81-bridge-uci-firewall.txt",
+	"ubus network.interface.homelan status": "82-ubus-network-interface-homelan.json",
+	"ubus network.wireless status":          "21-ubus-network-wireless-status.json",
+	"ubus iwinfo scan":                      "23-ubus-iwinfo-scan.json",
+	"ubus iwinfo info":                      "24-ubus-iwinfo-info.json",
+	"ubus network.interface.wwan status":    "26-ubus-network-interface-wwan.json",
 }
 
 // LoadFixtures заполняет фейк выводом роутера из docs/recon/raw.

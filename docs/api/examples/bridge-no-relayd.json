@@ -1,0 +1,15 @@
+{
+  "fingerprint": "sha256:c0ffee1234567890",
+  "enabled": false,
+  "ap_access": false,
+  "relayd": { "installed": false, "running": false },
+  "port": { "name": "eth1", "carrier": true, "speed_mbps": 1000, "carrier_changes": 2 },
+  "uplink": {
+    "up": true,
+    "address": "192.168.0.234",
+    "mask": 24,
+    "gateway": "192.168.0.1",
+    "device": "phy0.0-sta0"
+  },
+  "last_fail": null
+}

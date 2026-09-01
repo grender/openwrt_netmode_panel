@@ -40,6 +40,33 @@ export const DICT = {
 		'mode.hint': 'Одно нажатие — переключение занимает 5–15 секунд',
 		'mode.hint.busy': 'Идёт операция, кнопки заблокированы',
 
+		// ─── проброс LAN в uplink (ADR-0030) ───
+		//
+		// Причины провала: закрытый набор, тот же, что allBridgeReasons в Go,
+		// сверяет scripts/check-fail-reasons.sh. Каждая пара title/text
+		// обязательна — половина пары печатается в интерфейсе как сам ключ.
+		'bridge.fail.apply_failed.title': 'Применить не удалось',
+		'bridge.fail.apply_failed.text': 'Роутер не применил настройки проброса. Записанное могло остаться неприменённым — повторите или проверьте состояние по ssh.',
+		'bridge.fail.busy.title': 'Сеть занята другим процессом',
+		'bridge.fail.busy.text': 'Кто-то ещё сейчас применяет настройки — например, из LuCI или по ssh. Ничего не изменено: подождите и повторите.',
+		'bridge.fail.prereq_missing.title': 'На роутере не хватает нужных программ',
+		'bridge.fail.prereq_missing.text': 'Не нашлось flock, ubus, apk или ping. Это неполадка прошивки, не настроек, — повтор не поможет, нужен ssh.',
+		'bridge.fail.executor_missing.title': 'На роутере не установлен netmode-bridge',
+		'bridge.fail.executor_missing.text': 'Настройки записаны, но применить их нечем: скрипта нет на роутере. Установите пакет заново (deploy.sh --install) и повторите.',
+		'bridge.fail.install_failed.title': 'Не удалось установить relayd',
+		'bridge.fail.install_failed.text': 'apk не смог поставить пакет — чаще всего нет интернета через внешнюю сеть или места на флеш-памяти. Конфигурация не тронута: установка идёт до первой записи.',
+		'bridge.fail.no_iface.title': 'Интерфейс проброса не поднялся',
+		'bridge.fail.no_iface.text': 'Настройки применены, но нога роутера во внешней сети не появилась с нужным адресом. Проверьте, свободен ли выбранный адрес, и посмотрите logread на роутере.',
+		'bridge.fail.relay_down.title': 'Служба relayd не в нужном состоянии',
+		'bridge.fail.relay_down.text': 'Интерфейс поднят, а сам мост не работает: процесс relayd не запустился (или не остановился при выключении). ПК не будет виден внешней сети — смотрите logread.',
+		'bridge.fail.unverifiable.title': 'Исход неизвестен',
+		'bridge.fail.unverifiable.text': 'Настройки применены, но проверить результат не удалось: ubus не ответил. Успех и провал одинаково возможны — откройте панель заново или проверьте состояние по ssh.',
+		'bridge.fail.stale_draft.title': 'В конфигурации застрял черновик',
+		'bridge.fail.stale_draft.text': 'Операция не состоялась, и отменить недописанные правки роутер не смог. Повтор не поможет: панель будет отказываться, ссылаясь на незакоммиченные правки, а в LuCI при этом пусто — черновик наш. Зайдите по ssh и выполните: uci revert network; uci revert firewall',
+		// Запасной ключ: reason вне набора (панель старее демона) либо reason
+		// ещё не приехал — те же два случая, что у wifi.fail.unknown.
+		'bridge.fail.unknown.title': 'Операция не вышла, причина неизвестна',
+		'bridge.fail.unknown.text': 'Роутер сообщил о неудаче, но причину панель не распознала. Если панель и демон разных версий — обновите панель; иначе подождите пару секунд, причина придёт следующим опросом.',
 		// Вкладки. Подписи короткие намеренно: сегмент-контрол делит ширину
 		// телефона на три, и длинное слово сломало бы ряд.
 		'tabs.wifi': 'Wi-Fi',
@@ -375,6 +402,26 @@ export const DICT = {
 		'mode.hint': 'One tap — switching takes 5–15 seconds',
 		'mode.hint.busy': 'Operation in progress, buttons are locked',
 
+		'bridge.fail.apply_failed.title': 'Could not apply',
+		'bridge.fail.apply_failed.text': 'The router did not apply the bridge settings. What was written may remain unapplied — retry or check over ssh.',
+		'bridge.fail.busy.title': 'Network is busy with another process',
+		'bridge.fail.busy.text': 'Someone else is applying settings right now — LuCI or ssh. Nothing was changed: wait and retry.',
+		'bridge.fail.prereq_missing.title': 'The router is missing required tools',
+		'bridge.fail.prereq_missing.text': 'flock, ubus, apk or ping was not found. This is a firmware problem, not a settings one — retrying will not help, you need ssh.',
+		'bridge.fail.executor_missing.title': 'netmode-bridge is not installed on the router',
+		'bridge.fail.executor_missing.text': 'Settings are written, but there is nothing to apply them with: the script is missing. Reinstall the package (deploy.sh --install) and retry.',
+		'bridge.fail.install_failed.title': 'Could not install relayd',
+		'bridge.fail.install_failed.text': 'apk failed to install the package — usually no internet over the uplink, or no space in flash. The configuration is untouched: installation runs before the first write.',
+		'bridge.fail.no_iface.title': 'Bridge interface did not come up',
+		'bridge.fail.no_iface.text': 'Settings were applied, but the router leg in the uplink network never appeared with the expected address. Check whether the chosen address is free and look at logread on the router.',
+		'bridge.fail.relay_down.title': 'The relayd service is in the wrong state',
+		'bridge.fail.relay_down.text': 'The interface is up but the bridge itself is not working: relayd did not start (or did not stop when disabling). The PC will not be visible to the uplink network — check logread.',
+		'bridge.fail.unverifiable.title': 'Outcome unknown',
+		'bridge.fail.unverifiable.text': 'Settings were applied, but the result could not be verified: ubus did not answer. Success and failure are equally possible — reopen the panel or check over ssh.',
+		'bridge.fail.stale_draft.title': 'A draft is stuck in the configuration',
+		'bridge.fail.stale_draft.text': 'The operation did not go through and the router could not revert the half-written changes. Retrying will not help: the panel will refuse, citing uncommitted changes, while LuCI shows none — the draft is ours. Go in over ssh and run: uci revert network; uci revert firewall',
+		'bridge.fail.unknown.title': 'The operation failed, reason unknown',
+		'bridge.fail.unknown.text': 'The router reported a failure but the panel did not recognise the reason. If the panel and the daemon are different versions — update the panel; otherwise wait a couple of seconds, the reason arrives with the next poll.',
 		'tabs.wifi': 'Wi-Fi',
 		'tabs.bypass': 'Bypass',
 		'tabs.bridge': 'Bridge',
