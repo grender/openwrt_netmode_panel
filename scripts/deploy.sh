@@ -52,6 +52,7 @@ RESTART=yes
 REMOTE=/usr/local/bin/netmoded
 APPLY=/usr/local/bin/netmode-apply
 WIFI=/usr/local/bin/netmode-wifi
+BRIDGE=/usr/local/bin/netmode-bridge
 INITD=/etc/init.d/netmoded
 
 while [ $# -gt 0 ]; do
@@ -75,6 +76,7 @@ cd "$(dirname "$0")/.."
 # «нет исполнителя».
 if [ "$INSTALL" = yes ]; then
 	for f in files/usr/local/bin/netmode-apply files/usr/local/bin/netmode-wifi \
+		files/usr/local/bin/netmode-bridge \
 		files/etc/init.d/netmoded files/etc/config/netmode; do
 		[ -f "$f" ] || { echo "нет $f — устанавливать нечего" >&2; exit 1; }
 	done
@@ -208,6 +210,11 @@ if [ "$INSTALL" = yes ]; then
 	# нажатия (missing_executors в /api/status).
 	put - "$WIFI" 0755 < files/usr/local/bin/netmode-wifi
 	echo "  ✓ $WIFI"
+
+	# Третий скрипт слоя 2 — проброс LAN в uplink. Логика та же: без него
+	# кнопки вкладки «Проброс» откажут причиной executor_missing.
+	put - "$BRIDGE" 0755 < files/usr/local/bin/netmode-bridge
+	echo "  ✓ $BRIDGE"
 
 	put - "$INITD" 0755 < files/etc/init.d/netmoded
 	echo "  ✓ $INITD"

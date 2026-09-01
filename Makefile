@@ -51,6 +51,7 @@ checks:
 	@scripts/check-netmode-seed.sh
 	@scripts/check-netmode-apply.sh
 	@scripts/check-netmode-wifi.sh
+	@scripts/check-netmode-bridge.sh
 	@scripts/check-web-size.sh
 	@scripts/check-panel-sync.sh
 
