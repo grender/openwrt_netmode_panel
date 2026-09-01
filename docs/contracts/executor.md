@@ -126,6 +126,30 @@ type Executor interface {
 	// запуском из ssh безопасны.
 	UpdateSubscription() ([]byte, error)
 
+	// UCIAddList/UCIDelList — операции над UCI-СПИСКАМИ (ports у
+	// bridge-vlan, network у interface relay и zone, masq_src). Появились
+	// с мостом (ADR-0030): uci set списков не создаёт. del_list адресует
+	// конкретное значение — снос списка целиком остаётся невыразимым.
+	UCIAddList(pkg, section, option, value string) error
+	UCIDelList(pkg, section, option, value string) error
+
+	// Глаголы моста — /usr/local/bin/netmode-bridge (ADR-0030).
+	//
+	// BridgeStatus: `status <порт>` — JSON {relayd_installed,
+	// relayd_running, carrier, speed_mbps, carrier_changes} как есть.
+	// BridgeProbe: `probe <ip> <iface>` — жив ли адрес. bool, а не error:
+	// «не ответил» (код 8) — факт, а не отказ, и терять различие нельзя.
+	// InstallRelayd: `install` — apk add relayd, ТОЛЬКО по явному согласию
+	// владельца. ApplyBridge: `apply enable|disable|access`.
+	//
+	// nil от ApplyBridge означает «применение выполнено», НЕ «мост
+	// работает»: вердикт выносит демон по наблюдению (up у homelan с
+	// нужным адресом + живой relayd) — тот же принцип, что у ApplyUpstream.
+	BridgeStatus(port string) ([]byte, error)
+	BridgeProbe(ip, device string) (bool, error)
+	InstallRelayd() error
+	ApplyBridge(action string) error
+
 	// MissingExecutors — какие из скриптов слоя 2 не приедут в ответ на
 	// нажатие: их нет на роутере или потерян бит исполнения.
 	//
@@ -143,8 +167,8 @@ type Executor interface {
 }
 ```
 
-Тринадцать методов. Реализация — `Exec` поверх `os/exec`; фейк — `Fake`, чьи
-`Fixtures` заполняются записанным выводом из `docs/recon/raw/`.
+Девятнадцать методов. Реализация — `Exec` поверх `os/exec`; фейк — `Fake`,
+чьи `Fixtures` заполняются записанным выводом из `docs/recon/raw/`.
 
 Имена: `ApplyUpstream`, `upstreamSentinels`, `ErrUpstreamBusy`,
 `ErrUpstreamApply`, `ErrUpstreamPrereq`. ADR-0027 первоначально называл их
@@ -287,6 +311,32 @@ type Executor interface {
 ([ADR-0002](../adr/0002-source-of-truth.md)). Второй судья в скрипте дал бы
 два ответа на один вопрос, и разойдясь — панель показывает одно, `logread`
 другое.
+
+## Коды возврата `netmode-bridge`
+
+Третья таблица исходов, у глаголов моста, по образцу двух предыдущих —
+[ADR-0030](../adr/0030-bridge-layer2-teardown.md).
+
+| Код | Сентинел | Что произошло | Состояние роутера |
+|---|---|---|---|
+| `0` | — | выполнено; для `probe` — адрес **ответил** | для `apply`: конфигурация передана; что вышло — **неизвестно скрипту** |
+| `1` | — (ошибка как есть) | некорректный аргумент — баг вызывающего | не тронут |
+| `3` | `ErrBridgeBusy` | `flock` держит другой процесс | **не тронут** |
+| `4` | `ErrBridgeApply` | `network reload` или `firewall reload` отказал | закоммиченное ждёт чужого применения |
+| `5` | `ErrBridgeService` | relayd не остановился после `disable` | мост может работать поверх удалённой конфигурации |
+| `7` | `ErrBridgePrereq` | нет предусловия: `flock`/`ubus`/`apk`/`ping`/порт | не тронут |
+| `8` | — (`BridgeProbe` → `false`) | `probe`: адрес **не ответил** — факт, а не отказ | не тронут |
+| `9` | `ErrRelaydInstall` | `apk add relayd` отказал; причина в тексте | конфигурация не тронута |
+
+Код `8` в `bridgeSentinels` не входит намеренно: его разбирает `BridgeProbe`
+и возвращает `false`, а не ошибку. «Адрес свободен» — то самое суждение, на
+потере которого строился живой IP-конфликт 2026-08-31.
+
+Пять мест таблицы: шапка `files/usr/local/bin/netmode-bridge`,
+`bridgeSentinels` в `internal/executor/executor.go`, этот файл,
+[ADR-0030](../adr/0030-bridge-layer2-teardown.md),
+`scripts/check-netmode-bridge.sh`. Механического сторожа у пяти мест нет —
+та же оговорка, что у таблицы `netmode-wifi` выше, дословно.
 
 **Пропущен `2`** — по тому же доводу, что и в
 [ADR-0020](../adr/0020-netmode-apply-exit-codes.md): он традиционно занят

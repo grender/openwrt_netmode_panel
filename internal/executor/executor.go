@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -184,6 +185,52 @@ var (
 	ErrUpstreamUnknown = errors.New("netmode-wifi: исход применения неизвестен")
 )
 
+// Сентинелы netmode-bridge (ADR-0030). Таблица кодов — в шапке самого
+// скрипта; та же оговорка, что у netmode-wifi: пять копий таблицы
+// синхронизируются руками, гвард гоняет только пару «скрипт ↔ сценарии».
+var (
+	// ErrBridgeBusy — flock держит другой процесс. Система не тронута,
+	// повтор осмыслен через секунды.
+	ErrBridgeBusy = errors.New("netmode-bridge: занято")
+
+	// ErrBridgeApply — network reload или firewall reload отказал.
+	// Конфигурация закоммичена и ждёт чужого применения.
+	ErrBridgeApply = errors.New("netmode-bridge: применить конфигурацию не удалось")
+
+	// ErrBridgeService — relayd не остановился после демонтажа: мост может
+	// продолжать работать поверх удалённой конфигурации.
+	ErrBridgeService = errors.New("netmode-bridge: relayd не перешёл в нужное состояние")
+
+	// ErrBridgePrereq — нет предусловия (flock, ubus, apk, ping, порт).
+	// Чинится доставкой пакета или починкой конфигурации, не повтором.
+	ErrBridgePrereq = errors.New("netmode-bridge: нет предусловия на роутере")
+
+	// ErrRelaydInstall — apk add relayd отказал. Причина в тексте: нет
+	// сети, нет места и нет фида — три разных починки.
+	ErrRelaydInstall = errors.New("netmode-bridge: установить relayd не удалось")
+)
+
+// bridgeSentinels — таблица «код возврата netmode-bridge → исход».
+// Код 8 здесь отсутствует намеренно: это не исход применения, а ответ
+// probe («адрес не ответил»), и разбирается он отдельно в BridgeProbe —
+// класть факт и отказ в одну таблицу значило бы однажды перепутать их.
+var bridgeSentinels = map[int]error{
+	3: ErrBridgeBusy,
+	4: ErrBridgeApply,
+	5: ErrBridgeService,
+	7: ErrBridgePrereq,
+	9: ErrRelaydInstall,
+}
+
+// bridgeErrorForCode — та же воронка, что upstreamErrorForCode, и по той же
+// причине общая для Exec и Fake: разбор кодов обязан быть один на роутер и
+// на тесты. Отрицательный код (процесс сняли сигналом) уходит как есть —
+// у моста нет своего ErrUnknown: вердикт и так выносится наблюдением, и
+// «не знаем, чем кончился скрипт» разрешается следующим чтением системы.
+func bridgeErrorForCode(code int, cause error) error {
+	return errorForCode(bridgeSentinels, code, cause)
+}
+
 // upstreamSentinels — таблица «код возврата netmode-wifi → исход».
 //
 // Мест ПЯТЬ, и они обязаны меняться вместе (ADR-0027):
@@ -269,6 +316,18 @@ const (
 	// Запас против измеренного — примерно 400-кратный, так что срабатывание
 	// этого дедлайна означает поломку, а не медленный роутер.
 	UpstreamApplyTimeout = 15 * time.Second
+
+	// Таймауты netmode-bridge. status и probe — чтения без замка: sysfs,
+	// pidof, apk info и один ping с внутренним лимитом в секунду; пять
+	// секунд — запас на медленную флешку, а не на операцию. apply зовёт
+	// network reload + firewall reload — тот же порядок работ, что у
+	// netmode-apply, и тот же минутный потолок. install качает пакет из
+	// сети: на медленном uplink это десятки секунд честной работы, и
+	// короткий дедлайн убивал бы установку на полпути.
+	BridgeStatusTimeout  = 5 * time.Second
+	BridgeProbeTimeout   = 5 * time.Second
+	BridgeApplyTimeout   = 60 * time.Second
+	RelaydInstallTimeout = 180 * time.Second
 )
 
 // Лимиты на вывод внешних команд. Дедлайн ограничивает ВРЕМЯ, эти два
@@ -373,6 +432,13 @@ type Executor interface {
 
 	UCIAddNamed(ctx context.Context, pkg, name, sectionType string) error
 	UCISet(ctx context.Context, pkg, section, option, value string) error
+	// UCIAddList/UCIDelList — операции над UCI-СПИСКАМИ. Появились с мостом:
+	// ports у bridge-vlan, network у interface relay и zone, masq_src — всё
+	// это списки, и uci set их не создаёт (raw/80, raw/81). del_list
+	// адресует конкретное значение — снос списка целиком остаётся
+	// невыразимым намеренно.
+	UCIAddList(ctx context.Context, pkg, section, option, value string) error
+	UCIDelList(ctx context.Context, pkg, section, option, value string) error
 	UCIDelete(ctx context.Context, pkg, section, option string) error
 	UCICommit(ctx context.Context, pkg string) error
 	UCIRevert(ctx context.Context, pkg, section string) error
@@ -383,8 +449,23 @@ type Executor interface {
 	ApplyUpstream(ctx context.Context, t UpstreamTarget) error
 	UpdateSubscription(ctx context.Context) ([]byte, error)
 
+	// Глаголы моста (ADR-0030). Именованные, без generic Run — как у всех.
+	// BridgeStatus возвращает JSON скрипта как есть: {relayd_installed,
+	// relayd_running, carrier, speed_mbps, carrier_changes}.
+	BridgeStatus(ctx context.Context, port string) ([]byte, error)
+	// BridgeProbe — жив ли адрес в uplink. bool, а не error: «не ответил» —
+	// факт (код 8 скрипта), а не отказ, и терять это различие нельзя —
+	// живой IP-конфликт 2026-08-31 строился ровно на нём.
+	BridgeProbe(ctx context.Context, ip, device string) (bool, error)
+	InstallRelayd(ctx context.Context) error
+	ApplyBridge(ctx context.Context, action string) error
+
 	MissingExecutors() []string
 }
+
+// validBridgeActions — действия apply из шапки netmode-bridge. Проверяются
+// до вызова скрипта — по тому же образцу, что validModes.
+var validBridgeActions = map[string]bool{"enable": true, "disable": true, "access": true}
 
 // validModes — режимы из SPEC §4. Проверяются до вызова скрипта.
 var validModes = map[string]bool{"nikki": true, "b4": true, "off": true}
@@ -397,6 +478,10 @@ var allowedUbusObjects = map[string]bool{
 	"network.wireless":       true,
 	"iwinfo":                 true,
 	"network.interface.wwan": true,
+	// Статус ноги моста в uplink — источник вердикта включения (ADR-0030,
+	// raw/82, raw/87). Объект `network` (general reload/restart) сюда не
+	// попадает никогда: reload живёт в netmode-bridge, restart запрещён.
+	"network.interface.homelan": true,
 }
 
 // validateUbusObject проверяет, что объект подтверждён разведкой.
@@ -544,6 +629,7 @@ type Exec struct {
 	ubusBin       string
 	applyBin      string
 	wifiBin       string
+	bridgeBin     string
 	subscribeBin  string
 	commandRunner func(ctx context.Context, name string, args ...string) ([]byte, error)
 }
@@ -556,8 +642,9 @@ type Exec struct {
 // строки разъехались бы в первой же правке пути, и разъехались бы молча —
 // проверять их синхронность нечем.
 const (
-	ApplyBinPath = "/usr/local/bin/netmode-apply"
-	WifiBinPath  = "/usr/local/bin/netmode-wifi"
+	ApplyBinPath  = "/usr/local/bin/netmode-apply"
+	WifiBinPath   = "/usr/local/bin/netmode-wifi"
+	BridgeBinPath = "/usr/local/bin/netmode-bridge"
 )
 
 // New возвращает исполнителя с путями по умолчанию.
@@ -567,6 +654,7 @@ func New() *Exec {
 		ubusBin:      "/bin/ubus",
 		applyBin:     ApplyBinPath,
 		wifiBin:      WifiBinPath,
+		bridgeBin:    BridgeBinPath,
 		subscribeBin: "/usr/local/bin/happ2clash",
 	}
 }
@@ -706,6 +794,35 @@ func (e *Exec) UCISet(ctx context.Context, pkg, section, option, value string) e
 	return err
 }
 
+// uciListOp — общее тело UCIAddList/UCIDelList: адресация и валидация у них
+// одинаковы, различается только глагол uci. Значение проходит validateValue,
+// а не validateName: в списках живут формы вида 'eth1:u*' и '!192.168.0.0/24'
+// (raw/80, raw/81) — звёздочка, двоеточие, восклицательный знак и слэш для
+// имени запрещены, а для значения легитимны.
+func (e *Exec) uciListOp(ctx context.Context, verb, pkg, section, option, value string) error {
+	for kind, s := range map[string]string{"пакет": pkg, "секция": section, "опция": option} {
+		if err := validateName(kind, s); err != nil {
+			return err
+		}
+	}
+	if err := validateValue(value); err != nil {
+		return err
+	}
+	if value == "" {
+		return fmt.Errorf("uci %s %s.%s.%s: пустое значение элемента списка", verb, pkg, section, option)
+	}
+	_, err := e.run(ctx, UCITimeout, e.uciBin, verb, pkg+"."+section+"."+option+"="+value)
+	return err
+}
+
+func (e *Exec) UCIAddList(ctx context.Context, pkg, section, option, value string) error {
+	return e.uciListOp(ctx, "add_list", pkg, section, option, value)
+}
+
+func (e *Exec) UCIDelList(ctx context.Context, pkg, section, option, value string) error {
+	return e.uciListOp(ctx, "del_list", pkg, section, option, value)
+}
+
 func (e *Exec) UCIDelete(ctx context.Context, pkg, section, option string) error {
 	// Инвариант ДО валидации имён: он не про синтаксис адреса, а про смысл
 	// операции, и на невалидном имени секции нарушение осталось бы
@@ -821,6 +938,84 @@ func (e *Exec) ApplyUpstream(ctx context.Context, t UpstreamTarget) error {
 	return classifyUpstreamError(err)
 }
 
+// validateBridgeIfname — форма сетевого имени по правилам netmode-bridge:
+// `^[a-z][a-z0-9._-]*$`, без `..`. Та же логика, что validateRadioName, и по
+// той же причине своя, а не validateName: скрипт на всё прочее отвечает
+// кодом 1 «баг вызывающего», и владелец увидел бы его вместо внятного
+// отказа. Точка разрешена — она в живых именах интерфейсов (br-lan.2,
+// phy0.0-sta0, raw/82), а обход пути в sysfs закрывает запрет `..`.
+func validateBridgeIfname(kind, s string) error {
+	if s == "" {
+		return fmt.Errorf("%s: пустое имя", kind)
+	}
+	if strings.Contains(s, "..") {
+		return fmt.Errorf("%s %q: содержит '..'", kind, s)
+	}
+	for i, r := range s {
+		ok := (r >= 'a' && r <= 'z') ||
+			(i > 0 && (r == '_' || r == '-' || r == '.' || (r >= '0' && r <= '9')))
+		if !ok {
+			return fmt.Errorf("%s %q: netmode-bridge принимает только строчные латинские "+
+				"буквы, цифры, точку, дефис и подчёркивание, первым символом — букву", kind, s)
+		}
+	}
+	return nil
+}
+
+// BridgeStatus — состояние проброса глазами скрипта: relayd, линк порта.
+// JSON отдаётся как есть, разбирает вызывающий.
+func (e *Exec) BridgeStatus(ctx context.Context, port string) ([]byte, error) {
+	if err := validateBridgeIfname("порт", port); err != nil {
+		return nil, err
+	}
+	out, err := e.run(ctx, BridgeStatusTimeout, e.bridgeBin, "status", port)
+	return out, classifyBridgeError(err)
+}
+
+// BridgeProbe — жив ли адрес в uplink-подсети. Код 0 → true, код 8 → false,
+// остальное — ошибка. Отдельный разбор до общей воронки: 8 — факт, а не
+// отказ (шапка скрипта), и класть его в таблицу сентинелов нельзя.
+func (e *Exec) BridgeProbe(ctx context.Context, ip, device string) (bool, error) {
+	if net.ParseIP(ip) == nil || strings.Contains(ip, ":") {
+		return false, fmt.Errorf("проба адреса: %q не IPv4-адрес", ip)
+	}
+	if err := validateBridgeIfname("интерфейс", device); err != nil {
+		return false, err
+	}
+	_, err := e.run(ctx, BridgeProbeTimeout, e.bridgeBin, "probe", ip, device)
+	if err == nil {
+		return true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 8 {
+		return false, nil
+	}
+	return false, classifyBridgeError(err)
+}
+
+// InstallRelayd — apk add relayd. Только по явному согласию владельца
+// (ADR-0030): вызывающий обязан спросить прежде, чем звать.
+func (e *Exec) InstallRelayd(ctx context.Context) error {
+	_, err := e.run(ctx, RelaydInstallTimeout, e.bridgeBin, "install")
+	return classifyBridgeError(err)
+}
+
+// ApplyBridge применяет закоммиченную конфигурацию моста: netmode-bridge
+// apply <action>. nil означает «применение выполнено», НЕ «мост работает»:
+// вердикт выносит вызывающий по наблюдению (ADR-0030, тот же принцип, что
+// у ApplyUpstream).
+func (e *Exec) ApplyBridge(ctx context.Context, action string) error {
+	if !validBridgeActions[action] {
+		return fmt.Errorf("неизвестное действие моста %q (допустимы enable, disable, access)", action)
+	}
+	_, err := e.run(ctx, BridgeApplyTimeout, e.bridgeBin, "apply", action)
+	return classifyBridgeError(err)
+}
+
+func classifyBridgeError(err error) error {
+	return classifyByExitCode(bridgeErrorForCode, err)
+}
+
 // MissingExecutors — какие скрипты слоя 2 не приедут в ответ на нажатие.
 //
 // Существует потому, что пути известны конструктору, а проверить их до сих
@@ -844,7 +1039,7 @@ func (e *Exec) ApplyUpstream(ctx context.Context, t UpstreamTarget) error {
 // теряется — она приедет в тексте ErrNoExecutor при первой же попытке.
 func (e *Exec) MissingExecutors() []string {
 	var missing []string
-	for _, path := range []string{e.applyBin, e.wifiBin} {
+	for _, path := range []string{e.applyBin, e.wifiBin, e.bridgeBin} {
 		st, err := os.Stat(path)
 		if err != nil || st.IsDir() || st.Mode().Perm()&0o111 == 0 {
 			missing = append(missing, path)

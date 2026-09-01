@@ -487,6 +487,7 @@ func TestMissingExecutorsListsWhatWontRun(t *testing.T) {
 	dir := t.TempDir()
 	apply := filepath.Join(dir, "netmode-apply")
 	wifi := filepath.Join(dir, "netmode-wifi")
+	bridge := filepath.Join(dir, "netmode-bridge")
 	write := func(path string, mode os.FileMode) {
 		t.Helper()
 		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), mode); err != nil {
@@ -495,13 +496,14 @@ func TestMissingExecutorsListsWhatWontRun(t *testing.T) {
 	}
 
 	e := New()
-	e.applyBin, e.wifiBin = apply, wifi
+	e.applyBin, e.wifiBin, e.bridgeBin = apply, wifi, bridge
 
-	if got := e.MissingExecutors(); len(got) != 2 {
-		t.Errorf("оба скрипта отсутствуют, доложено %v", got)
+	if got := e.MissingExecutors(); len(got) != 3 {
+		t.Errorf("все три скрипта отсутствуют, доложено %v", got)
 	}
 
 	write(apply, 0o755)
+	write(bridge, 0o755)
 	got := e.MissingExecutors()
 	if len(got) != 1 || got[0] != wifi {
 		t.Errorf("доложено %v, ожидался ровно %s", got, wifi)
@@ -509,7 +511,7 @@ func TestMissingExecutorsListsWhatWontRun(t *testing.T) {
 
 	write(wifi, 0o755)
 	if got := e.MissingExecutors(); len(got) != 0 {
-		t.Errorf("оба скрипта на месте, а доложено %v", got)
+		t.Errorf("все скрипты на месте, а доложено %v", got)
 	}
 
 	// Файл без бита исполнения числится отсутствующим наравне с

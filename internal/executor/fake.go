@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +58,17 @@ type Fake struct {
 	// система. Код проходит через ту же таблицу applySentinels, что и на
 	// роутере, — второй копии соответствия «код → исход» нет.
 	ApplyExitCodes map[string]int
+
+	// BridgeExitCodes — код возврата netmode-bridge по глаголу: ключи
+	// "install" и "apply enable|disable|access". Отсутствие или 0 — успех.
+	// Код, а не готовая ошибка, — по той же причине, что ApplyExitCodes:
+	// он проходит через ту же таблицу bridgeSentinels, что и на роутере.
+	BridgeExitCodes map[string]int
+
+	// BridgeProbeAnswers — ответ probe по адресу: true — ответил (код 0),
+	// false или отсутствие ключа — тишина (код 8). Отказ пробы (нет ping,
+	// код 7) внедряется через BridgeExitCodes["probe"].
+	BridgeProbeAnswers map[string]bool
 
 	// UpstreamExitCode — код возврата netmode-wifi. 0 (значение по
 	// умолчанию) — «применение выполнено».
@@ -137,17 +149,19 @@ type Fake struct {
 // NewFake возвращает пустой фейк.
 func NewFake() *Fake {
 	return &Fake{
-		Fixtures:       map[string][]byte{},
-		UCIValues:      map[string]string{},
-		Staged:         map[string]string{},
-		Errors:         map[string]error{},
-		ErrorsBySuffix: map[string]error{},
-		ApplyExitCodes: map[string]int{},
-		Panics:         map[string]string{},
-		stagedOps:      map[string][]string{},
-		base:           map[string][]byte{},
-		foreign:        map[string]string{},
-		fixtureQueue:   map[string][][]byte{},
+		Fixtures:           map[string][]byte{},
+		UCIValues:          map[string]string{},
+		Staged:             map[string]string{},
+		Errors:             map[string]error{},
+		ErrorsBySuffix:     map[string]error{},
+		ApplyExitCodes:     map[string]int{},
+		BridgeExitCodes:    map[string]int{},
+		BridgeProbeAnswers: map[string]bool{},
+		Panics:             map[string]string{},
+		stagedOps:          map[string][]string{},
+		base:               map[string][]byte{},
+		foreign:            map[string]string{},
+		fixtureQueue:       map[string][][]byte{},
 	}
 }
 
@@ -473,6 +487,35 @@ func (f *Fake) UCISet(ctx context.Context, pkg, section, option, value string) e
 	return f.record(fmt.Sprintf("set %s.%s.%s=%s", pkg, section, option, value))
 }
 
+// uciListOpFake — общее тело списочных операций. Валидация — теми же
+// функциями, что у Exec.uciListOp: фейк, принимающий пустой элемент или имя
+// со звёздочкой, врал бы ровно там, где тест ищет правду.
+func (f *Fake) uciListOpFake(ctx context.Context, verb, pkg, section, option, value string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for kind, s := range map[string]string{"пакет": pkg, "секция": section, "опция": option} {
+		if err := validateName(kind, s); err != nil {
+			return err
+		}
+	}
+	if err := validateValue(value); err != nil {
+		return err
+	}
+	if value == "" {
+		return fmt.Errorf("uci %s %s.%s.%s: пустое значение элемента списка", verb, pkg, section, option)
+	}
+	return f.record(fmt.Sprintf("%s %s.%s.%s=%s", verb, pkg, section, option, value))
+}
+
+func (f *Fake) UCIAddList(ctx context.Context, pkg, section, option, value string) error {
+	return f.uciListOpFake(ctx, "add_list", pkg, section, option, value)
+}
+
+func (f *Fake) UCIDelList(ctx context.Context, pkg, section, option, value string) error {
+	return f.uciListOpFake(ctx, "del_list", pkg, section, option, value)
+}
+
 func (f *Fake) UCIDelete(ctx context.Context, pkg, section, option string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -597,6 +640,105 @@ func (f *Fake) ApplyUpstream(ctx context.Context, t UpstreamTarget) error {
 	return upstreamErrorForCode(code, cause)
 }
 
+// bridgeExit достаёт внедрённый код возврата глагола моста.
+func (f *Fake) bridgeExit(key string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.BridgeExitCodes[key]
+}
+
+// BridgeStatus — чтение, журналируется в reads. Фикстура по ключу
+// "bridge status" — тот же JSON, что печатает скрипт.
+func (f *Fake) BridgeStatus(ctx context.Context, port string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// Та же проверка, что у Exec: имя с '..' или заглавной обязано
+	// отвергаться и здесь.
+	if err := validateBridgeIfname("порт", port); err != nil {
+		return nil, err
+	}
+	key := "bridge status"
+	if err := f.fail(key + " " + port); err != nil {
+		return nil, err
+	}
+	if code := f.bridgeExit("status"); code != 0 {
+		cause := fmt.Errorf("netmode-bridge status %s: exit status %d", port, code)
+		return nil, bridgeErrorForCode(code, cause)
+	}
+	b := f.fixture(key)
+	if b == nil {
+		return nil, fmt.Errorf("нет фикстуры для %q", key)
+	}
+	return b, nil
+}
+
+// BridgeProbe — ответ по карте BridgeProbeAnswers; отказ (например, код 7)
+// внедряется через BridgeExitCodes["probe"] и идёт той же воронкой, что на
+// роутере.
+func (f *Fake) BridgeProbe(ctx context.Context, ip, device string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if net.ParseIP(ip) == nil || strings.Contains(ip, ":") {
+		return false, fmt.Errorf("проба адреса: %q не IPv4-адрес", ip)
+	}
+	if err := validateBridgeIfname("интерфейс", device); err != nil {
+		return false, err
+	}
+	if err := f.fail("bridge probe " + ip + " " + device); err != nil {
+		return false, err
+	}
+	if code := f.bridgeExit("probe"); code != 0 {
+		cause := fmt.Errorf("netmode-bridge probe %s %s: exit status %d", ip, device, code)
+		return false, bridgeErrorForCode(code, cause)
+	}
+	f.mu.Lock()
+	answered := f.BridgeProbeAnswers[ip]
+	f.mu.Unlock()
+	return answered, nil
+}
+
+func (f *Fake) InstallRelayd(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Вызов журналируется до отказа: на роутере скрипт тоже запускается.
+	if err := f.record("bridge install"); err != nil {
+		return err
+	}
+	if err := f.missingBinError(BridgeBinPath, "install"); err != nil {
+		return classifyBridgeError(err)
+	}
+	if code := f.bridgeExit("install"); code != 0 {
+		cause := fmt.Errorf("netmode-bridge install: exit status %d", code)
+		return bridgeErrorForCode(code, cause)
+	}
+	return nil
+}
+
+func (f *Fake) ApplyBridge(ctx context.Context, action string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Та же проверка, что у Exec: фейк, принимающий "reboot", учил бы
+	// тесты действию, которого у скрипта нет.
+	if !validBridgeActions[action] {
+		return fmt.Errorf("неизвестное действие моста %q (допустимы enable, disable, access)", action)
+	}
+	if err := f.record("apply-bridge " + action); err != nil {
+		return err
+	}
+	if err := f.missingBinError(BridgeBinPath, action); err != nil {
+		return classifyBridgeError(err)
+	}
+	if code := f.bridgeExit("apply " + action); code != 0 {
+		cause := fmt.Errorf("netmode-bridge apply %s: exit status %d", action, code)
+		return bridgeErrorForCode(code, cause)
+	}
+	return nil
+}
+
 func (f *Fake) UpdateSubscription(ctx context.Context) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -618,7 +760,7 @@ func (f *Fake) MissingExecutors() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []string
-	for _, path := range []string{ApplyBinPath, WifiBinPath} {
+	for _, path := range []string{ApplyBinPath, WifiBinPath, BridgeBinPath} {
 		for _, missing := range f.MissingBins {
 			if missing == path {
 				out = append(out, path)
@@ -694,12 +836,61 @@ func (f *Fake) applyStaged(pkg, line string) {
 		addr, val := body[:eq], body[eq+1:]
 		cur = setOption(cur, addr, val)
 
+	case strings.HasPrefix(line, "add_list "):
+		// add_list network.vlan2.ports=eth1:t → в форме `uci show` список —
+		// одна строка со значениями в одинарных кавычках через пробел.
+		body := strings.TrimPrefix(line, "add_list ")
+		eq := strings.Index(body, "=")
+		if eq < 0 {
+			return
+		}
+		cur = addListValue(cur, body[:eq], body[eq+1:])
+
+	case strings.HasPrefix(line, "del_list "):
+		body := strings.TrimPrefix(line, "del_list ")
+		eq := strings.Index(body, "=")
+		if eq < 0 {
+			return
+		}
+		cur = delListValue(cur, body[:eq], body[eq+1:])
+
 	case strings.HasPrefix(line, "delete "):
 		target := strings.TrimPrefix(line, "delete ")
 		cur = deleteLines(cur, target)
 	}
 
 	f.Fixtures[key] = []byte(cur)
+}
+
+// addListValue дописывает значение в строку списка либо создаёт её.
+func addListValue(cur, addr, val string) string {
+	lines := strings.Split(cur, "\n")
+	for i, l := range lines {
+		if strings.HasPrefix(l, addr+"=") {
+			lines[i] = l + " '" + val + "'"
+			return strings.Join(lines, "\n")
+		}
+	}
+	return appendLine(cur, addr+"='"+val+"'")
+}
+
+// delListValue убирает одно значение; опустевшая строка списка исчезает
+// целиком — так делает и настоящий uci.
+func delListValue(cur, addr, val string) string {
+	lines := strings.Split(cur, "\n")
+	for i, l := range lines {
+		if !strings.HasPrefix(l, addr+"=") {
+			continue
+		}
+		rest := strings.ReplaceAll(l[len(addr)+1:], "'"+val+"'", "")
+		rest = strings.TrimSpace(rest)
+		if rest == "" {
+			return strings.Join(append(lines[:i], lines[i+1:]...), "\n")
+		}
+		lines[i] = addr + "=" + rest
+		return strings.Join(lines, "\n")
+	}
+	return cur
 }
 
 func appendLine(cur, line string) string {
