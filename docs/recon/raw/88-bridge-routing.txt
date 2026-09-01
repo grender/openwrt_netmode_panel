@@ -1,0 +1,72 @@
+# snapshot: grenderRouter, OpenWrt 25.12.5, 2026-09-02
+# Разведка маршрутизации проброса: почему хосты за мостом недоступны из LAN
+# и каким штатным механизмом это лечится. Проверено на живом роутере.
+
+## 1. СИМПТОМ. Транзитный пакет из LAN к ПК уходит в эфир uplink.
+# ip route get 192.168.0.90 from 192.168.9.238 iif br-lan.1
+192.168.0.90 from 192.168.9.238 dev phy0.0-sta0
+
+# Причина — два равных маршрута к uplink-подсети в главной таблице:
+#   192.168.0.0/24 dev phy0.0-sta0  src 192.168.0.234
+#   192.168.0.0/24 dev br-lan.2     src 192.168.0.85
+# Ядро для транзита выбирает первый.
+
+## 2. Почему таблицы relayd не помогают: его правила смотрят только
+##    на два мостуемых интерфейса, а пакет из LAN приходит на br-lan.1.
+# ip rule (до правки)
+0:	from all lookup local
+2:	from all iif lo lookup 1
+2:	from all iif phy0.0-sta0 lookup 16800
+2:	from all iif br-lan.2 lookup 16801
+32766:	from all lookup main
+32767:	from all lookup default
+
+## 3. МЕХАНИЗМ. netifd принимает config rule с логическим именем
+##    интерфейса и сам разворачивает его в устройство.
+# uci set network.probe_rule=rule
+# uci set network.probe_rule.in=lan
+# uci set network.probe_rule.lookup=16800
+# uci set network.probe_rule.priority=3
+# uci commit network && ubus call network reload
+#
+# ip rule (после) — появилась строка с РАЗВЁРНУТЫМ именем устройства:
+3:	from all iif br-lan.1 lookup 16800
+#
+# ip route get 192.168.0.90 from 192.168.9.238 iif br-lan.1
+192.168.0.90 from 192.168.9.238 dev br-lan.2 table 16800
+
+## 4. СООТВЕТСТВИЕ таблиц сторонам моста (порядок -I: br-lan.2, затем sta0)
+# ip route show table 16800   → хосты ЗА МОСТОМ (сторона br-lan.2)
+192.168.0.5 dev br-lan.2 scope link
+192.168.0.90 dev br-lan.2 scope link
+192.168.0.250 dev br-lan.2 scope link
+# ip route show table 16801   → хосты в uplink (сторона phy0.0-sta0)
+192.168.0.1 dev phy0.0-sta0 scope link
+192.168.0.209 dev phy0.0-sta0 scope link
+#
+# ip neigh show dev br-lan.2 — кто есть кто:
+192.168.0.90  lladdr 2e:60:e6:f9:2c:52 REACHABLE   # сам ПК (мост br-vm)
+192.168.0.250 lladdr 08:00:27:5e:66:e5 REACHABLE   # виртуалка (OUI 08:00:27 = VirtualBox)
+192.168.0.5   lladdr 08:00:27:5e:66:e4 REACHABLE   # виртуалка
+
+## 5. ПРОВЕРКА СКВОЗЬ: пинги с Mac (192.168.9.238, Wi-Fi роутера)
+# до правила — 100% loss на всех трёх
+# после правила:
+192.168.0.90  — 3/3, avg 35.4 ms   (ПК)
+192.168.0.5   — 3/3, avg 3.9 ms    (виртуалка)
+192.168.0.250 — 3/3, avg 3.6 ms    (виртуалка)
+192.168.0.209 — 2/2, avg 58.6 ms   (контроль: реальный хост uplink не сломался)
+
+## 6. ПИН НОМЕРА ТАБЛИЦЫ. uci-опция table у секции relay — штатная:
+##    validate-схема /etc/init.d/relayd: 'table:range(0, 65535):16800'
+# uci set network.relay.table=17000 && перезапуск
+# ps: /usr/sbin/relayd -I br-lan.2 -I phy0.0-sta0 -T 17000 -B -D
+2:	from all iif phy0.0-sta0 lookup 17000
+2:	from all iif br-lan.2 lookup 17001
+# соответствие сохранилось: 17000 — хосты за мостом, 17001 — хосты uplink
+
+## 7. КТО ЗАПУСКАЕТ relayd: procd-сервис /etc/init.d/relayd (START=80),
+##    читающий секции network с proto=relay. Обработчика
+##    /lib/netifd/proto/relay.sh на роутере НЕТ (ls показывает только
+##    dhcp.sh, dhcpv6.sh, ppp.sh). Опции: network, ipaddr(-L), gateway(-G),
+##    expiry(-t), retry(-p), table(-T), forward_bcast(-B), forward_dhcp(-D).

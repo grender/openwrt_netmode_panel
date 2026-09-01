@@ -937,3 +937,150 @@ func TestBridgeRevertAddressesSectionsFromChanges(t *testing.T) {
 		t.Errorf("именованная секция не отменена: %v", reverts)
 	}
 }
+
+// Включение ставит ХОСТ-МАРШРУТ к ПК, и без него доступ из LAN не работает
+// ни при каком firewall.
+//
+// Регрессия живого прогона 2026-09-01. После включения в главной таблице
+// два маршрута к uplink-подсети — через phy0.0-sta0 и через br-lan.2, — и
+// для транзитного пакета из LAN ядро выбирает первый: пакет к ПК уходит в
+// эфир uplink, где ПК нет. Таблицы relayd не спасают: его правила смотрят
+// на iif phy0.0-sta0 и iif br-lan.2, а пакет из LAN приходит на br-lan.1.
+// Симптом выглядел как «firewall не пускает», хотя счётчик accept уже
+// считал пакеты.
+func TestBridgeEnableAddsHostRouteToPC(t *testing.T) {
+	fastBridge(t)
+	s, f := newServer(t)
+	bridgeOff(t, f)
+	f.Fixtures["ubus network.interface.homelan status"] = homelanStatus(true, bLegIP)
+	f.QueueFixture("bridge status", scriptStatus(true, false, 1), scriptStatus(true, true, 1))
+
+	j := runBridgeOp(t, s, "/api/bridge/enable", `{"leg_ip":"`+bLegIP+`","pc_ip":"`+bPCIP+`"}`)
+	if j.State != job.Done {
+		t.Fatalf("джоб %q: %s", j.State, jobErr(j))
+	}
+	calls := strings.Join(f.Calls, "\n")
+	for _, want := range []string{
+		"add-named network.netmode_pcroute=route",
+		"set network.netmode_pcroute.interface=homelan",
+		"set network.netmode_pcroute.target=" + bPCIP,
+		"set network.netmode_pcroute.netmask=255.255.255.255",
+	} {
+		if !strings.Contains(calls, want) {
+			t.Errorf("нет %q — из LAN пакет к ПК уйдёт в эфир uplink", want)
+		}
+	}
+	// Маршрут не привязан к доступу из точки доступа: он про то, ГДЕ живёт
+	// ПК, а доступ открывает firewall.
+	if strings.Contains(calls, "netmode_fwd_l2h") {
+		t.Error("маршрут потянул за собой правила доступа, которых не просили")
+	}
+}
+
+// Включение ставит ПРАВИЛА маршрутизации, покрывающие виртуалки.
+//
+// Маршрут /32 знает только адрес ПК, а на ПК живут виртуалки со своими
+// адресами в той же подсети (измерено на живом роутере: 192.168.0.5 и .250,
+// MAC VirtualBox). Их адресов панель не знает и знать не может — покрыть их
+// можно только тем, что relayd выучил сам.
+//
+// Правил два: relayd кладёт хосты одной стороны моста в базу таблиц, другой —
+// в базу+1, и какая сторона куда попадёт, зависит от порядка получения
+// интерфейсов. Просмотр обеих снимает зависимость от порядка.
+func TestBridgeEnableAddsRelaydLookupRules(t *testing.T) {
+	fastBridge(t)
+	s, f := newServer(t)
+	bridgeOff(t, f)
+	f.Fixtures["ubus network.interface.homelan status"] = homelanStatus(true, bLegIP)
+	f.QueueFixture("bridge status", scriptStatus(true, false, 1), scriptStatus(true, true, 1))
+
+	j := runBridgeOp(t, s, "/api/bridge/enable", `{"leg_ip":"`+bLegIP+`","pc_ip":"`+bPCIP+`"}`)
+	if j.State != job.Done {
+		t.Fatalf("джоб %q: %s", j.State, jobErr(j))
+	}
+	calls := strings.Join(f.Calls, "\n")
+	for _, want := range []string{
+		"add-named network.netmode_rule_a=rule",
+		"set network.netmode_rule_a.in=lan",
+		"set network.netmode_rule_a.lookup=16800",
+		"set network.netmode_rule_a.priority=3",
+		"add-named network.netmode_rule_b=rule",
+		"set network.netmode_rule_b.lookup=16801",
+		"set network.netmode_rule_b.priority=4",
+	} {
+		if !strings.Contains(calls, want) {
+			t.Errorf("нет %q — виртуалки останутся недоступны из Wi-Fi роутера", want)
+		}
+	}
+	// Имя интерфейса в ПРАВИЛЕ — ЛОГИЧЕСКОЕ: netifd разворачивает его сам,
+	// а захардкоженное br-lan.1 сломалось бы на другой сборке (ADR-0019).
+	// Проверяются именно строки правил: br-lan.1 законно встречается в
+	// партии как значение lan.device.
+	for _, c := range f.CallsContaining("netmode_rule_") {
+		if strings.Contains(c, "br-lan") {
+			t.Errorf("в правило попало имя устройства: %s", c)
+		}
+	}
+}
+
+// Демонтаж снимает маршрут ПО СОДЕРЖИМОМУ — включая маршрут, заведённый
+// не нами (у ручной сборки своих имён нет).
+func TestBridgeDisableRemovesHostRoute(t *testing.T) {
+	fastBridge(t)
+	s, f := newServer(t)
+	bridgeOn(t, f)
+	// Анонимный маршрут через ногу моста — так он выглядел бы у сборки,
+	// сделанной руками.
+	f.Fixtures["uci show network"] = append(f.Fixtures["uci show network"], []byte(
+		"network.@route[0]=route\n"+
+			"network.@route[0].interface='homelan'\n"+
+			"network.@route[0].target='192.168.0.90'\n"+
+			"network.@route[0].netmask='255.255.255.255'\n")...)
+	f.Errors["ubus network.interface.homelan status"] = errors.New("Not found")
+	f.Fixtures["bridge status"] = scriptStatus(true, false, 1)
+
+	j := runBridgeOp(t, s, "/api/bridge/disable", "")
+	if j.State != job.Done {
+		t.Fatalf("джоб %q: %s", j.State, jobErr(j))
+	}
+	if !strings.Contains(strings.Join(f.Calls, "\n"), "delete network.@route[0]") {
+		t.Error("маршрут к ноге моста пережил демонтаж")
+	}
+}
+
+// Демонтаж снимает и ПРАВИЛА — тоже по содержимому, по таблице, в которую
+// они смотрят. Оставленное правило указывало бы в пустую таблицу: вреда нет,
+// но конфигурация врала бы о том, что проброс ещё жив.
+func TestBridgeDisableRemovesRelaydRules(t *testing.T) {
+	fastBridge(t)
+	s, f := newServer(t)
+	bridgeOn(t, f)
+	// Анонимные правила — так они выглядели бы у сборки, сделанной руками.
+	f.Fixtures["uci show network"] = append(f.Fixtures["uci show network"], []byte(
+		"network.@rule[0]=rule\n"+
+			"network.@rule[0].in='lan'\n"+
+			"network.@rule[0].lookup='16800'\n"+
+			"network.@rule[1]=rule\n"+
+			"network.@rule[1].in='lan'\n"+
+			"network.@rule[1].lookup='16801'\n"+
+			// Чужое правило в другую таблицу трогать нельзя.
+			"network.@rule[2]=rule\n"+
+			"network.@rule[2].in='lan'\n"+
+			"network.@rule[2].lookup='42'\n")...)
+	f.Errors["ubus network.interface.homelan status"] = errors.New("Not found")
+	f.Fixtures["bridge status"] = scriptStatus(true, false, 1)
+
+	j := runBridgeOp(t, s, "/api/bridge/disable", "")
+	if j.State != job.Done {
+		t.Fatalf("джоб %q: %s", j.State, jobErr(j))
+	}
+	calls := strings.Join(f.Calls, "\n")
+	for _, want := range []string{"delete network.@rule[0]", "delete network.@rule[1]"} {
+		if !strings.Contains(calls, want) {
+			t.Errorf("правило %q пережило демонтаж", want)
+		}
+	}
+	if strings.Contains(calls, "delete network.@rule[2]") {
+		t.Error("снесено ЧУЖОЕ правило в постороннюю таблицу — демонтаж трогает только своё")
+	}
+}

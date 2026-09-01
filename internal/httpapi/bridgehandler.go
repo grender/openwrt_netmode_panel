@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -259,16 +260,32 @@ type bridgeConfig struct {
 	// Демонтаж ищет секции ПО ТИПУ И СОДЕРЖИМОМУ (ADR-0030): живой роутер
 	// несёт ручную сборку с анонимными секциями, и панель обязана уметь
 	// разобрать её, а не только своё.
-	vlanSections []string // bridge-vlan на baseDev, в порядке файла
-	devSection   string   // секция device самого бриджа
-	homelanZones []string // зоны с name='homelan', в порядке файла
-	homelanFwds  []string // форвардинги, касающиеся homelan
-	lanFwd       string   // форвардинг lan→homelan (признак ap_access)
-	wanZone      string   // секция зоны wan
-	wanMasqNeg   []string // элементы masq_src зоны wan вида '!a.b.c.d/nn'
+	vlanSections  []string // bridge-vlan на baseDev, в порядке файла
+	homelanRoutes []string // route через homelan, в порядке файла
+	relayRules    []string // rule с lookup в таблицы relayd, в порядке файла
+	devSection    string   // секция device самого бриджа
+	homelanZones  []string // зоны с name='homelan', в порядке файла
+	homelanFwds   []string // форвардинги, касающиеся homelan
+	lanFwd        string   // форвардинг lan→homelan (признак ap_access)
+	wanZone       string   // секция зоны wan
+	wanMasqNeg    []string // элементы masq_src зоны wan вида '!a.b.c.d/nn'
 }
 
 var negCIDR = regexp.MustCompile(`^!(\d{1,3}\.){3}\d{1,3}/\d{1,2}$`)
+
+// База таблиц маршрутизации relayd.
+//
+// Не выдумка и не подсмотренная случайность: значение объявлено собственной
+// validate-схемой relayd — `/etc/init.d/relayd`, строка
+// `'table:range(0, 65535):16800'` (raw/88). relayd заводит по таблице на
+// каждый мостуемый интерфейс: база и база+1.
+//
+// Пин через `option table` рассмотрен и отвергнут: relayd — отдельный
+// procd-сервис, и `ubus call network reload` его НЕ перезапускает
+// (измерено, raw/88 §6-7) — то есть пин требовал бы расширить глагол
+// скрипта до перезапуска сервиса. Умолчание же объявлено самим relayd и
+// цитируется в evidence.
+const relaydTableBase = 16800
 
 // vlanBase отрезает VLAN-суффикс: 'br-lan.1' → 'br-lan', 'br-lan' → сам.
 func vlanBase(dev string) string {
@@ -336,6 +353,19 @@ func (s *Server) readBridgeConfig(ctx context.Context) (*bridgeConfig, *httpErr)
 			if sec.Options["device"] == c.baseDev {
 				c.vlanSections = append(c.vlanSections, sec.Name)
 			}
+		}
+	}
+	for _, sec := range netCfg.ByType("route") {
+		if sec.Options["interface"] == "homelan" {
+			c.homelanRoutes = append(c.homelanRoutes, sec.Name)
+		}
+	}
+	// Правила ищутся ПО СОДЕРЖИМОМУ — по таблице, в которую смотрят, а не по
+	// имени секции: ручная сборка своих имён не знает (ADR-0030).
+	for _, sec := range netCfg.ByType("rule") {
+		switch sec.Options["lookup"] {
+		case strconv.Itoa(relaydTableBase), strconv.Itoa(relaydTableBase + 1):
+			c.relayRules = append(c.relayRules, sec.Name)
 		}
 	}
 
@@ -1056,6 +1086,57 @@ func (s *Server) writeBridge(b *bridgeBatch, c *bridgeConfig, p bridgePlan) []st
 		if p.apAccess {
 			s.writeAccessOn(b, p)
 		}
+		// Хост-маршрут к ПК — обязателен, и это урок живого роутера
+		// 2026-09-01, а не перестраховка.
+		//
+		// В главной таблице маршрутов после включения лежат ДВА маршрута
+		// к uplink-подсети: через phy0.0-sta0 (наш адрес в ней) и через
+		// br-lan.2 (нога моста). Для транзитного пакета из LAN ядро
+		// выбирает первый, то есть шлёт пакет к ПК в эфир uplink, где ПК
+		// нет. Проверено прямым вопросом ядру:
+		//
+		//	ip route get 192.168.0.90 from 192.168.9.238 iif br-lan.1
+		//	→ dev phy0.0-sta0        (до маршрута)
+		//	→ dev br-lan.2           (после)
+		//
+		// Собственные таблицы relayd (16800/16801) тут не помогают: его
+		// правила смотрят только на iif phy0.0-sta0 и iif br-lan.2, а
+		// пакет из LAN приходит на br-lan.1 и до них не доходит вовсе.
+		//
+		// Маршрут ставится ВСЕГДА при включении, а не вместе с доступом из
+		// точки доступа: он лишь делает таблицу маршрутов честной насчёт
+		// того, где живёт ПК. Доступ открывает firewall — одно правило,
+		// один смысл.
+		b.addNamed("network", "netmode_pcroute", "route")
+		b.set("network", "netmode_pcroute", "interface", "homelan")
+		b.set("network", "netmode_pcroute", "target", p.pcIP)
+		b.set("network", "netmode_pcroute", "netmask", "255.255.255.255")
+
+		// Правила: трафик из LAN смотрит в таблицы relayd прежде main.
+		//
+		// Маршрут выше гарантирует ПК; правила покрывают ВСЁ, что relayd
+		// выучил, — то есть и виртуалки на ПК, чьих адресов панель не
+		// знает и знать не может (измерено: 192.168.0.5 и .250 с MAC
+		// VirtualBox, raw/88 §4-5).
+		//
+		// Правил ДВА, и это не перестраховка. relayd кладёт хосты одной
+		// стороны моста в базу, другой — в базу+1, а какая сторона куда
+		// попадёт, зависит от порядка, в котором сервис получил
+		// интерфейсы. Просмотрев обе, мы снимаем зависимость от этого
+		// порядка: в «чужой» таблице лежат маршруты в uplink через
+		// станционный интерфейс — ровно то же, что дала бы main.
+		//
+		// Приоритеты 3 и 4: после собственных правил relayd (2) и задолго
+		// до main (32766). in='lan' — ЛОГИЧЕСКОЕ имя, netifd разворачивает
+		// его в устройство сам (raw/88 §3), и захардкоженного br-lan.1
+		// здесь нет (ADR-0019).
+		for i, name := range []string{"netmode_rule_a", "netmode_rule_b"} {
+			b.addNamed("network", name, "rule")
+			b.set("network", name, "in", "lan")
+			b.set("network", name, "lookup", strconv.Itoa(relaydTableBase+i))
+			b.set("network", name, "priority", strconv.Itoa(3+i))
+		}
+
 		// Метаданные: адрес ПК хранится только здесь — в живой сети его
 		// не прочитать, пока ПК молчит (docs/contracts/uci-netmode.md).
 		b.set("netmode", "main", "bridge_pc_ip", p.pcIP)
@@ -1080,6 +1161,16 @@ func (s *Server) writeBridge(b *bridgeBatch, c *bridgeConfig, p bridgePlan) []st
 		}
 		if _, ok := c.netCfg.Section("homelan"); ok {
 			b.delIfPresent("network", "homelan", "")
+		}
+		// Маршруты к ноге моста и правила в таблицы relayd — по
+		// СОДЕРЖИМОМУ, как и всё остальное: ручная сборка своих имён не
+		// знает. В обратном порядке: индексы анонимных секций сдвигаются
+		// на каждом удалении.
+		for i := len(c.homelanRoutes) - 1; i >= 0; i-- {
+			b.delIfPresent("network", c.homelanRoutes[i], "")
+		}
+		for i := len(c.relayRules) - 1; i >= 0; i-- {
+			b.delIfPresent("network", c.relayRules[i], "")
 		}
 		for i := len(c.homelanFwds) - 1; i >= 0; i-- {
 			b.delIfPresent("firewall", c.homelanFwds[i], "")
