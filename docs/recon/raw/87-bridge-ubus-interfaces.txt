@@ -1,0 +1,8 @@
+network.interface
+network.interface.homelan
+network.interface.lan
+network.interface.loopback
+network.interface.relay
+network.interface.wan
+network.interface.wan6
+network.interface.wwan

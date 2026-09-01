@@ -1,0 +1,26 @@
+== busybox ping: живой адрес (uplink-шлюз через sta)
+wwan l3_device=phy0.0-sta0
+exit(alive)=1
+== busybox ping: свободный адрес
+exit(silent)=1
+== busybox ping: несуществующий интерфейс
+ping: bad address 'nosuch0'
+exit(noiface)=1
+== актуальный uplink (не John24 — роутер сменил сеть, подсеть выводится из живого статуса)
+		"routes",
+		"data"
+	],
+	"metric": 0,
+	"dns_metric": 0,
+--
+	"ipv4-address": [
+		{
+			"address": "10.124.199.1",
+			"mask": 24
+		}
+--
+	"route": [
+		{
+gw=10.124.199.136
+== busybox ping: живой адрес (шлюз текущего uplink)
+exit(alive)=0

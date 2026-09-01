@@ -1,0 +1,15 @@
+== nft: цепочки NAT и forward, важна семантика masq_src с отрицанием
+table inet fw4 {
+	chain srcnat {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname { "eth0", "phy0.0-sta0" } jump srcnat_wan comment "!fw4: Handle wan IPv4/IPv6 srcnat traffic"
+	}
+}
+table inet fw4 {
+	chain srcnat_wan {
+		ip saddr != 192.168.0.0/24 masquerade comment "!fw4: Masquerade IPv4 wan traffic"
+	}
+}
+== uci wan zone masq_src
+firewall.@zone[1].masq='1'
+firewall.@zone[1].masq_src='!192.168.0.0/24'

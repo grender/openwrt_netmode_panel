@@ -405,6 +405,41 @@
     "mockup_names_are_fiction": "макет рисует general/general_alt/general_mod/faceless/discord/discord_ipv4 — на роутере таких нет. Панель обязана брать имена из API, а не из макета.",
     "payload_size_warning": "каждый сет тащит ~2.5 КБ стратегии; полный ответ ~5 КБ. /api/status опрашивается раз в секунду, поэтому демон проецирует ответ до {id,name,enabled} и кэширует, а не проксирует."
   },
+  "bridge": {
+    "status": "verified",
+    "_snapshot": "grenderRouter, OpenWrt 25.12.5, 2026-09-01; конфигурация проброса собрана руками и проверена живьём до кода (ПК был виден клиентам uplink-сети)",
+    "raw_uci_network": "raw/80-bridge-uci-network.txt",
+    "raw_uci_firewall": "raw/81-bridge-uci-firewall.txt",
+    "raw_homelan_status": "raw/82-ubus-network-interface-homelan.json",
+    "raw_sysfs_port": "raw/83-bridge-sysfs-port.txt",
+    "raw_relayd": "raw/84-bridge-relayd.txt",
+    "raw_masq_src": "raw/85-bridge-masq-src-nft.txt",
+    "raw_ping_codes": "raw/86-bridge-ping-codes.txt",
+    "raw_ubus_interfaces": "raw/87-bridge-ubus-interfaces.txt",
+    "objects": {
+      "network.interface.homelan": "L3-статус ноги в uplink: up, l3_device=br-lan.2, ipv4-address[{address,mask}] — источник вердикта включения (raw/82, raw/87)"
+    },
+    "uci_forms": {
+      "device_ports": "network.@device[0] name='br-lan' ports='eth1' — ровно один порт, имя ВЫВОДИТСЯ из конфигурации (raw/80)",
+      "bridge_vlan": "секции bridge-vlan: device, vlan, ports-СПИСОК ('eth1:u*' / 'eth1:t') — пишутся через uci add_list (raw/80)",
+      "relay_iface": "interface relay: proto='relay', network-СПИСОК ('homelan' 'wwan'); процесс relayd запускает netifd через протокольный обработчик: ps показывает '/usr/sbin/relayd -I br-lan.2 -I phy0.0-sta0 -B -D' без нашего старта сервиса (raw/80, raw/84)",
+      "wan_zone_masq_src": "firewall.@zone[].masq_src принимает отрицание: '!192.168.0.0/24' компилируется fw4 в 'ip saddr != 192.168.0.0/24 masquerade' (raw/85) — ключевая гипотеза NAT-дизайна подтверждена"
+    },
+    "sysfs_port": {
+      "paths": "/sys/class/net/<port>/{carrier,speed,carrier_changes,operstate}",
+      "observed_down": "порт без кабеля: carrier=0 (читается, exit 0), speed=-1 (НЕ ноль — потому в JSON статуса он null), carrier_changes=0 после ребута, operstate=down (raw/83)",
+      "flap_history": "carrier_changes — главная улика физического флапа линка: при отладке 2026-08-31 счётчик дошёл до 241 при цикле Up-1Gbps→Down каждые 1-2 с"
+    },
+    "relayd": {
+      "package": "apk info -e relayd: exit 0 установлен / exit 1 нет (raw/84)",
+      "init": "/etc/init.d/relayd существует (2313 байт) — страховочный стоп в netmode-bridge реален, но гоняется только по живому pidof (raw/84)",
+      "running": "pidof relayd: exit 0/1 (raw/84)"
+    },
+    "ping": {
+      "codes": "busybox ping -c1 -W1 -I <dev> <ip>: 0 — ответил; 1 — тишина; 1 и 'bad address' — несуществующий интерфейс. Кодом «тишина» и «нет интерфейса» НЕ различаются — слепота probe задокументирована в netmode-bridge (raw/86)"
+    },
+    "uplink_is_dynamic": "во время разведки wwan был подключён уже НЕ к John24 (шлюз 10.124.199.136/24) при живой ноге homelan 192.168.0.85 — uplink-подсеть обязана выводиться из живого статуса wwan на каждый запрос, а не запоминаться (raw/86, raw/82)"
+  },
   "open_questions": [
     {
       "id": "RQ-01",

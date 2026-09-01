@@ -1,0 +1,18 @@
+== apk info -e relayd
+relayd
+exit=0
+== apk info -e nonexistent-pkg-zzz
+exit=1
+== pidof relayd
+4187
+exit=0
+== ls -la /etc/init.d/relayd
+-rwxr-xr-x    1 root     root          2313 Oct  4  2025 /etc/init.d/relayd
+exit=0
+== ps relayd
+ 4187 root      1036 S    /usr/sbin/relayd -I br-lan.2 -I phy0.0-sta0 -B -D
+ 5989 root      1336 S    ash -c echo "== apk info -e relayd"; apk info -e relayd; echo "exit=$?"; echo "== apk info -e nonexistent
+== relayd version string
+relayd: unrecognized option: h
+Usage: relayd <options>
+
