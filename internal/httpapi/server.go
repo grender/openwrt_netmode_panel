@@ -59,6 +59,19 @@ type Config struct {
 	// наружу он не уходит ни одним путём — ни в /api/status, ни в текст
 	// ошибки, ни в журнал демона (ADR-0012).
 	SubscriptionURL string
+	// ProviderPath и ManifestPath — куда обновление кладёт файл провайдера
+	// и манифест. Пусто → константы ниже. Это НЕ настройка владельца:
+	// loadConfig их не читает, в /etc/config/netmode их нет и не будет
+	// (см. комментарий к константам). Поля существуют ради одного —
+	// чтобы тест мог собрать сервер боевым NewServer и увести файлы в
+	// t.TempDir(): иначе проводка «обновление → кэш манифеста» не
+	// проверяется ничем, и её удаление оставляло все тесты зелёными.
+	ProviderPath string
+	ManifestPath string
+	// SubscriptionFetch — скачивание подписки. Пусто → happ.Fetch. Только
+	// для тестов, по той же причине, что и пути выше; боевой путь обязан
+	// идти через happ, который умеет не показывать адрес в ошибках.
+	SubscriptionFetch func(ctx context.Context, url string) ([]byte, error)
 	// LEDRoot — каталог светодиодов. Пусто → /sys/class/leds.
 	LEDRoot string
 	// Logf — журнал демона. Пусто → тишина.
@@ -108,20 +121,28 @@ type Server struct {
 	mux        *http.ServeMux
 }
 
-// Пути файлов подписки — константы здесь, а не поля Config.
+// Пути файлов подписки — константы, а не настройка в /etc/config/netmode.
 //
 // Оба они не настройка владельца, а часть договорённости с соседями:
 // providerPath называет nikki (движок читает этот каталог сам),
 // manifestPath — наш собственный каталог рядом с токеном. Вынеся их в
 // /etc/config/netmode, мы получили бы значение, которое можно поменять
 // только вместе с конфигурацией mihomo, — то есть настройку, ломающую
-// демона при любом изменении.
+// демона при любом изменении. Одноимённые поля Config переопределяют их
+// только из тестов (см. Config).
 const (
 	providerPath = "/etc/nikki/run/providers/sub.yaml"
 	manifestPath = "/etc/netmoded/subscription.json"
 	// providerName — имя провайдера в Clash API: PUT /providers/proxies/sub.
-	// Совпадает с именем файла без расширения, и это требование mihomo, а
-	// не наше удобство.
+	//
+	// Совпадает с именем файла без расширения ПО ЭТОМУ КОНКРЕТНОМУ ПРОФИЛЮ
+	// nikki, а не по требованию mihomo: имя провайдера — ключ карты
+	// proxy-providers: в конфиге движка, а path: внутри записи задаётся
+	// отдельно и от имени файла не зависит вовсе (SPEC §2; evidence.json,
+	// запись nikki.provider_file). Менять эту константу можно только
+	// вместе с ключом в конфиге mihomo — переименование одного файла здесь
+	// ничего не чинит и не ломает, а «парная» правка по прежней редакции
+	// этого комментария дала бы 404 от движка при корректном файле на диске.
 	providerName = "sub"
 )
 
@@ -171,11 +192,28 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 	// подменяется после конструктора (SetNikkiClient — этим пользуются и
 	// тесты, и дев-сервер), и замыкание на значение поля заморозило бы
 	// подмену — обновление ходило бы в отброшенного клиента.
+	if cfg.ProviderPath == "" {
+		cfg.ProviderPath = providerPath
+	}
+	if cfg.ManifestPath == "" {
+		cfg.ManifestPath = manifestPath
+	}
+	s.cfg = cfg
 	up := &subs.Updater{
 		URL:          cfg.SubscriptionURL,
-		ProviderPath: providerPath,
-		ManifestPath: manifestPath,
+		ProviderPath: cfg.ProviderPath,
+		ManifestPath: cfg.ManifestPath,
+		Fetch:        cfg.SubscriptionFetch,
 		Reload: func(ctx context.Context) error {
+			// Проверка ВНУТРИ замыкания, а не при сборке: клиент
+			// подменяется после конструктора, и nil здесь — это
+			// состояние на момент вызова. Без проверки subs.Update
+			// увидел бы непустой Reload, записал бы оба файла и упал
+			// паникой на нулевом интерфейсе — «половина дела», от
+			// которой предохранитель Reload == nil как раз и защищает.
+			if s.nikki == nil {
+				return errors.New("subs: клиент Clash API не настроен, провайдера перечитать некому")
+			}
 			return s.nikki.ReloadProvider(ctx, providerName)
 		},
 	}
@@ -456,10 +494,10 @@ func (s *Server) manifestEntries() []happ.Entry {
 // превратили бы одну неудачную запись файла в перетасованный список у
 // владельца — причём молча, потому что список остался бы рабочим.
 func (s *Server) reloadManifest() {
-	entries, err := subs.LoadManifest(manifestPath)
+	entries, err := subs.LoadManifest(s.cfg.ManifestPath)
 	if err != nil {
 		s.logf("манифест подписки %s не прочитан (%v): "+
-			"порядок и виды строк остаются от предыдущего чтения", manifestPath, err)
+			"порядок и виды строк остаются от предыдущего чтения", s.cfg.ManifestPath, err)
 		return
 	}
 	s.manifestMu.Lock()

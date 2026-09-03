@@ -2,6 +2,8 @@ package happ
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -105,4 +107,24 @@ func TestRenderWithoutNodes(t *testing.T) {
 	if doc.Proxies == nil {
 		t.Error("proxies должен быть пустым списком, а не null: null mihomo не примет")
 	}
+}
+
+// TestRenderPanicsOnManifestEntries — записи из манифеста в Render не идут.
+//
+// У них Proxy == nil (json:"-"), и молчаливый пропуск дал бы файл с меньшим
+// числом узлов, чем насчитал Summarize, а в худшем случае — пустой
+// {"proxies":[]}, который движок примет. Паника здесь — тот же выбор, что у
+// соседней ветки про несериализуемый узел.
+func TestRenderPanicsOnManifestEntries(t *testing.T) {
+	entries := []Entry{{Name: "🇩🇪⚡Германия", Kind: KindNode, Type: "vless"}}
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("Render молча принял узел без объекта")
+		}
+		if !strings.Contains(fmt.Sprint(r), "манифест") {
+			t.Fatalf("паника не называет причину: %v", r)
+		}
+	}()
+	Render(entries)
 }

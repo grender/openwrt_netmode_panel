@@ -27,29 +27,35 @@ const xhttpSupported = true
 // Возвращает либо готовый узел с типом, либо пустую причину непригодности.
 // Причина — короткий русский текст: он уходит в панель как есть, и владелец
 // читает его вместо того, чтобы гадать, куда делся узел.
-func convert(name string, o xrayOutbound, xhttp bool) (proxy map[string]any, typ string, reason string) {
+//
+// Четвёртое значение — ключи xhttpSettings.extra, которых конвертер не
+// знает (см. copyXHTTPExtra). Они не мешают собрать узел, но должны дойти
+// до журнала: молча потерянный ключ — это узел, который «то работает, то
+// нет», без единой зацепки для владельца.
+func convert(name string, o xrayOutbound, xhttp bool) (proxy map[string]any, typ string, reason string, unknown []string) {
 	switch o.Protocol {
 	case "vless":
 		return convertVLESS(name, o, xhttp)
 	case "hysteria":
-		return convertHysteria(name, o)
+		p, t, r := convertHysteria(name, o)
+		return p, t, r, nil
 	case "":
-		return nil, "", "в outbound не указан протокол"
+		return nil, "", "в outbound не указан протокол", nil
 	default:
-		return nil, "", fmt.Sprintf("протокол %s не переводится в узел mihomo", o.Protocol)
+		return nil, "", fmt.Sprintf("протокол %s не переводится в узел mihomo", o.Protocol), nil
 	}
 }
 
-func convertVLESS(name string, o xrayOutbound, xhttp bool) (map[string]any, string, string) {
+func convertVLESS(name string, o xrayOutbound, xhttp bool) (map[string]any, string, string, []string) {
 	if len(o.Settings.VNext) == 0 || len(o.Settings.VNext[0].Users) == 0 {
-		return nil, "", "у vless-outbound нет адреса или пользователя"
+		return nil, "", "у vless-outbound нет адреса или пользователя", nil
 	}
 	v := o.Settings.VNext[0]
 	if v.Address == "" || v.Port == 0 {
-		return nil, "", "у vless-outbound не заполнен адрес или порт"
+		return nil, "", "у vless-outbound не заполнен адрес или порт", nil
 	}
 	if v.Users[0].ID == "" {
-		return nil, "", "у vless-outbound нет uuid"
+		return nil, "", "у vless-outbound нет uuid", nil
 	}
 
 	ss := o.StreamSettings
@@ -57,7 +63,7 @@ func convertVLESS(name string, o xrayOutbound, xhttp bool) (map[string]any, stri
 	case "tcp":
 	case "xhttp":
 		if !xhttp {
-			return nil, "", "транспорт xhttp не принят движком mihomo этой сборки"
+			return nil, "", "транспорт xhttp не принят движком mihomo этой сборки", nil
 		}
 	default:
 		// Формулировка важна: ws, grpc и h2 движок УМЕЕТ — их не умеет
@@ -66,7 +72,7 @@ func convertVLESS(name string, o xrayOutbound, xhttp bool) (map[string]any, stri
 		// владельца менять версию mihomo, где чинить нечего.
 		return nil, "", fmt.Sprintf(
 			"транспорт %s не переводится нашим конвертером (движок его умеет, перевода нет у нас)",
-			networkOrNone(ss.Network))
+			networkOrNone(ss.Network)), nil
 	}
 
 	p := map[string]any{
@@ -93,7 +99,7 @@ func convertVLESS(name string, o xrayOutbound, xhttp bool) (map[string]any, stri
 	case "reality":
 		r := ss.RealitySettings
 		if r.PublicKey == "" {
-			return nil, "", "у reality-узла нет публичного ключа"
+			return nil, "", "у reality-узла нет публичного ключа", nil
 		}
 		// Отпечаток у reality обязателен так же, как публичный ключ:
 		// без него подделывать нечего, и mihomo скажет об этом только в
@@ -101,7 +107,7 @@ func convertVLESS(name string, o xrayOutbound, xhttp bool) (map[string]any, stri
 		// подключается. Отказ здесь превращает молчание в строку с
 		// причиной.
 		if r.Fingerprint == "" {
-			return nil, "", "у reality-узла нет отпечатка (client-fingerprint)"
+			return nil, "", "у reality-узла нет отпечатка (client-fingerprint)", nil
 		}
 		p["tls"] = true
 		p["servername"] = r.ServerName
@@ -127,7 +133,7 @@ func convertVLESS(name string, o xrayOutbound, xhttp bool) (map[string]any, stri
 		// Голый vless без шифрования в подписке не встречался, и молча
 		// собрать из него узел значило бы отправить трафик открытым,
 		// решив за владельца. Пусть строка останется видимой.
-		return nil, "", fmt.Sprintf("режим шифрования %s у vless не поддержан", securityOrNone(ss.Security))
+		return nil, "", fmt.Sprintf("режим шифрования %s у vless не поддержан", securityOrNone(ss.Security)), nil
 	}
 
 	if ss.Network == "xhttp" {
@@ -137,10 +143,11 @@ func convertVLESS(name string, o xrayOutbound, xhttp bool) (map[string]any, stri
 			"host": x.Host,
 			"mode": x.Mode,
 		}
-		copyXHTTPExtra(opts, x.Extra)
+		unknown := copyXHTTPExtra(opts, x.Extra)
 		p["xhttp-opts"] = opts
+		return p, "vless", "", unknown
 	}
-	return p, "vless", ""
+	return p, "vless", "", nil
 }
 
 func convertHysteria(name string, o xrayOutbound) (map[string]any, string, string) {

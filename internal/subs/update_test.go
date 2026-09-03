@@ -371,3 +371,83 @@ func TestUpdateRefusesWithoutReload(t *testing.T) {
 	}
 	mustNotExist(t, h.provider, "перезагрузка не настроена")
 }
+
+// TestWriteAtomicReplacesLeftoverTemp — остаток прерванной записи с чужими
+// правами и чужим содержимым не должен ни пережить обновление, ни попасть на
+// рабочее место как есть.
+func TestWriteAtomicReplacesLeftoverTemp(t *testing.T) {
+	h := newHarness(t, oneNode, nil)
+	tmp := h.provider + ".tmp"
+	if err := os.WriteFile(tmp, []byte("мусор от прерванной записи"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.up.Update(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := os.Stat(h.provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != filePerm {
+		t.Errorf("права рабочего файла %o, ожидалось %o: чужие права с .tmp переехали на место", st.Mode().Perm(), filePerm)
+	}
+	body, _ := os.ReadFile(h.provider)
+	if strings.Contains(string(body), "мусор") {
+		t.Error("на рабочем месте оказалось содержимое остатка, а не новый файл")
+	}
+	mustNotExist(t, tmp, "после успеха")
+}
+
+// TestWriteAtomicDoesNotFollowSymlinkTemp — подложенная ссылка sub.yaml.tmp
+// не должна увести секрет по чужому пути: os.WriteFile пошёл бы по ней,
+// O_EXCL после снятия ссылки создаёт свой файл.
+func TestWriteAtomicDoesNotFollowSymlinkTemp(t *testing.T) {
+	h := newHarness(t, oneNode, nil)
+	elsewhere := filepath.Join(t.TempDir(), "чужой-файл")
+	if err := os.WriteFile(elsewhere, []byte("нетронуто"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, h.provider+".tmp"); err != nil {
+		t.Skip("символические ссылки недоступны:", err)
+	}
+
+	if _, err := h.up.Update(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := os.ReadFile(elsewhere)
+	if string(got) != "нетронуто" {
+		t.Fatalf("секрет уехал по ссылке: чужой файл теперь %q", got)
+	}
+	body, _ := os.ReadFile(h.provider)
+	if !strings.Contains(string(body), `"proxies"`) {
+		t.Error("рабочий файл провайдера не записан")
+	}
+}
+
+// TestUpdateLeavesNoTempOnWriteError — отказ самой записи (не Chmod, не
+// Rename) тоже убирает .tmp: асимметрия трёх веток была бы мусором во
+// флеше ровно тогда, когда места нет.
+func TestUpdateLeavesNoTempOnWriteError(t *testing.T) {
+	h := newHarness(t, oneNode, nil)
+	// Провайдер — каталог: OpenFile с O_CREATE|O_EXCL на нём отказывает.
+	if err := os.Mkdir(h.provider+".tmp", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Remove снимет пустой каталог и запись пройдёт — значит, нужен
+	// непустой, чтобы отказ был именно на создании временного файла.
+	if err := os.WriteFile(filepath.Join(h.provider+".tmp", "x"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := h.up.Update(context.Background())
+	if err == nil {
+		t.Fatal("ожидался отказ записи временного файла")
+	}
+	mustNotExist(t, h.provider, "после отказа записи")
+	mustNotExist(t, h.manifest, "после отказа записи")
+	if h.reloads != 0 {
+		t.Errorf("движок дёрнули при незаписанных файлах: %d", h.reloads)
+	}
+}

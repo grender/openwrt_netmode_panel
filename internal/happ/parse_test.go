@@ -1,10 +1,12 @@
 package happ
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -360,5 +362,95 @@ func TestHasFlagPrefix(t *testing.T) {
 		if got := hasFlagPrefix(name); got != want {
 			t.Errorf("hasFlagPrefix(%q) = %v, ожидалось %v", name, got, want)
 		}
+	}
+}
+
+// TestParseRefusesTooManyRecords — потолок по числу записей, отдельно от
+// потолка по байтам в Fetch: записи живут в кэше демона постоянно.
+func TestParseRefusesTooManyRecords(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteByte('[')
+	for i := 0; i <= maxRecords; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, `{"remarks":"n%d","outbounds":[]}`, i)
+	}
+	sb.WriteByte(']')
+
+	_, err := Parse([]byte(sb.String()))
+	if !errors.Is(err, ErrTooMany) {
+		t.Fatalf("на %d записях ожидался ErrTooMany, получено %v", maxRecords+1, err)
+	}
+	if !strings.Contains(err.Error(), fmt.Sprint(maxRecords)) {
+		t.Errorf("текст ошибки не называет потолок: %v", err)
+	}
+	// Ровно потолок — проходит: предел включительный.
+	sb.Reset()
+	sb.WriteByte('[')
+	for i := 0; i < maxRecords; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, `{"remarks":"n%d","outbounds":[]}`, i)
+	}
+	sb.WriteByte(']')
+	if _, err := Parse([]byte(sb.String())); err != nil {
+		t.Fatalf("ровно %d записей должны проходить: %v", maxRecords, err)
+	}
+}
+
+// TestSummarizeCollectsUnknownXHTTPKeys — ключ extra, которого конвертер не
+// знает, не должен пропасть молча: он единственный след смены формата у
+// провайдера, и без него узел «то работает, то нет» без зацепок.
+func TestSummarizeCollectsUnknownXHTTPKeys(t *testing.T) {
+	var records []map[string]any
+	if err := json.Unmarshal(subscription(t), &records); err != nil {
+		t.Fatal(err)
+	}
+	injected := 0
+	for _, r := range records {
+		for _, o := range r["outbounds"].([]any) {
+			ob := o.(map[string]any)
+			ss, _ := ob["streamSettings"].(map[string]any)
+			if ss == nil || ss["network"] != "xhttp" {
+				continue
+			}
+			x := ss["xhttpSettings"].(map[string]any)
+			extra, _ := x["extra"].(map[string]any)
+			if extra == nil {
+				extra = map[string]any{}
+				x["extra"] = extra
+			}
+			extra["xPaddingBytesV2"] = "1-2" // неизвестный, непустой
+			extra["futureFlag"] = false      // неизвестный, но пустой — не считается
+			extra["scMaxBufferedPosts"] = 99 // серверный — не считается
+			injected++
+			break
+		}
+	}
+	if injected == 0 {
+		t.Fatal("в фикстуре не нашлось ни одного xhttp-outbound")
+	}
+	raw, err := json.Marshal(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := Summarize(entries)
+	if len(sum.UnknownKeys) != 1 || sum.UnknownKeys[0] != "xPaddingBytesV2" {
+		t.Fatalf("ожидался ровно один неизвестный ключ xPaddingBytesV2, получено %v", sum.UnknownKeys)
+	}
+	// Без инъекции сводка чистая: у снятой подписки неизвестных нет.
+	clean, err := Parse(subscription(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Summarize(clean).UnknownKeys; len(got) != 0 {
+		t.Fatalf("на снятой подписке неизвестных ключей быть не должно: %v", got)
 	}
 }

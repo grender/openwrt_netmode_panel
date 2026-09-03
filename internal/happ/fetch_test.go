@@ -134,3 +134,52 @@ func assertNoSecret(t *testing.T, err error) {
 		}
 	}
 }
+
+// TestFetchRefusesRedirect — граница безопасности, а не вежливость.
+//
+// Проверка схемы в Fetch смотрит только на ИСХОДНЫЙ адрес. Умолчание
+// http.Client — идти за перенаправлением до десяти раз и схему не
+// перепроверять, поэтому без собственной политики ответ «302 Location:
+// http://…» увёз бы подписку на открытый провод, а обновление при этом
+// прошло бы успешно: ни ошибки, ни следа в журнале. Хуже того, при
+// переходе между хостами Go сам ставит Referer с полным предыдущим
+// адресом — то есть вручает идентификатор подписки чужому хосту даже без
+// понижения схемы.
+//
+// Тест ходит через newClient(), а не через свою копию настройки: граница,
+// проверенная на дубликате, не проверена вовсе.
+func TestFetchRefusesRedirect(t *testing.T) {
+	const secret = "/sub/deadbeefcafe1234"
+
+	var landed []string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		landed = append(landed, r.URL.Path)
+		w.Write([]byte(`[]`))
+	}))
+	defer target.Close()
+
+	for _, code := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusTemporaryRedirect} {
+		t.Run(http.StatusText(code), func(t *testing.T) {
+			landed = nil
+			src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, target.URL+"/куда-нибудь", code)
+			}))
+			defer src.Close()
+
+			_, err := fetch(context.Background(), newClient(), src.URL+secret)
+			if err == nil {
+				t.Fatal("перенаправление принято: подписка ушла бы на чужой хост")
+			}
+			if !errors.Is(err, ErrRedirect) {
+				t.Fatalf("ошибка не опознаётся как ErrRedirect: %v", err)
+			}
+			// Секрет не должен всплыть в тексте: ошибка уедет в журнал.
+			if strings.Contains(err.Error(), "deadbeefcafe1234") {
+				t.Fatalf("идентификатор подписки попал в текст ошибки: %v", err)
+			}
+			if len(landed) != 0 {
+				t.Fatalf("запрос всё-таки дошёл до чужого хоста: %v", landed)
+			}
+		})
+	}
+}

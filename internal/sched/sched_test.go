@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"netmoded/internal/subs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -492,5 +493,37 @@ func TestIntervalFallsBackToDefault(t *testing.T) {
 		if got := New(&fakeUpdater{}, l, bad, nil).interval; got != DefaultInterval {
 			t.Errorf("интервал %v → %v, ожидался %v", bad, got, DefaultInterval)
 		}
+	}
+}
+
+// TestNotConfiguredIsNotJournaled — контракт subs.ErrNotConfigured: это
+// состояние, а не поломка, и в журнал обновлений оно не пишется. Иначе
+// свежая установка копила бы fail-строки при каждом вызове.
+func TestNotConfiguredIsNotJournaled(t *testing.T) {
+	up := &fakeUpdater{err: subs.ErrNotConfigured}
+	s, l := newSched(t, up)
+
+	_, err := s.RunOnce(context.Background())
+	if !errors.Is(err, subs.ErrNotConfigured) {
+		t.Fatalf("ошибка должна дойти до вызывающего как есть: %v", err)
+	}
+	if _, ok, lerr := l.Last(); lerr != nil || ok {
+		t.Fatalf("журнал не должен получить запись: ok=%v err=%v", ok, lerr)
+	}
+}
+
+// TestUnknownKeysAreLogged — единственный след того, что провайдер сменил
+// формат xhttp, — строка в журнале демона.
+func TestUnknownKeysAreLogged(t *testing.T) {
+	rec := &recorder{}
+	up := &fakeUpdater{sum: happ.Summary{Nodes: 3, UnknownKeys: []string{"xPaddingBytesV2"}}}
+	l := logs.New(filepath.Join(t.TempDir(), "updates.log"))
+	s := New(up, l, time.Hour, rec.logf)
+
+	if _, err := s.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !rec.has("xPaddingBytesV2") {
+		t.Fatal("неизвестный ключ не попал в журнал демона")
 	}
 }

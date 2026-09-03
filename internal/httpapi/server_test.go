@@ -87,6 +87,11 @@ func newServer(t *testing.T) (*Server, *executor.Fake) {
 		NikkiURL:    testNikkiURL,
 		NikkiSecret: testNikkiSecret,
 		LogPath:     filepath.Join(t.TempDir(), "updates.log"),
+		// Пути подписки — тоже во временный каталог: иначе NewServer
+		// прочитал бы /etc/netmoded/subscription.json ЭТОЙ машины, и
+		// тест «манифеста нет» на роутере проверял бы что-то другое.
+		ProviderPath: filepath.Join(t.TempDir(), "sub.yaml"),
+		ManifestPath: filepath.Join(t.TempDir(), "subscription.json"),
 	}, f)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)

@@ -89,11 +89,25 @@ var xmuxKeys = []struct{ from, to string }{
 //
 // Всё, чего нет ни в таблице выше, ни в этом перечне, тоже не переносится:
 // имя ключа у mihomo нам неизвестно, а выдуманное имя — это отказ разбора
-// всего файла провайдера ради одного узла.
+// всего файла провайдера ради одного узла. Но молча — нельзя: такой ключ
+// возвращается наверх и доходит до журнала демона (Summary.UnknownKeys).
+// Провайдер, переименовавший xPaddingBytes, дал бы узел «то работает, то
+// нет» без единой зацепки; одна строка в журнале — вся диагностика, какая
+// у владельца в этом случае есть.
+var xhttpServerOnlyKeys = map[string]bool{
+	"scMaxBufferedPosts":   true,
+	"scStreamUpServerSecs": true,
+	"noSSEHeader":          true,
+	"sessionIDTable":       true,
+	"sessionIDLength":      true,
+}
 
-// copyXHTTPExtra переносит extra в xhttp-opts.
-func copyXHTTPExtra(opts map[string]any, extra map[string]any) {
+// copyXHTTPExtra переносит extra в xhttp-opts и возвращает непустые ключи,
+// которых не знает ни таблица переноса, ни перечень серверных.
+func copyXHTTPExtra(opts map[string]any, extra map[string]any) (unknown []string) {
+	known := map[string]bool{"xmux": true}
 	for _, k := range xhttpExtraKeys {
+		known[k.from] = true
 		v, ok := extra[k.from]
 		if !ok || isBlank(v) {
 			continue
@@ -103,6 +117,12 @@ func copyXHTTPExtra(opts map[string]any, extra map[string]any) {
 			continue
 		}
 		opts[k.to] = v
+	}
+	for k, v := range extra {
+		if known[k] || xhttpServerOnlyKeys[k] || isBlank(v) {
+			continue
+		}
+		unknown = append(unknown, k)
 	}
 
 	xmux, _ := extra["xmux"].(map[string]any)
@@ -119,6 +139,7 @@ func copyXHTTPExtra(opts map[string]any, extra map[string]any) {
 	if len(reuse) > 0 {
 		opts["reuse-settings"] = reuse
 	}
+	return unknown
 }
 
 // isBlank сообщает, что значение — нулевое для своего типа и переносить его

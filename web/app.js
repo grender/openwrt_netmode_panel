@@ -1730,6 +1730,20 @@ function NikkiCard({ data, svc, t, busy, locked, onPick, onTest }) {
 							<span class="ms">${on(busy, 'proxy', 'AUTO') && html`<${Spin} />`}</span>
 						</button>`;
 					}
+					if (m.kind !== 'node') {
+						// Неизвестный вид — закрываемся, как сервер. Демон
+						// отбивает выбор всего, что не node, кодом 409, и
+						// открытое умолчание здесь дало бы кликабельную
+						// строку с отказом на непереведённом тексте. Такое
+						// значение может прийти только от манифеста другой
+						// версии демона; строка остаётся видимой, но не
+						// нажимаемой, без причины — её у нас нет.
+						return html`
+						<button class="row unsup" disabled>
+							<span class="name">${m.name}</span>
+							<span class="ms">${t('srv.unsup.mark')}</span>
+						</button>`;
+					}
 					const isActive = active === m.name;
 					return html`
 					<button class="row ${isActive ? 'sel' : ''} ${m.alive ? '' : 'dim'}"

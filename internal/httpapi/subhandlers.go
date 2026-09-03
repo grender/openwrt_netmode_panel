@@ -8,7 +8,6 @@ import (
 
 	"netmoded/internal/job"
 	"netmoded/internal/logs"
-	"netmoded/internal/sched"
 )
 
 // handleSubscriptionUpdate запускает обновление подписки.
@@ -98,5 +97,3 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		"lines": lines,
 	})
 }
-
-var _ = sched.DefaultInterval

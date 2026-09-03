@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -26,6 +27,24 @@ var ErrBadJSON = errors.New("happ: ответ подписки не разбир
 // о нём из Summary. Разница существенная: в первом случае писать в файл
 // провайдера нечего и незачем, во втором есть что показать в панели.
 var ErrEmpty = errors.New("happ: подписка не содержит записей")
+
+// ErrTooMany — записей больше maxRecords.
+var ErrTooMany = errors.New("happ: в подписке слишком много записей")
+
+// maxRecords — потолок числа записей: 1000.
+//
+// Потолок в Fetch стоит по байтам (4 МиБ), а это десятки тысяч записей
+// вместо снятых тридцати. Байты — одноразовый буфер, записи — нет: они
+// осядут в манифесте, в постоянно живущем кэше демона и будут заново
+// раскладываться в список на каждый запрос панели, а «Замерить» пойдёт
+// пробовать каждую. Довод тот же, что у ADR-0022 про 512 МБ без свопа:
+// OOM-killer убивает демон без записи о причине.
+//
+// Тысяча — тридцатитрёхкратный запас против снятых 30 записей (по образцу
+// ADR-0022, где предел считается от самой большой фикстуры). Провайдер,
+// честно приславший больше, получит отказ с числом — это отказ, а не
+// деградация, и он записан в «Платим» ADR-0031.
+const maxRecords = 1000
 
 // Parse разбирает тело подписки в записи, СТРОГО сохраняя порядок провайдера.
 //
@@ -57,6 +76,9 @@ func parse(raw []byte, xhttp bool) ([]Entry, error) {
 	}
 	if len(records) == 0 {
 		return nil, ErrEmpty
+	}
+	if len(records) > maxRecords {
+		return nil, fmt.Errorf("%w: %d записей при потолке %d", ErrTooMany, len(records), maxRecords)
 	}
 
 	entries := make([]Entry, len(records))
@@ -115,11 +137,11 @@ func parseRecord(rec json.RawMessage, index int, xhttp bool) (Entry, string) {
 	// месте, причём в единственной строке, ради которой правило и писалось.
 	id := useful.identity()
 
-	proxy, typ, reason := convert(name, useful, xhttp)
+	proxy, typ, reason, unknown := convert(name, useful, xhttp)
 	if reason != "" {
-		return Entry{Name: name, Kind: KindUnsupported, Reason: reason}, id
+		return Entry{Name: name, Kind: KindUnsupported, Reason: reason, unknown: unknown}, id
 	}
-	return Entry{Name: name, Kind: KindNode, Type: typ, Proxy: proxy}, id
+	return Entry{Name: name, Kind: KindNode, Type: typ, Proxy: proxy, unknown: unknown}, id
 }
 
 // markSeparators опознаёт заголовки разделов — вторым проходом по всем
@@ -153,7 +175,12 @@ func markSeparators(entries []Entry, ids []string) {
 			continue
 		}
 		// Заголовок — не узел: ни типа, ни объекта для файла провайдера,
-		// ни причины непригодности у него быть не должно.
+		// ни причины непригодности у него быть не должно. Причина здесь
+		// отбрасывается СОЗНАТЕЛЬНО, и это не потеря: двойник найден по
+		// отпечатку того же outbound, значит у двойника тот же перевод и
+		// та же причина, — она остаётся на настоящем узле, где ей и место.
+		// Заголовок с причиной панель нарисовала бы непригодным узлом.
+		// Неизвестные ключи xhttp тоже остаются на двойнике.
 		entries[i] = Entry{Name: entries[i].Name, Kind: KindSeparator}
 	}
 }
@@ -247,6 +274,7 @@ func positionalName(index int) string {
 // сообщает — а Summary уходит в журнал обновлений, где место дорого.
 func Summarize(entries []Entry) Summary {
 	var s Summary
+	seen := map[string]bool{}
 	for _, e := range entries {
 		switch e.Kind {
 		case KindNode:
@@ -256,7 +284,17 @@ func Summarize(entries []Entry) Summary {
 		case KindSeparator:
 			s.Separators++
 		}
+		for _, k := range e.unknown {
+			if !seen[k] {
+				seen[k] = true
+				s.UnknownKeys = append(s.UnknownKeys, k)
+			}
+		}
 	}
+	// Отсортировано: список идёт в журнал демона, и одинаковый набор
+	// ключей обязан давать одинаковую строку от запуска к запуску — иначе
+	// grep по журналу не находит вчерашнюю запись.
+	sort.Strings(s.UnknownKeys)
 	return s
 }
 

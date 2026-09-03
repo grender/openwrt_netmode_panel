@@ -22,6 +22,10 @@ var oracleFields = []string{
 	"type", "server", "port", "uuid", "network", "flow", "tls",
 	"servername", "client-fingerprint", "reality-opts.public-key",
 	"password", "sni", "alpn",
+	// udp — не забыть: у vless в mihomo он выключен по умолчанию, и потеря
+	// ключа тихо убивает UDP в туннеле (DNS, QUIC, игры) при живых узлах и
+	// зелёной пробе задержки по TCP. Провайдер ставит его всем vless-узлам.
+	"udp",
 }
 
 // TestConvertMatchesProviderProfile — оракул.
@@ -33,7 +37,7 @@ var oracleFields = []string{
 // эталон для конвертера: он написан НЕ НАМИ, и потому проверяет нашу
 // догадку не саму против себя.
 func TestConvertMatchesProviderProfile(t *testing.T) {
-	entries, err := Parse(subscription(t))
+	entries, err := parse(subscription(t), true)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -252,7 +256,7 @@ func sortedKeys(m map[string]any) []string {
 // «то работает, то нет». Тест стоит здесь, чтобы такую правку нельзя было
 // внести как безобидную уборку тюнинга.
 func TestConvertXHTTPPadding(t *testing.T) {
-	entries, err := Parse(subscription(t))
+	entries, err := parse(subscription(t), true)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -289,7 +293,7 @@ func TestConvertXHTTPPadding(t *testing.T) {
 // пустое значение. Отфильтровав его как ноль, мы включили бы узлу чужое
 // умолчание "100-1000", то есть 400 на каждом запросе.
 func TestConvertXHTTPZeroPadding(t *testing.T) {
-	entries, err := Parse(subscription(t))
+	entries, err := parse(subscription(t), true)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -312,7 +316,7 @@ func TestConvertXHTTPZeroPadding(t *testing.T) {
 // сторон — path, поэтому без переноса сервер не найдёт ни паддинга, ни
 // сессии, и узел мёртв на все сто процентов.
 func TestConvertXHTTPObfuscation(t *testing.T) {
-	entries, err := Parse(subscription(t))
+	entries, err := parse(subscription(t), true)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -369,7 +373,7 @@ func TestConvertXHTTPObfuscation(t *testing.T) {
 // TestConvertXHTTPReuseSettings: xmux у mihomo называется reuse-settings, и
 // ключи внутри тоже переименованы.
 func TestConvertXHTTPReuseSettings(t *testing.T) {
-	entries, err := Parse(subscription(t))
+	entries, err := parse(subscription(t), true)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -490,6 +494,22 @@ func TestConvertUnsupported(t *testing.T) {
 			"vmess",
 		},
 		{
+			"reality без публичного ключа",
+			`{"tag":"proxy","protocol":"vless",
+			  "settings":{"vnext":[{"address":"203.0.113.1","port":443,"users":[{"id":"u"}]}]},
+			  "streamSettings":{"network":"tcp","security":"reality",
+			  "realitySettings":{"serverName":"s","shortId":"ab","fingerprint":"chrome"}}}`,
+			"ключ",
+		},
+		{
+			"reality без отпечатка",
+			`{"tag":"proxy","protocol":"vless",
+			  "settings":{"vnext":[{"address":"203.0.113.1","port":443,"users":[{"id":"u"}]}]},
+			  "streamSettings":{"network":"tcp","security":"reality",
+			  "realitySettings":{"serverName":"s","publicKey":"pk","shortId":"ab"}}}`,
+			"отпечат",
+		},
+		{
 			"транспорт ws",
 			`{"tag":"proxy","protocol":"vless",
 			  "settings":{"vnext":[{"address":"203.0.113.1","port":443,"users":[{"id":"u"}]}]},
@@ -526,7 +546,7 @@ func TestConvertUnsupported(t *testing.T) {
 // плоско в settings. Перепутать формы легко, и ошибка молчаливая — узел
 // соберётся с пустым адресом.
 func TestConvertHysteriaUsesFlatSettings(t *testing.T) {
-	entries, err := Parse(subscription(t))
+	entries, err := parse(subscription(t), true)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -542,5 +562,39 @@ func TestConvertHysteriaUsesFlatSettings(t *testing.T) {
 	}
 	if _, ok := e.Proxy["uuid"]; ok {
 		t.Error("у hysteria2 не должно быть uuid")
+	}
+}
+
+// TestXHTTPSwitchIsOn — единственная точка правки выключателя.
+//
+// Детальные xhttp-тесты выше идут через parse(raw, true) и от константы не
+// зависят: гашение выключателя на роутере (движок отверг файл, интернет
+// лежит) не должно красить шесть тестов про таблицу перевода. Красным
+// становится ровно этот — и он говорит, что гашение было осознанным
+// действием, которое правится здесь и только здесь.
+func TestXHTTPSwitchIsOn(t *testing.T) {
+	if !xhttpSupported {
+		t.Fatal("xhttpSupported выключен: если это осознанно после проверки на железе — поправьте этот тест вместе с ADR-0031 §10")
+	}
+}
+
+// TestConvertTLSWithoutFingerprintIsANode — асимметрия с reality намеренная:
+// у обычного TLS пустой отпечаток означает «без подделки uTLS», это рабочий
+// режим, и ключ просто опускается. У reality без отпечатка узел не поднимется
+// вовсе — там отказ (см. TestConvertUnsupported).
+func TestConvertTLSWithoutFingerprintIsANode(t *testing.T) {
+	raw := []byte(`[{"remarks":"🇩🇪Тест","outbounds":[{"tag":"proxy","protocol":"vless",
+	  "settings":{"vnext":[{"address":"203.0.113.1","port":443,"users":[{"id":"u"}]}]},
+	  "streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"serverName":"s"}}}]}]`)
+	entries, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := entries[0]
+	if e.Kind != KindNode {
+		t.Fatalf("tls без отпечатка должен остаться узлом, получено %s (%s)", e.Kind, e.Reason)
+	}
+	if _, has := e.Proxy["client-fingerprint"]; has {
+		t.Fatal("пустой отпечаток не должен создавать ключ client-fingerprint")
 	}
 }

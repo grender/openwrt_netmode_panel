@@ -292,13 +292,52 @@ func TestUnknownGroupKeepsManifest(t *testing.T) {
 	if !eqStrings(names(got), want) {
 		t.Fatalf("порядок %v, ожидался %v", names(got), want)
 	}
-	// Узел найден в live по имени, даже если группу мы не нашли: список
-	// участников группы нужен только для хвоста.
-	if got[0].DelayMS == nil || *got[0].DelayMS != 38 {
-		t.Errorf("узел приехал без живого состояния: %+v", got[0])
+	// Группы нет — значит и членства в ней нет: узел, которого движок
+	// знает, но который не входит в группу, показывать выбираемым нельзя,
+	// Select по нему ответил бы 404. Строка остаётся, но непригодной.
+	if got[0].Kind != happ.KindUnsupported || got[0].Reason != reasonNotInGroup {
+		t.Errorf("узел вне группы должен быть unsupported с причиной о группе: %+v", got[0])
+	}
+	if got[0].DelayMS != nil {
+		t.Errorf("непригодная строка не должна нести живое состояние: %+v", got[0])
 	}
 
 	if got := Order(liveFixture(), "НЕТТАКОЙ", nil); got != nil {
 		t.Errorf("неизвестная группа без манифеста → %v, ожидался nil", got)
+	}
+}
+
+// TestNodeOutsideGroupIsNotSelectable — узел есть в /proxies, но профиль
+// движка не включил его в группу (filter). Такой узел нельзя показывать
+// выбираемым: Select(PROXY, name) ответит 404, и владелец получит кнопку,
+// которая не работает, без объяснения.
+func TestNodeOutsideGroupIsNotSelectable(t *testing.T) {
+	live := liveFixture()
+	// Группа знает всех, кроме Польши; сама Польша при этом жива.
+	g := live["PROXY"]
+	var members []string
+	for _, m := range g.Members {
+		if m != "Польша" {
+			members = append(members, m)
+		}
+	}
+	g.Members = members
+	live["PROXY"] = g
+
+	manifest := []happ.Entry{
+		{Name: "Польша", Kind: happ.KindNode, Type: "vless"},
+		{Name: "Германия", Kind: happ.KindNode, Type: "vless"},
+	}
+	got := Order(live, "PROXY", manifest)
+	// Третья строка — участник группы, которого нет в манифесте: он
+	// честно уходит в хвост, это правило 3 и оно здесь не предмет.
+	if len(got) < 2 {
+		t.Fatalf("строк %d, ожидалось не меньше 2: %+v", len(got), got)
+	}
+	if got[0].Name != "Польша" || got[0].Kind != happ.KindUnsupported || got[0].Reason != reasonNotInGroup {
+		t.Errorf("Польша вне группы должна быть unsupported с причиной о группе: %+v", got[0])
+	}
+	if got[1].Name != "Германия" || got[1].Kind != happ.KindNode {
+		t.Errorf("Германия в группе должна остаться узлом: %+v", got[1])
 	}
 }
