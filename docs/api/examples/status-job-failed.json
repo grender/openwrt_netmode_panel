@@ -34,6 +34,7 @@
     "error": "режим не включён, обход выключен — трафик идёт напрямую: netmode-apply: firewall не перезапустился"
   },
   "subscription": {
+    "configured": true,
     "last_update": "2026-08-02T06:00:12Z",
     "status": "ok",
     "nodes": 42,

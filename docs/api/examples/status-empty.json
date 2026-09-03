@@ -24,6 +24,7 @@
   },
   "job": null,
   "subscription": {
+    "configured": false,
     "last_update": null,
     "status": "never",
     "nodes": 0,

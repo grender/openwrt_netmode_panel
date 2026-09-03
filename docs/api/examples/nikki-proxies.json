@@ -9,12 +9,22 @@
   "selectable": true,
   "members": [
     {
+      "name": "Авто | Лучший сервер",
+      "type": "",
+      "alive": false,
+      "delay_ms": null,
+      "pinned": false,
+      "selectable": false,
+      "kind": "auto"
+    },
+    {
       "name": "NL-01",
       "type": "Vless",
       "alive": true,
       "delay_ms": 118,
       "pinned": false,
-      "selectable": false
+      "selectable": false,
+      "kind": "node"
     },
     {
       "name": "NL-02",
@@ -22,7 +32,8 @@
       "alive": true,
       "delay_ms": 142,
       "pinned": false,
-      "selectable": false
+      "selectable": false,
+      "kind": "node"
     },
     {
       "name": "DE-01",
@@ -30,7 +41,27 @@
       "alive": false,
       "delay_ms": null,
       "pinned": false,
-      "selectable": false
+      "selectable": false,
+      "kind": "node"
+    },
+    {
+      "name": "⬇️ Обходы белых списков ⬇️",
+      "type": "",
+      "alive": false,
+      "delay_ms": null,
+      "pinned": false,
+      "selectable": false,
+      "kind": "separator"
+    },
+    {
+      "name": "DE-02 (БС)",
+      "type": "",
+      "alive": false,
+      "delay_ms": null,
+      "pinned": false,
+      "selectable": false,
+      "kind": "unsupported",
+      "reason": "протокол vmess не переводится в узел mihomo"
     }
   ]
 }

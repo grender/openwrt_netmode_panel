@@ -153,8 +153,21 @@ type Links struct {
 	LuCI  *string `json:"luci"`
 }
 
-// Subscription — результат последнего обновления подписки.
+// Subscription — состояние подписки: задан ли адрес и чем кончилось
+// последнее обновление.
 type Subscription struct {
+	// Configured — задан ли netmode.main.subscription_url.
+	//
+	// Поле существует потому, что по остальным трём это НЕ выводится: у
+	// незаданного адреса и у заданного, но ни разу не скачанного,
+	// last_update одинаково null, status одинаково "never", nodes
+	// одинаково ноль. Это два разных состояния с разным лечением —
+	// «введите адрес» против «разберитесь, почему не качается», — и
+	// панель обязана их различать, не нажимая кнопку ради ответа.
+	//
+	// Сам адрес наружу не уходит НИКОГДА (секрет, ADR-0012): в ответе
+	// только признак «пусто или нет».
+	Configured bool    `json:"configured"`
 	LastUpdate *string `json:"last_update"`
 	Status     string  `json:"status"`
 	Nodes      int     `json:"nodes"`
@@ -229,6 +242,17 @@ type StatusReader struct {
 	fails *failStore
 	now   func() time.Time
 	logf  func(string, ...any)
+
+	// subConfigured — задан ли адрес подписки. Копия признака, а не самого
+	// адреса: значение секретное, и читателю статуса оно не нужно ни для
+	// чего, кроме одного булева поля ответа.
+	//
+	// Приезжает извне (NewServer), потому что конфигурация читается один
+	// раз при старте, а у читателя статуса доступа к ней нет. Спрашивать
+	// UCI живьём здесь нельзя: демон всё равно работает со значением,
+	// прочитанным при старте, и панель обещала бы рабочую кнопку там, где
+	// POST /api/subscription/update ответит subscription_not_configured.
+	subConfigured bool
 
 	mu     sync.Mutex
 	cached *Status
@@ -496,14 +520,20 @@ func (r *StatusReader) build(ctx context.Context) *Status {
 	if r.logs != nil {
 		if e, ok, lerr := r.logs.Last(); lerr == nil && ok {
 			ts := e.TS.UTC().Format(time.RFC3339)
-			sub := &Subscription{LastUpdate: &ts, Status: e.Status, Nodes: e.Nodes}
+			sub := &Subscription{
+				Configured: r.subConfigured,
+				LastUpdate: &ts, Status: e.Status, Nodes: e.Nodes,
+			}
 			if e.Err != "" {
 				msg := e.Err
 				sub.Error = &msg
 			}
 			s.Subscription = sub
 		} else {
-			s.Subscription = &Subscription{Status: "never"}
+			// «Обновлений не было» — состояние и заданного адреса тоже:
+			// демон только что поставлен, до первого срабатывания
+			// расписания. Поэтому configured проставляется и здесь.
+			s.Subscription = &Subscription{Configured: r.subConfigured, Status: "never"}
 		}
 	}
 

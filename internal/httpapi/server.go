@@ -186,6 +186,11 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 	s.reloadManifest()
 	s.status.jobs = s.jobs
 	s.status.logs = s.logs
+	// Признак «адрес подписки задан» — тот же, по которому отвечает
+	// POST /api/subscription/update. Один источник на оба ответа: иначе
+	// панель показывала бы кнопку рабочей ровно там, где нажатие отбивается
+	// кодом subscription_not_configured. САМ АДРЕС сюда не едет — секрет.
+	s.status.subConfigured = cfg.SubscriptionURL != ""
 	// Слот неудачи — ОДИН на демона, и читатель статуса обязан смотреть в
 	// тот же, в который пишет джоб переключения. Второй экземпляр здесь
 	// означал бы, что доклад пишется в один объект, а показывается из

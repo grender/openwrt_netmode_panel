@@ -28,6 +28,7 @@
   },
   "job": null,
   "subscription": {
+    "configured": true,
     "last_update": "2026-08-02T06:00:12Z",
     "status": "ok",
     "nodes": 42,

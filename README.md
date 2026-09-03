@@ -350,8 +350,8 @@ docker compose up            # панель против node-мока
 | `check-routes` | OpenAPI ≡ маршруты Go ≡ вызовы панели |
 | `check-fail-reasons` | таксономия причин провала переключения сходится в **пяти** источниках: `allReasons` в Go, `enum` в OpenAPI, обе локали `i18n.js`, набор `REASONS` в `app.js`, коды мока. Мок — подмножество, а не равенство |
 | `check-netmode-wifi` | синтаксис `netmode-wifi` и его поведение на подставных `ubus`/`wifi`/`flock`: коды возврата, порядок «`reload` строго перед `reconf`», отсутствие тупого `wifi` и мутационный самотест последнего правила ([ADR-0025](docs/adr/0025-upstream-narrow-verb.md), [ADR-0027](docs/adr/0027-netmode-wifi-exit-codes.md)) |
-| `check-web-size` | панель ≤80 КБ gzip, порог внимания 64 ([ADR-0029](docs/adr/0029-panel-budget-revised.md)) |
 | `check-netmode-seed` | секция `netmode.main` в сиде **именованная**: с анонимной `uci get` падает, и переключение режима отказывает мгновенно |
+| `check-netmode-bridge` | синтаксис `netmode-bridge` и одиннадцать сценариев проброса на подставных `ubus`/`ping`/`apk`: замок, идемпотентный демонтаж, отсутствие запрещённых форм вроде `network restart` ([ADR-0030](docs/adr/0030-bridge-layer2-teardown.md)) |
 | `check-netmode-apply` | синтаксис `netmode-apply` и его поведение на подставных `/etc/init.d/*`: коды возврата и то, что при неудавшемся `firewall restart` туннель НЕ поднимается ([ADR-0020](docs/adr/0020-netmode-apply-exit-codes.md)) |
 | `check-panel-sync` | `internal/httpapi/panel/` побайтово равен `web/` — иначе `go:embed` увезёт на роутер прежнюю панель, а `TestPanelIsEmbedded` ловит только отсутствие каталога |
 
