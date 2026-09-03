@@ -136,6 +136,11 @@ func (f *devNikki) Select(_ context.Context, group, member string) error {
 	return nikki.ErrNotFound
 }
 
+// ReloadProvider у стенда молчит: файла провайдера на диске нет, узлы
+// заданы прямо здесь, и перечитывать нечего. Отвечаем как живой mihomo на
+// 204, чтобы стенд не показывал отказ там, где на роутере отказа не будет.
+func (f *devNikki) ReloadProvider(context.Context, string) error { return nil }
+
 func (f *devNikki) Unfix(_ context.Context, group string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

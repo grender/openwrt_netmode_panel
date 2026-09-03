@@ -10,7 +10,7 @@ import (
 // fakeNikkiClient повторяет раскладку с живого роутера: PROXY типа
 // URLTest, то есть ручной выбор невозможен.
 type fakeNikkiClient struct {
-	// mu защищает all и delayed: ProbeAll зовёт Delay из нескольких
+	// mu защищает all, delayed и reloaded: ProbeAll зовёт Delay из нескольких
 	// горутин сразу, и без замка тест ловил бы не поведение обработчика,
 	// а гонку в собственной подделке (go test -race).
 	mu  sync.Mutex
@@ -23,6 +23,13 @@ type fakeNikkiClient struct {
 	// чтобы проверить, КОГО именно опрашивали: замер разделителей подписки
 	// или самой группы иначе неотличим от правильного.
 	delayed []string
+	// reloaded — имена провайдеров, которые просили перечитать, в порядке
+	// вызова. По одному только списку узлов «перезагрузку позвали» и «файл
+	// записали и промолчали» неразличимы: подделка отдаёт всё тот же all.
+	reloaded []string
+	// reloadErr — чем отвечает перезагрузка провайдера. nil означает
+	// 204 живого mihomo.
+	reloadErr error
 }
 
 func newFakeNikkiClient() *fakeNikkiClient {
@@ -104,6 +111,21 @@ func (f *fakeNikkiClient) Delay(_ context.Context, name string) (int, error) {
 	p.DelayMS = &v
 	f.all[name] = p
 	return v, nil
+}
+
+// ReloadProvider повторяет PUT /providers/proxies/{имя}: успех молчит.
+//
+// Списка провайдеров у подделки нет намеренно — обработчику важно не то,
+// какие провайдеры бывают, а позвал ли он перезагрузку после записи файла
+// и что с ней случилось; и то и другое задаётся reloadErr.
+func (f *fakeNikkiClient) ReloadProvider(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reloaded = append(f.reloaded, name)
+	if f.reloadErr != nil {
+		return f.reloadErr
+	}
+	return f.err
 }
 
 func (f *fakeNikkiClient) Unfix(_ context.Context, group string) error {

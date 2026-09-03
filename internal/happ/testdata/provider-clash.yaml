@@ -1,0 +1,240 @@
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: info
+ipv6: true
+proxies:
+- name: 🇨🇭⚡Швейцария-1
+  type: vless
+  server: 203.0.113.14
+  port: 443
+  uuid: deadbeef-dead-4bee-8dad-c0ffee123456
+  network: tcp
+  udp: true
+  flow: xtls-rprx-vision
+  tls: true
+  servername: navigation.maps.yandex.net
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: REDACTED_PUBKEY-15AAAAAAAAAAAAAAAAAAAAAAAAA
+    short-id: 5ecec50000000004
+- name: 🇨🇭⚡Швейцария-2
+  type: vless
+  server: 203.0.113.12
+  port: 8443
+  uuid: deadbeef-dead-4bee-8dad-c0ffee123456
+  network: tcp
+  udp: true
+  flow: xtls-rprx-vision
+  tls: true
+  servername: receive-sentry.lmru.tech
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: REDACTED_PUBKEY-18AAAAAAAAAAAAAAAAAAAAAAAAA
+    short-id: 5ecec50000000009
+- name: 🇨🇭⚡Швейцария-4 EXTRA
+  type: vless
+  server: host1.example.net
+  port: 443
+  uuid: deadbeef-dead-4bee-8dad-c0ffee123456
+  network: tcp
+  udp: true
+  flow: xtls-rprx-vision
+  tls: true
+  servername: navigation.maps.yandex.net
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: REDACTED_PUBKEY-15AAAAAAAAAAAAAAAAAAAAAAAAA
+    short-id: 5ecec50000000030
+- name: 🇫🇷⚡Франция
+  type: vless
+  server: 203.0.113.4
+  port: 8443
+  uuid: deadbeef-dead-4bee-8dad-c0ffee123456
+  network: tcp
+  udp: true
+  flow: xtls-rprx-vision
+  tls: true
+  servername: snapchat.com
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: REDACTED_PUBKEY-16AAAAAAAAAAAAAAAAAAAAAAAAA
+    short-id: 5ecec50000000014
+- name: 🇸🇪⚡Швеция
+  type: vless
+  server: 203.0.113.8
+  port: 443
+  uuid: deadbeef-dead-4bee-8dad-c0ffee123456
+  network: tcp
+  udp: true
+  flow: xtls-rprx-vision
+  tls: true
+  servername: edu.sirius.online
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: REDACTED_PUBKEY-05AAAAAAAAAAAAAAAAAAAAAAAAA
+    short-id: 5ecec50000000006
+- name: 🇪🇸⚡Испания
+  type: vless
+  server: 203.0.113.2
+  port: 8443
+  uuid: deadbeef-dead-4bee-8dad-c0ffee123456
+  network: tcp
+  udp: true
+  flow: xtls-rprx-vision
+  tls: true
+  servername: a.auth-nsdi.ru
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: REDACTED_PUBKEY-08AAAAAAAAAAAAAAAAAAAAAAAAA
+    short-id: 5ecec50000000005
+- name: 🇳🇱🎮Нидерланды GAMING
+  type: hysteria2
+  server: 203.0.113.10
+  port: 8449
+  password: deadbeef-dead-4bee-8dad-c0ffee123456
+  sni: sni3.example.net
+  alpn:
+  - h3
+- name: 🇫🇮🎮Финляндия GAMING
+  type: hysteria2
+  server: 203.0.113.6
+  port: 8449
+  password: deadbeef-dead-4bee-8dad-c0ffee123456
+  sni: sni4.example.net
+  alpn:
+  - h3
+- name: 🇨🇭🎮Швейцария GAMING
+  type: hysteria2
+  server: 203.0.113.14
+  port: 8449
+  password: deadbeef-dead-4bee-8dad-c0ffee123456
+  sni: sni1.example.net
+  alpn:
+  - h3
+- name: 🇹🇷💳Турция Torrent
+  type: vless
+  server: 203.0.113.13
+  port: 8443
+  uuid: deadbeef-dead-4bee-8dad-c0ffee123456
+  network: tcp
+  udp: true
+  flow: xtls-rprx-vision
+  tls: true
+  servername: tamtam.chat
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: REDACTED_PUBKEY-12AAAAAAAAAAAAAAAAAAAAAAAAA
+    short-id: 5ecec50000000007
+- name: 🇷🇺💳Россия-1
+  type: vless
+  server: 203.0.113.23
+  port: 443
+  uuid: deadbeef-dead-4bee-8dad-c0ffee123456
+  network: tcp
+  udp: true
+  flow: xtls-rprx-vision
+  tls: true
+  servername: navigation.maps.yandex.net
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: REDACTED_PUBKEY-14AAAAAAAAAAAAAAAAAAAAAAAAA
+    short-id: 5ecec50000000024
+- name: 🇷🇺💳Россия-2
+  type: vless
+  server: 203.0.113.20
+  port: 443
+  uuid: deadbeef-dead-4bee-8dad-c0ffee123456
+  network: tcp
+  udp: true
+  flow: xtls-rprx-vision
+  tls: true
+  servername: mts01.edge-mwsru01.live
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: REDACTED_PUBKEY-17AAAAAAAAAAAAAAAAAAAAAAAAA
+    short-id: 5ecec50000000012
+- name: 🇨🇦Канада Torrent
+  type: vless
+  server: 203.0.113.5
+  port: 8443
+  uuid: deadbeef-dead-4bee-8dad-c0ffee123456
+  network: tcp
+  udp: true
+  flow: xtls-rprx-vision
+  tls: true
+  servername: ad.mail.ru
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: REDACTED_PUBKEY-13AAAAAAAAAAAAAAAAAAAAAAAAA
+    short-id: 5ecec50000000010
+- name: 🇺🇸США Torrent
+  type: vless
+  server: 203.0.113.11
+  port: 443
+  uuid: deadbeef-dead-4bee-8dad-c0ffee123456
+  network: tcp
+  udp: true
+  flow: xtls-rprx-vision
+  tls: true
+  servername: kombo.mail.ru
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: REDACTED_PUBKEY-10AAAAAAAAAAAAAAAAAAAAAAAAA
+    short-id: 5ecec50000000003
+- name: 🇮🇹Италия Torrent
+  type: vless
+  server: 203.0.113.17
+  port: 8443
+  uuid: deadbeef-dead-4bee-8dad-c0ffee123456
+  network: tcp
+  udp: true
+  flow: xtls-rprx-vision
+  tls: true
+  servername: whatsnew.mail.ru
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: REDACTED_PUBKEY-19AAAAAAAAAAAAAAAAAAAAAAAAA
+    short-id: 5ecec50000000029
+proxy-groups:
+- name: PROXY
+  type: select
+  proxies:
+  - Auto
+  - 🇨🇭⚡Швейцария-1
+  - 🇨🇭⚡Швейцария-2
+  - 🇨🇭⚡Швейцария-4 EXTRA
+  - 🇫🇷⚡Франция
+  - 🇸🇪⚡Швеция
+  - 🇪🇸⚡Испания
+  - 🇳🇱🎮Нидерланды GAMING
+  - 🇫🇮🎮Финляндия GAMING
+  - 🇨🇭🎮Швейцария GAMING
+  - 🇹🇷💳Турция Torrent
+  - 🇷🇺💳Россия-1
+  - 🇷🇺💳Россия-2
+  - 🇨🇦Канада Torrent
+  - 🇺🇸США Torrent
+  - 🇮🇹Италия Torrent
+- name: Auto
+  type: url-test
+  proxies:
+  - 🇨🇭⚡Швейцария-1
+  - 🇨🇭⚡Швейцария-2
+  - 🇨🇭⚡Швейцария-4 EXTRA
+  - 🇫🇷⚡Франция
+  - 🇸🇪⚡Швеция
+  - 🇪🇸⚡Испания
+  - 🇳🇱🎮Нидерланды GAMING
+  - 🇫🇮🎮Финляндия GAMING
+  - 🇨🇭🎮Швейцария GAMING
+  - 🇹🇷💳Турция Torrent
+  - 🇷🇺💳Россия-1
+  - 🇷🇺💳Россия-2
+  - 🇨🇦Канада Torrent
+  - 🇺🇸США Torrent
+  - 🇮🇹Италия Torrent
+  url: http://www.gstatic.com/generate_204
+  interval: 300
+rules:
+- MATCH,PROXY

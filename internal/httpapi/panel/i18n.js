@@ -201,6 +201,10 @@ export const DICT = {
 		'srv.auto': 'Выбирает автоматика',
 		'srv.auto.back': 'Вернуть автовыбор',
 		'srv.tag.auto': 'авто',
+		// Метка строки «Авто» в списке. Не «авто»: на строке, которая так и
+		// называется, повтор имени не сообщает ничего, а сказать надо ровно
+		// одно — что автоподбор сейчас включён.
+		'srv.tag.on': 'работает',
 		'srv.tag.pinned': 'закреплён',
 		'srv.tip.auto': 'Узел выбран движком по замерам задержки',
 		'srv.tip.pinned': 'Узел закреплён вручную — автоподбор отключён, пока не вернёте автовыбор',
@@ -220,6 +224,19 @@ export const DICT = {
 		'srv.starting': 'Nikki запускается — узлы появятся, как только ответит Clash API.',
 		'srv.empty': 'Узлов ещё нет — подписка не обновлялась.',
 		'srv.dead': 'не отвечает',
+		// Строка подписки, которая узлом не стала. Метка занимает слот
+		// задержки: прочерк там означает «пробы не было», то есть узел,
+		// который могли бы замерить, — а этот замерять нечем.
+		'srv.unsup.mark': 'н/д',
+		// Рамка вокруг причины от демона. Сам текст русский и переводу не
+		// поддаётся (его пишет демон), но рамка обязана быть на языке
+		// интерфейса — иначе в английской панели строка начинается с русского
+		// слова и выглядит сбоем панели, а не цитатой роутера.
+		'srv.unsup.why': 'Не узел: {why}',
+		// Отказ, до которого кликом не добраться: строки не-узлов панель
+		// нажать не даёт. Значит список у панели разошёлся с демоном, и текст
+		// говорит об этом прямо, а не «повторите» — повтор упрётся в то же.
+		'srv.err.notnode': 'Это не узел, а заголовок раздела, «Авто» или запись, которую демон не смог перевести в узел. Подключиться можно только к узлу. Похоже, список устарел — обновите страницу.',
 
 		'sets.title': 'Сет стратегий',
 		'sets.down': 'Панель b4 не отвечает. Сеты недоступны, режим переключается по-прежнему.',
@@ -371,6 +388,16 @@ export const DICT = {
 		'sub.nodes': 'Получено узлов: {n}',
 		'sub.update': 'Обновить сейчас',
 		'sub.updating': 'Обновляю…',
+		// Адрес подписки не задан. Команда приведена целиком и намеренно:
+		// лечится это только на роутере, панель адрес не пишет (в нём лежит
+		// идентификатор подписки, и наружу он не уходит ничем). Совет
+		// «настройте подписку» без строки для ssh не помогает никому.
+		'sub.unset': 'Адрес подписки не задан в конфигурации роутера — обновлять нечего. Задайте его по ssh: uci set netmode.main.subscription_url=… && uci commit netmode',
+		// То же самое, но в ответ на нажатие. Отдельная строка, потому что
+		// приходит она в тост, а не в карточку: кнопка заблокирована ровно
+		// этим состоянием, и увидеть отказ можно только у демона постарше
+		// либо у панели, открытой до того, как адрес стёрли.
+		'sub.err.unset': 'Адрес подписки не задан в конфигурации роутера — обновлять нечего.',
 		'sub.emptylog': 'Обновлений ещё не было',
 		// Список не доехал — это не то же самое, что «обновлений не было».
 		// Второе — утверждение о роутере, и оно ложно, когда просто лёг
@@ -574,6 +601,7 @@ export const DICT = {
 		'srv.auto': 'Chosen automatically',
 		'srv.auto.back': 'Back to auto',
 		'srv.tag.auto': 'auto',
+		'srv.tag.on': 'in use',
 		'srv.tag.pinned': 'pinned',
 		'srv.tip.auto': 'Picked by the engine from latency probes',
 		'srv.tip.pinned': 'Pinned by hand — automatic picking is off until you restore it',
@@ -589,6 +617,9 @@ export const DICT = {
 		'srv.starting': 'Nikki is starting — nodes appear as soon as the Clash API answers.',
 		'srv.empty': 'No nodes yet — the subscription has never been updated.',
 		'srv.dead': 'no reply',
+		'srv.unsup.mark': 'n/a',
+		'srv.unsup.why': 'Not a node: {why}',
+		'srv.err.notnode': 'That is not a node but a section header, the “Auto” entry, or a record the daemon could not turn into a node. Only a node accepts a connection. The list looks stale — reload the page.',
 
 		'sets.title': 'Strategy set',
 		'sets.down': 'The b4 panel does not respond. Sets are unavailable; mode switching still works.',
@@ -671,6 +702,8 @@ export const DICT = {
 		'sub.nodes': 'Nodes received: {n}',
 		'sub.update': 'Update now',
 		'sub.updating': 'Updating…',
+		'sub.unset': 'No subscription URL is set in the router configuration — there is nothing to update. Set it over ssh: uci set netmode.main.subscription_url=… && uci commit netmode',
+		'sub.err.unset': 'No subscription URL is set in the router configuration — there is nothing to update.',
 		'sub.emptylog': 'No updates yet',
 		'sub.log.down': 'The update log is unavailable',
 

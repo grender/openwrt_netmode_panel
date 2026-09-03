@@ -1,5 +1,6 @@
 {
   "_comment": "Каждый внешний литерал в internal/{b4,nikki,led,executor,wireless} обязан быть здесь со status=verified и ссылкой на raw/. scripts/check-evidence.sh проверяет это механически. status=hypothesis считается НЕподтверждённым.",
+  "_status_values": "verified — снято с живой системы, рядом ссылка в raw/. verified_by_source — форма поверхности вычитана из исходников upstream той же версии, что стоит на роутере, живой пробы НЕ было: читать как «форма известна», а не «поведение измерено». Для гейта check-evidence.sh этого достаточно (литерал процитирован), для утверждений о поведении — нет; первая же живая проба обязана повысить запись до verified и приложить raw/. hypothesis — НЕподтверждено, реализовывать нельзя. out_of_scope — вопрос снят, наружу не ходим.",
   "_snapshot": "grenderRouter, OpenWrt 25.12, 2026-08-02",
   "b4_api": {
     "status": "verified",
@@ -329,6 +330,21 @@
         "path": "/proxies/{group}",
         "note": "снимает закрепление (ForceSet(\"\")) — это и есть AUTO; только для не-Selector групп",
         "src": "hub/route/proxies.go unfixedProxy"
+      },
+      {
+        "method": "PUT",
+        "path": "/providers/proxies/{name}",
+        "status": "verified_by_source",
+        "purpose": "принудительное обновление провайдера: mihomo перечитывает файл провайдера и пересобирает группы поверх него. Именно этим заканчивается конвертация подписки — без вызова новый sub.yaml лежит на диске, но в памяти mihomo его нет",
+        "responses": {
+          "204": "успех — render.NoContent, тела нет. Проверять надо код, а не тело: пустой ответ здесь норма",
+          "503": "provider.Update() вернул ошибку, тело {\"message\": \"...\"}",
+          "404": "провайдера с таким именем нет — middleware findProviderByName, тело ErrNotFound"
+        },
+        "source_tree": "https://github.com/MetaCubeX/mihomo/blob/v1.19.27/hub/route/provider.go (v1.19.27 — та же версия, что снята живьём в nikki.version)",
+        "src": "hub/route/provider.go:20-26 (r.Route(\"/{providerName}\") … r.Put(\"/\", updateProvider)), :52-60 (updateProvider: provider.Update() → 204/503), :76-85 (findProviderByName → 404); префикс маршрута — hub/route/server.go:131 r.Mount(\"/providers/proxies\", proxyProviderRouter())",
+        "spec": "SPEC-backend-router-panel.md:43 — прежний скрипт happ2clash дёргал ровно этот путь (PUT /providers/proxies/sub). Второе, независимое от исходников подтверждение: путь работал на этом роутере",
+        "status_note": "На живом роутере запросом НЕ проверялось. Правило то же, что в RQ-03: догадка вместо замера запрещена. Исходник нужной версии — не догадка, но и не замер: он говорит, ЧТО ответит mihomo, и молчит о том, что при этом произойдёт с трафиком"
       }
     ],
     "delay_zero_means_no_probe": "в history значение delay:0 — это НЕ ноль миллисекунд, а несостоявшаяся проба. Наружу обязано уходить как null, иначе мёртвый узел покажется самым быстрым.",
@@ -359,7 +375,16 @@
     "spec_divergence": "SPEC §7 предполагает PROXY типа selector со вложенным AUTO. Фактически PROXY — URLTest, но это НЕ мешает: mihomo проверяет интерфейс SelectAble (hub/route/proxies.go), и URLTest его реализует через Set()/ForceSet(). Закреплённый узел хранится в поле selected и отдаётся как fixed. Возврат к автовыбору — DELETE /proxies/{группа} (только для не-Selector групп). Правка профиля НЕ требуется; внешний контракт спеки ({\"name\":\"AUTO\"}) сохранён.",
     "doc": "docs/recon/nikki.md",
     "fixed_field": "поле fixed = selected группы; отличает ручное закрепление от автовыбора, по одному now это неразличимо",
-    "residual_risk": "поведение fail-closed при закреплённом МЁРТВОМ узле не прослежено. Закрепление трактуется как временное: панель держит возврат к AUTO на виду."
+    "residual_risk": "поведение fail-closed при закреплённом МЁРТВОМ узле не прослежено. Закрепление трактуется как временное: панель держит возврат к AUTO на виду.",
+    "provider_file": {
+      "status": "verified_by_source",
+      "path": "/etc/nikki/run/providers/sub.yaml",
+      "provider_name": "sub — имя провайдера в конфиге mihomo; оно же подставляется в PUT /providers/proxies/{name}. Имя файла и имя провайдера совпадают не по закону, а по этому конкретному профилю",
+      "safe_paths": "mihomo не читает файлы провайдеров вне /etc/nikki/run (SAFE_PATHS). Писать конвертированный профиль куда-либо ещё бессмысленно: файл ляжет, а обновление провайдера отвалится на чтении",
+      "run_dir_is_generated": "/etc/nikki/run/config.yaml рядом — генерируется, править нельзя. Наш файл — только providers/sub.yaml",
+      "spec": "SPEC-backend-router-panel.md:26-30",
+      "status_note": "Пути взяты из спеки, которая описывает уже работающую на этом роутере установку; своей пробой (ls/чтение файла с роутера) мы их не снимали и в raw/ не клали"
+    }
   },
   "luci": {
     "status": "verified",

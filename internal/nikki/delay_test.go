@@ -103,6 +103,7 @@ func (p *probeClient) Proxies(context.Context) (map[string]Proxy, error) {
 }
 func (p *probeClient) Select(context.Context, string, string) error { return nil }
 func (p *probeClient) Unfix(context.Context, string) error          { return nil }
+func (p *probeClient) ReloadProvider(context.Context, string) error { return nil }
 func (p *probeClient) PanelAlive(context.Context) error             { return nil }
 
 func (p *probeClient) Delay(ctx context.Context, name string) (int, error) {

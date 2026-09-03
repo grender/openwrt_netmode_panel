@@ -22,6 +22,11 @@ type fakeClash struct {
 	lastPUT      string
 	lastDELETE   string
 	lastBody     string
+	// lastPUTRaw — путь ДО раскодирования процентов. r.URL.Path сервер
+	// раскодирует, поэтому по нему «имя экранировали» и «имя вставили как
+	// есть» неотличимы — а разница между ними в том, уводит ли слэш внутри
+	// имени запрос на посторонний маршрут.
+	lastPUTRaw string
 }
 
 func (f *fakeClash) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -40,6 +45,7 @@ func (f *fakeClash) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPut {
 		f.lastPUT = r.URL.Path
+		f.lastPUTRaw = r.URL.EscapedPath()
 		b := make([]byte, r.ContentLength)
 		_, _ = r.Body.Read(b)
 		f.lastBody = string(b)
@@ -300,6 +306,92 @@ func TestUnfixReturnsToAuto(t *testing.T) {
 	}
 }
 
+// ─────────── перезагрузка провайдера ───────────
+
+// Обновление подписки не заканчивается записью файла: список узлов живёт
+// в памяти движка, и без этого PUT панель показывает вчерашние узлы.
+func TestReloadProviderPutsOnProviderPath(t *testing.T) {
+	f, c, done := newClient(t, "118296")
+	defer done()
+
+	if err := c.ReloadProvider(context.Background(), "subscription"); err != nil {
+		t.Fatalf("ReloadProvider: %v", err)
+	}
+	if f.lastPUT != "/providers/proxies/subscription" {
+		t.Errorf("PUT ушёл на %q", f.lastPUT)
+	}
+	if f.lastBody != "" {
+		t.Errorf("тело у перезагрузки лишнее: %q", f.lastBody)
+	}
+}
+
+// Слэш внутри имени провайдера обязан уехать как %2F. Иначе запрос
+// молча попадёт на другой маршрут — и вместо отказа мы получим успех
+// от чего-то постороннего.
+func TestReloadProviderEscapesName(t *testing.T) {
+	f, c, done := newClient(t, "118296")
+	defer done()
+
+	_ = c.ReloadProvider(context.Background(), "мой/провайдер")
+
+	if strings.Contains(strings.TrimPrefix(f.lastPUTRaw, "/providers/proxies/"), "/") {
+		t.Errorf("имя ушло неэкранированным: %q", f.lastPUTRaw)
+	}
+}
+
+// Провайдера с таким именем движок не знает: имя разошлось с профилем.
+// Это ErrNotFound, а не «недоступен» — движок ответил, и внятно.
+func TestReloadProviderNotFound(t *testing.T) {
+	f, c, done := newClient(t, "118296")
+	defer done()
+	f.putStatus = http.StatusNotFound
+
+	if err := c.ReloadProvider(context.Background(), "нет-такого"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("404 на PUT → %v, ожидалась ErrNotFound", err)
+	}
+}
+
+// 503 — худшее из состояний: файл на диске новый, список в движке старый.
+// Отдельная ошибка и отдельный текст, потому что ErrUnavailable отправил бы
+// владельца перезапускать nikki, а чинить надо содержимое файла.
+func TestReloadProviderStaleOn503(t *testing.T) {
+	f, c, done := newClient(t, "118296")
+	defer done()
+	f.putStatus = http.StatusServiceUnavailable
+
+	err := c.ReloadProvider(context.Background(), "subscription")
+	if !errors.Is(err, ErrProviderStale) {
+		t.Fatalf("503 → %v, ожидалась ErrProviderStale", err)
+	}
+	if errors.Is(err, ErrUnavailable) {
+		t.Error("503 от живого движка выдан за недоступность Clash API")
+	}
+	// Текст обязан назвать расхождение: без него владелец пойдёт искать
+	// причину в сети, а не в файле, который мы только что записали.
+	for _, want := range []string{"файл", "новый", "стар"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("в тексте %q нет %q", err.Error(), want)
+		}
+	}
+}
+
+// Прочие пятисотки остаются недоступностью. Регрессия на то, что код
+// ответа теперь едет внутри ошибки: разбирать его по числу можно только
+// там, где число что-то значит, и 500 к ErrProviderStale отношения не имеет.
+func TestReloadProviderOther5xxStaysUnavailable(t *testing.T) {
+	f, c, done := newClient(t, "118296")
+	defer done()
+	f.putStatus = http.StatusInternalServerError
+
+	err := c.ReloadProvider(context.Background(), "subscription")
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("500 → %v, ожидалась ErrUnavailable", err)
+	}
+	if errors.Is(err, ErrProviderStale) {
+		t.Errorf("500 принят за отказ перечитать провайдера: %v", err)
+	}
+}
+
 // Поле fixed отличает «закреплено руками» от «движок так решил».
 // По одному now это неразличимо.
 func TestFixedDistinguishesPinnedFromAuto(t *testing.T) {
@@ -436,6 +528,7 @@ func TestUnavailable(t *testing.T) {
 		{"proxies", func() error { _, err := c.Proxies(context.Background()); return err }},
 		{"select", func() error { return c.Select(context.Background(), "PROXY", "x") }},
 		{"unfix", func() error { return c.Unfix(context.Background(), "PROXY") }},
+		{"reload", func() error { return c.ReloadProvider(context.Background(), "subscription") }},
 	} {
 		if err := tt.call(); !errors.Is(err, ErrUnavailable) {
 			t.Errorf("%s: %v", tt.name, err)

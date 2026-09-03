@@ -1105,6 +1105,12 @@ const ERR_KEY = {
 	// Сообщение демона русское (оно же уходит в syslog), поэтому даже там,
 	// где текст совпадает по смыслу, панель берёт свой перевод.
 	nikki_unavailable: 'srv.down',
+	// Два кода подписки. Первый — тот же случай, что already_selected: панель
+	// строки не-узлов нажать не даёт вовсе, значит запрос по такой строке
+	// мог родиться только из устаревшего списка. Второй — не поломка, а
+	// незаполненная настройка, и текст обязан звать на роутер, а не в повтор.
+	member_not_selectable: 'srv.err.notnode',
+	subscription_not_configured: 'sub.err.unset',
 	b4_unavailable: 'sets.down',
 	b4_partial: 'err.b4.partial',
 	ubus_unavailable: 'err.ubus',
@@ -1634,17 +1640,96 @@ function NikkiCard({ data, svc, t, busy, locked, onPick, onTest }) {
 	// принципиальна — во втором случае автоподбор выключен.
 	const pinned = !!data.pinned;
 	const active = data.fixed || data.selected;
+	// Строка «Авто | Лучший сервер» приезжает вместе со списком — но только
+	// когда демон знает манифест подписки. Нет манифеста (свежая установка,
+	// ни одного обновления) — нет и строки: демон отдаёт живой список mihomo,
+	// в котором все строки узлы.
+	//
+	// Кнопка в шапке и эта строка делают ОДНО И ТО ЖЕ: POST с именем AUTO.
+	// Поэтому вместе они не показываются — два одинаковых контроля в одной
+	// карточке заставляют искать между ними разницу, которой нет. Убрать
+	// кнопку из шапки насовсем было нельзя ровно из-за случая без манифеста:
+	// строки «Авто» там не будет никогда, и закреплённый роутер остался бы
+	// без выхода из закрепления иначе как через ssh.
+	const hasAuto = members.some((m) => m.kind === 'auto');
 
 	return html`
 		<div class="card">
 			<h2>${t('srv.title')}
+				${!hasAuto && html`
 				<button class="linkbtn" disabled=${!pinned || locked} aria-busy=${on(busy, 'proxy', 'AUTO')}
 					onClick=${() => onPick('AUTO')}>
-					${on(busy, 'proxy', 'AUTO') && html`<${Spin} /> `}${pinned ? t('srv.auto.back') : t('srv.auto')}</button>
+					${on(busy, 'proxy', 'AUTO') && html`<${Spin} /> `}${pinned ? t('srv.auto.back') : t('srv.auto')}</button>`}
 			</h2>
 			${pinned && html`<p class="hint tight" style="color:var(--warn)">${t('srv.pinned.note')}</p>`}
 			<div class="rows">
 				${members.map((m) => {
+					// Строки, которые узлами не являются, разбираются ДО общей
+					// ветки, и оформление им выбирает kind, а не alive. У всех
+					// трёх alive всегда false, а delay_ms — null, поэтому общий
+					// код сказал бы про них две неправды сразу: класс dim
+					// («узел мёртв») и пустой метр задержки («узел не ответил»).
+					// Мёртвого узла здесь нет — нет узла вовсе.
+					if (m.kind === 'separator') {
+						// Не кнопка (нажимать нечего: за именем стоит копия
+						// соседнего узла) и не aria-hidden. Провайдер режет
+						// список заголовками разделов, и тому, кто слушает
+						// панель голосом, они говорят ровно то же, что
+						// видящему: дальше пойдут узлы для обхода белых
+						// списков. Спрятать — значит отдать незрячему список
+						// без структуры, которая у зрячего есть.
+						return html`<div class="row sep">${m.name}</div>`;
+					}
+					if (m.kind === 'unsupported') {
+						// Причина выводится СТРОКОЙ, а не только в title.
+						// На телефоне title не существует: нет ни курсора, ни
+						// наведения — а панель открывают именно с телефона и
+						// именно тогда, когда интернет не работает. Причина,
+						// видимая только с ноутбука, — это причина, которую
+						// не показали.
+						//
+						// Ряд от этого выше, но не дёргается: текст статичен,
+						// приезжает вместе со списком и не зависит ни от
+						// наведения, ни от занятости. Обрезать его нечем —
+						// обрезанное сообщение об ошибке выглядит полным и
+						// потому хуже отсутствующего.
+						//
+						// Текст причины русский (его пишет демон, он же уходит
+						// в syslog), поэтому в английском интерфейсе он подан
+						// в переведённой рамке: «Not a node: …». Перевести сам
+						// текст панель не может, а выдать его за свой — значит
+						// соврать про язык интерфейса.
+						return html`
+						<button class="row unsup" disabled>
+							<span class="name">${m.name}</span>
+							<span class="ms">${t('srv.unsup.mark')}</span>
+							${m.reason && html`<span class="why">${t('srv.unsup.why', { why: m.reason })}</span>`}
+						</button>`;
+					}
+					if (m.kind === 'auto') {
+						// Автоподбор работает ровно тогда, когда ничего не
+						// закреплено. pinned приходит от демона отдельным
+						// полем и по имени узла не вычисляется (см. выше),
+						// поэтому активность этой строки показывается тем же
+						// способом, что активность узла: класс sel и метка.
+						//
+						// Строка остаётся нажимаемой и при уже работающем
+						// автоподборе — в отличие от кнопки в шапке, которая
+						// в этом состоянии гасла. Гасить нельзя: :disabled в
+						// этом списке читается как «выключено», и приглушённой
+						// оказалась бы единственная строка, которая сейчас
+						// верна. Активный узел панель по той же причине тоже
+						// не гасит.
+						return html`
+						<button class="row ${pinned ? '' : 'sel'}"
+							disabled=${locked} aria-busy=${on(busy, 'proxy', 'AUTO')}
+							onClick=${() => onPick('AUTO')}>
+							<span class="name">${m.name}</span>
+							${!pinned && html`
+								<span class="tag tag-auto" title=${t('srv.tip.auto')}>${t('srv.tag.on')}</span>`}
+							<span class="ms">${on(busy, 'proxy', 'AUTO') && html`<${Spin} />`}</span>
+						</button>`;
+					}
 					const isActive = active === m.name;
 					return html`
 					<button class="row ${isActive ? 'sel' : ''} ${m.alive ? '' : 'dim'}"
@@ -2115,6 +2200,17 @@ function BridgeSheet({ state, t, busy, locked, onClose, onSubmit }) {
 
 function SubCard({ s, logs, t, lang, busy, onUpdate }) {
 	const sub = s.subscription || {};
+	// configured — «адрес подписки задан в конфиге роутера». Отдельное поле,
+	// потому что по остальным это не выводится: у незаданного адреса и у
+	// заданного, но ни разу не скачанного, last_update одинаково null, а
+	// nodes — ноль. Нажатие в первом случае отобьётся кодом
+	// subscription_not_configured, во втором честно сходит в сеть.
+	//
+	// Сравнение строгое с false, а не «!sub.configured»: undefined означает
+	// демона, который поля ещё не шлёт, и вести себя с ним надо как раньше —
+	// ничего не блокировать. Блокировка по незнанию хуже лишнего нажатия:
+	// нажатие отобьёт демон, а заблокированную кнопку разблокировать нечем.
+	const unset = sub.configured === false;
 	return html`
 		<div class="card">
 			<h2>${t('sub.title')}</h2>
@@ -2123,7 +2219,12 @@ function SubCard({ s, logs, t, lang, busy, onUpdate }) {
 			<div class="hint">${t('sub.nodes', { n: sub.nodes ?? 0 })}</div>
 			${sub.status === 'fail' && sub.error && html`<div class="hint" style="color:var(--bad)">${sub.error}</div>`}
 
-			<button class="wide" disabled=${!!busy} aria-busy=${on(busy, 'sub')} onClick=${onUpdate}>
+			<!-- Подсказка стоит НАД кнопкой, а не под ней: она объясняет, почему
+			     кнопка не нажимается, и прочитать объяснение надо до попытки,
+			     а не после. Команда в ней приведена целиком — лечится это
+			     только на роутере, и владелец унесёт строку в ssh как есть. -->
+			${unset && html`<p class="hint tight" style="color:var(--warn)">${t('sub.unset')}</p>`}
+			<button class="wide" disabled=${!!busy || unset} aria-busy=${on(busy, 'sub')} onClick=${onUpdate}>
 				${on(busy, 'sub') ? html`<${Spin} /> ${t('sub.updating')}` : t('sub.update')}</button>
 
 			${logs === undefined ? html`<${Skel} n=${2} cls="line" wrap="log" />` : html`

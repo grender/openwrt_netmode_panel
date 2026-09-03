@@ -43,6 +43,16 @@ const SCENARIOS = {
 	// добиться: наружу не выбрался никто и замер не успел обойти всех.
 	'nikki-test-dead': 'status-single.json',
 	'nikki-test-slow': 'status-single.json',
+	// Список узлов БЕЗ манифеста подписки: демон отдаёт живой список mihomo,
+	// все строки — узлы, строки «Авто» в нём нет. Так выглядит свежая
+	// установка, и это единственный сценарий, где кнопка возврата к
+	// автовыбору обязана стоять в шапке карточки: взяться ей больше неоткуда.
+	'nikki-no-manifest': 'status-single.json',
+	// Адрес подписки не задан в /etc/config/netmode. Кнопка «Обновить сейчас»
+	// заблокирована, над ней — команда для ssh. Состояние первой установки:
+	// увидеть его на роутере можно ровно один раз, а чинить панель для него
+	// приходится всегда.
+	'sub-unset': 'status-single.json',
 	// Адрес роутера не выводится из Host. Статус обычный и движок отвечает —
 	// смотреть надо именно на шапку: кнопки нет, хотя движок жив.
 	'host-unknown': 'status-single.json',
@@ -645,6 +655,85 @@ const upstreamFailText = (reason, ssid, prevSsid) => {
 	return `станция не подключилась к «${ssid}» за отведённое время`;
 };
 
+// ─── список узлов в форме подписки ───
+//
+// Golden-фикстура nikki-proxies.json остаётся источником ОБОЛОЧКИ (версия,
+// группа, selected, pinned) и первых трёх узлов: её же сверяют Go-тесты, и
+// расходиться с ней мок не вправе. Но узлов в ней три, и все они обычные, —
+// а увидеть надо все четыре вида и настоящую длину списка провайдера.
+// Разделитель, до которого надо доскроллить, и три строки в одном экране —
+// это разные состояния интерфейса.
+//
+// Порядок — порядок ПОДПИСКИ, а не живого списка mihomo: «Авто» первой
+// (провайдер ставит балансировщик в начало), заголовок раздела — перед своим
+// разделом, непереводимая запись — там, где её выдал провайдер. Именно этот
+// порядок демон и восстанавливает по манифесту; вид строки структурно не
+// определяется, поэтому едет полем kind (ADR-0031).
+const nd = (name, delay) => ({
+	// alive выведен из задержки намеренно: пара «жив, но замера нет» у демона
+	// бывает только в первые секунды после рестарта mihomo, и городить её в
+	// моке значило бы учить панель состоянию, которого она почти не видит.
+	name, type: 'Vless', alive: delay != null, delay_ms: delay,
+	pinned: false, selectable: false, kind: 'node',
+});
+// Строка не-узел: alive всегда false, delay_ms всегда null — так их отдаёт
+// демон, и панель обязана НЕ читать это как «узел мёртв».
+const nx = (name, kind, reason) => ({
+	name, type: kind === 'auto' ? 'URLTest' : 'Direct', alive: false, delay_ms: null,
+	pinned: false, selectable: false, kind, ...(reason ? { reason } : {}),
+});
+
+// Двадцать узлов провайдера. Один намеренно длиннее коробки — на нём видно,
+// работает ли многоточие в .row .name на 320px; мёртвые расставлены вперемешку,
+// а не хвостом, иначе список выглядит отсортированным по живости, каким он
+// не бывает.
+const SUB_NODES = [
+	['🇳🇱 Нидерланды · Амстердам', 121], ['🇩🇪 Германия · Франкфурт', 96],
+	['🇫🇮 Финляндия · Хельсинки', 88], ['🇸🇪 Швеция · Стокгольм', null],
+	['🇬🇧 Британия · Лондон', 143], ['🇫🇷 Франция · Париж', 134],
+	['🇺🇸 США · Нью-Йорк (только для стриминга, без торрентов)', 187],
+	['🇺🇸 США · Лос-Анджелес', 214], ['🇯🇵 Япония · Токио', null],
+	['🇸🇬 Сингапур', 246], ['🇹🇷 Турция · Стамбул', 74],
+	['🇦🇪 ОАЭ · Дубай', 158], ['🇨🇭 Швейцария · Цюрих', 103],
+	['🇵🇱 Польша · Варшава', 61], ['🇱🇻 Латвия · Рига', 57],
+	['🇪🇪 Эстония · Таллин', null], ['🇨🇿 Чехия · Прага', 79],
+	['🇦🇹 Австрия · Вена', 92], ['🇮🇹 Италия · Милан', 111],
+	['🇪🇸 Испания · Мадрид', 129],
+];
+
+// Раздел под заголовком: узлы внутри страны, через которые открываются
+// сервисы, закрытые для зарубежных адресов.
+const SUB_WHITELIST = [
+	['🇷🇺 Россия · Москва (банки)', 18], ['🇷🇺 Россия · Москва (госуслуги)', 22],
+	['🇷🇺 Россия · Санкт-Петербург', 31], ['🇷🇺 Россия · Екатеринбург', null],
+];
+
+const subMembers = (fixture) => [
+	nx('Авто | Лучший сервер', 'auto'),
+	// kind у фикстурных узлов берётся из неё самой, если он там появится:
+	// мок не вправе перекрашивать то, что сверяют Go-тесты.
+	...fixture.map((m) => ({ ...m, kind: m.kind || 'node' })),
+	...SUB_NODES.map(([n, d]) => nd(n, d)),
+	nx('⬇️ Обходы белых списков ⬇️', 'separator'),
+	...SUB_WHITELIST.map(([n, d]) => nd(n, d)),
+	// Причина — русский текст от демона, дословно той же формы, что уходит
+	// в syslog. Панель обязана подать его в переведённой рамке, а не выдать
+	// за свой текст.
+	nx('🎁 Бонус | Пригласи друга', 'unsupported',
+		'ссылка не содержит протокола: happ://invite?ref=…, а не vless:// или ss://'),
+];
+
+// Список узлов целиком. Сценарий nikki-no-manifest отдаёт фикстуру как есть —
+// так демон отвечает на свежей установке, где манифеста подписки нет и взять
+// порядок с видами неоткуда: все строки приезжают узлами.
+const readProxies = async () => {
+	const d = await readJSON('nikki-proxies.json');
+	d.members = state.scenario === 'nikki-no-manifest'
+		? d.members.map((m) => ({ ...m, kind: m.kind || 'node' }))
+		: subMembers(d.members);
+	return d;
+};
+
 // Отпечаток /etc/config/wireless меняется вместе с содержимым: успешное
 // переключение переписало disabled у двух секций, и старое значение стало
 // неправдой. Демон считает sha256 от вывода uci show; мок этого не читает,
@@ -660,6 +749,12 @@ async function handleAPI(req, res, u) {
 	if (p === '/api/status' && method === 'GET') {
 		const base = await currentStatus();
 		const s = { ...base, ...state.overlay, links: linksFor(req), generated_at: nowISO() };
+		// configured — задан ли адрес подписки в конфиге роутера. Поля нет ни
+		// в одной golden-фикстуре, и дописывает его мок: иначе заблокированную
+		// кнопку обновления можно было бы увидеть только на роутере с пустым
+		// netmode.main.subscription_url, то есть один раз в жизни, при первой
+		// установке — ровно в тот момент, когда панель открывают впервые.
+		s.subscription = { ...s.subscription, configured: state.scenario !== 'sub-unset' };
 		if (state.job) s.job = state.job;
 		if (s.online) s.online = { ...s.online, checked_at: s.generated_at };
 		// Движки: инвариант роутера плюс окно молчания. mode здесь уже новый
@@ -949,8 +1044,15 @@ async function handleAPI(req, res, u) {
 		if (!(await engineUp('nikki'))) {
 			return fail(res, 503, 'nikki_unavailable', 'Nikki не отвечает');
 		}
-		const d = await readJSON('nikki-proxies.json');
+		const d = await readProxies();
 		if (state.overlay.nikkiSelected) d.selected = state.overlay.nikkiSelected;
+		// Закрепление — состояние, а не имя. По одному selected «движок
+		// подобрал» и «закреплено руками» неразличимы, а панель показывает
+		// их по-разному: метка «закреплён», заметка над списком и строка
+		// «Авто», которая перестаёт быть активной. Не отдавай мок pinned —
+		// автоподбор на нём выглядел бы включённым всегда, в том числе сразу
+		// после нажатия на узел, и половину новой разметки было бы не увидеть.
+		if (state.overlay.nikkiPinned) { d.pinned = true; d.fixed = state.overlay.nikkiSelected; }
 		// Замер обязан пережить перечитывание списка: панель после нажатия
 		// зовёт GET, и мок, забывший измеренное, схлопнул бы числа обратно
 		// к фикстуре. Тогда «замерили» и «сходили впустую» снова выглядят
@@ -964,7 +1066,15 @@ async function handleAPI(req, res, u) {
 			return fail(res, 503, 'nikki_unavailable', 'Nikki не отвечает');
 		}
 		const { name } = await readBody(req);
+		// AUTO — не имя узла, а снятие закрепления: выбранный узел остаётся
+		// прежним, движок снова волен его сменить. Записать AUTO в selected
+		// значило бы показать в списке активной строку, которой в нём нет.
+		if (name === 'AUTO') {
+			state.overlay.nikkiPinned = false;
+			return send(res, 200, { selected: state.overlay.nikkiSelected || '' });
+		}
 		state.overlay.nikkiSelected = name;
+		state.overlay.nikkiPinned = true;
 		return send(res, 200, { selected: name }); // быстрая операция: без джоба
 	}
 	if (p === '/api/nikki/test' && method === 'POST') {
@@ -975,8 +1085,9 @@ async function handleAPI(req, res, u) {
 		// Тело — как у GET /api/nikki/proxies плюс test. Прежде здесь стоял
 		// {ok:true}, и панельная половина замера проверялась ровно ничем:
 		// ответ, не похожий на список, панель молча проглатывала.
-		const d = await readJSON('nikki-proxies.json');
+		const d = await readProxies();
 		if (state.overlay.nikkiSelected) d.selected = state.overlay.nikkiSelected;
+		if (state.overlay.nikkiPinned) { d.pinned = true; d.fixed = state.overlay.nikkiSelected; }
 		// Живые узлы получают новые числа, мёртвые остаются с null — иначе
 		// «замерили» и «сходили впустую» выглядят одинаково.
 		//
@@ -986,11 +1097,18 @@ async function handleAPI(req, res, u) {
 		// остаются НЕ ЗАМЕРЕННЫМИ, а не проваленными, и числа у них прежние.
 		const dead = state.scenario === 'nikki-test-dead';
 		const budget = state.scenario === 'nikki-test-slow' ? 2 : 0;
-		const cut = d.members.length - budget;
+		// Замеряются ТОЛЬКО узлы. Разделитель и «Авто» демон в замер не берёт
+		// (контракт TestSummary.total), и попади они туда — осели бы в failed
+		// как мёртвые узлы, которых не существует: итог «не ответили двое»
+		// про строки, у которых нет сервера, — это ложь, а не округление.
+		const total = d.members.filter((m) => m.kind === 'node').length;
+		const cut = total - budget;
+		let seen = 0;
 		let measured = 0;
 		let failed = 0;
-		d.members = d.members.map((m, i) => {
-			if (i >= cut) return m; // до этого узла замер не дошёл
+		d.members = d.members.map((m) => {
+			if (m.kind !== 'node') return m;
+			if (seen++ >= cut) return m; // до этого узла замер не дошёл
 			if (dead || m.delay_ms == null) { failed++; return { ...m, delay_ms: null }; }
 			measured++;
 			return { ...m, delay_ms: 20 + ((m.delay_ms * 7) % 180) };
@@ -998,14 +1116,15 @@ async function handleAPI(req, res, u) {
 		// Измеренное запоминается: панель сразу после нажатия перечитывает
 		// список, и мок, забывший результат, схлопнул бы числа обратно к
 		// фикстуре — «замерили» опять стало бы неотличимо от «сходили зря».
-		state.overlay.nikkiDelays = Object.fromEntries(d.members.map((m) => [m.name, m.delay_ms]));
+		state.overlay.nikkiDelays = Object.fromEntries(
+			d.members.filter((m) => m.kind === 'node').map((m) => [m.name, m.delay_ms]));
 		return send(res, 200, {
 			...d,
 			test: {
-				total: d.members.length,
+				total,
 				measured,
 				failed,
-				skipped: d.members.length - measured - failed,
+				skipped: total - measured - failed,
 				elapsed_ms: 900,
 			},
 		});

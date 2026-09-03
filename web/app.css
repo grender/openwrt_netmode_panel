@@ -315,6 +315,36 @@ button:disabled { cursor: not-allowed; }
 /* Мёртвый узел уходит глубже приглушённых: иначе на время замка живые
    и мёртвые сравниваются, а список читают именно тогда, когда идёт джоб. */
 .row.dim, .rows button.dim:disabled { opacity: .3; }
+
+/* Строки подписки, которые узлами не являются. Обоим видам оформление
+   выбирает kind, а не alive: alive у них всегда false, и класс dim сказал бы
+   «узел мёртв» про строку, за которой узла нет вовсе. */
+
+/* Заголовок раздела от провайдера. Оформление узла отобрано целиком — ни
+   фона карточки, ни минимальной высоты 48px, ни рамки: со всем этим он
+   читается как узел, который почему-то не нажимается. Отступ слева меньше
+   узлового намеренно, заголовок стоит левее того, что он озаглавливает. */
+.row.sep {
+	background: none; border: 0; min-height: 0; padding: 12px 2px 0;
+	color: var(--muted-2); font-size: 12.5px; letter-spacing: .03em;
+}
+/* Первым в списке заголовок подпирать нечего. */
+.rows > .row.sep:first-child { padding-top: 0; }
+
+/* Запись разобрана, но узлом mihomo не стала. Приглушена слабее прочих
+   запрещённых кнопок (.rows button:disabled даёт .5): причину здесь надо
+   ПРОЧИТАТЬ, а 12,5px предупреждения по тёмному фону на половинной
+   прозрачности не читаются. */
+.row.unsup:disabled { opacity: .8; cursor: default; }
+.row.unsup .name { color: var(--muted); }
+/* margin-left:auto по той же причине, что у .meter: метра здесь нет, и на
+   перенесённой строке прижимать метку вправо больше нечем. */
+.row.unsup .ms { color: var(--muted-3); margin-left: auto; }
+/* Причина занимает ряд целиком и уезжает на вторую строку (у .row стоит
+   flex-wrap: wrap). Не обрезается ничем — обрезанное сообщение об ошибке
+   выглядит полным и потому хуже отсутствующего. Ряд от этого выше, но
+   статично: текст приезжает со списком и от наведения не зависит. */
+.row.unsup .why { flex: 1 0 100%; font-size: 12.5px; line-height: 1.35; color: var(--warn); }
 /* min-width задан намеренно: с flex:1 и min-width:0 имя сети ужимается
    до одной буквы, как только справа появляются кнопки. Имя — главное
    в строке, оно обязано оставаться читаемым. */
@@ -325,7 +355,14 @@ button:disabled { cursor: not-allowed; }
 .row .tag-auto { color: var(--muted-2); }
 .row .tag-pin  { color: var(--warn); }
 .row .ms { width: 54px; text-align: right; font: 13px var(--mono); flex: none; }
-.meter { width: 46px; height: 5px; background: #23282d; border-radius: 3px; overflow: hidden; flex: none; }
+/* margin-left:auto — про ПЕРЕНОС, а не про обычную строку. У .row стоит
+   flex-wrap, и строки на линии раскладываются по flex-basis ДО сжатия:
+   имя узла длиннее коробки (в подписке такие есть — «США · Нью-Йорк (только
+   для стриминга…)») сносит метр и задержку на вторую строку целиком. Без
+   этой строки они прижимались там к левому краю и читались как показатели
+   следующего узла. На первой линии правило не значит ничего: имя растёт
+   (flex: 1 1 auto) и свободного места не оставляет. */
+.meter { width: 46px; height: 5px; background: #23282d; border-radius: 3px; overflow: hidden; flex: none; margin-left: auto; }
 .meter > i { display: block; height: 100%; }
 .lat-ok { color: var(--ok); } .lat-warn { color: var(--warn); } .lat-bad { color: var(--bad); }
 .bg-ok { background: var(--ok); } .bg-warn { background: var(--warn); } .bg-bad { background: var(--bad); }

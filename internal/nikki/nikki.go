@@ -46,6 +46,16 @@ var ErrNotFound = errors.New("nikki: не найдено")
 // когда в подписке протух один сервер.
 var ErrProbeFailed = errors.New("nikki: узел не ответил на пробу")
 
+// ErrProviderStale — файл провайдера записан, а движок его не принял.
+//
+// Отдельно от ErrUnavailable, хотя mihomo отвечает пятисоткой: движок жив и
+// внятно сказал, что перечитать провайдера не смог (hub/route/provider.go,
+// updateProvider зовёт provider.Update()). Состояние при этом расходится —
+// на диске новый список узлов, в памяти движка старый, — и владельцу это
+// надо сказать прямо. Записав такое в «Clash API недоступен», мы отправили
+// бы его перезапускать nikki, тогда как чинить надо содержимое файла.
+var ErrProviderStale = errors.New("nikki: провайдер записан, но движком не перечитан")
+
 // StatusError — движок ответил кодом, который разбирается по смыслу вызова.
 //
 // Тип, а не форматированная строка: смысл 400 у mihomo зависит от маршрута
@@ -100,6 +110,11 @@ type Client interface {
 	Proxies(ctx context.Context) (map[string]Proxy, error)
 	Select(ctx context.Context, group, member string) error
 	Unfix(ctx context.Context, group string) error
+	// ReloadProvider — в интерфейсе, потому что обновление подписки без
+	// него не заканчивается: файл на диске новый, а список в панели старый.
+	// Проверить, что демон действительно зовёт перезагрузку после записи,
+	// можно только на подменённом клиенте.
+	ReloadProvider(ctx context.Context, name string) error
 	// Delay — проба задержки одного узла. В интерфейсе, потому что замер
 	// пачки (ProbeAll) написан против интерфейса: иначе поведение при
 	// частичном отказе — половина узлов мертва, бюджет вышел — проверялось
@@ -182,7 +197,15 @@ func (c *HTTP) do(ctx context.Context, method, path string, body, out any, timeo
 		// его мы не станем, а чинится он правкой UCI.
 		return fmt.Errorf("%w: секрет отвергнут", ErrUnavailable)
 	case resp.StatusCode >= 500:
-		return fmt.Errorf("%w: код %d", ErrUnavailable, resp.StatusCode)
+		// Код едет вместе с ошибкой, а не только в её тексте: у
+		// /providers/proxies 503 означает «файл записан, движок его отверг»
+		// и от прочих пятисоток отличается ровно числом. Двойной %w
+		// оставляет ошибку недоступностью для всех, кто её так и разбирает
+		// (errors.Is), и одновременно даёт добраться до кода (errors.As) —
+		// поиск подстроки «код 503» в тексте разъехался бы при первой же
+		// правке формулировки, ровно как это уже было с «код 400».
+		return fmt.Errorf("%w: %w", ErrUnavailable,
+			&StatusError{Code: resp.StatusCode, Path: path})
 	case resp.StatusCode >= 400:
 		return &StatusError{Code: resp.StatusCode, Path: path}
 	}
@@ -345,6 +368,38 @@ func (c *HTTP) Unfix(ctx context.Context, group string) error {
 	if errors.As(err, &se) && se.Code == http.StatusBadRequest {
 		return fmt.Errorf("%w: у группы %q типа %s автовыбора нет",
 			ErrNotSelectable, group, g.Type)
+	}
+	return err
+}
+
+// ReloadProvider велит движку перечитать файл провайдера с диска.
+//
+// Без этого вызова запись файла не значит ничего видимого: mihomo держит
+// список узлов в памяти и сам перечитывает провайдера по своему interval,
+// то есть когда-нибудь в ближайшие часы. Обновление подписки, после
+// которого в панели те же узлы, что и до него, владелец справедливо
+// прочтёт как «кнопка сломана».
+//
+// PUT /providers/proxies/{имя}, успех — 204 без тела (hub/route/provider.go,
+// updateProvider). Имя приходит из нашей же конфигурации, но экранируется
+// как элемент пути: незакодированный слэш увёл бы запрос на другой маршрут,
+// и вместо отказа мы получили бы тихое «204» от чего-то постороннего.
+//
+// Три исхода разделены намеренно:
+//
+//	404 — провайдера с таким именем в движке нет (ErrNotFound): либо имя
+//	      разошлось с профилем, либо файл ещё ни разу не подхватывался;
+//	503 — движок провайдера знает, но обновиться не смог (ErrProviderStale);
+//	сеть — движка нет вовсе (ErrUnavailable), как у всех прочих вызовов.
+func (c *HTTP) ReloadProvider(ctx context.Context, name string) error {
+	path := "/providers/proxies/" + url.PathEscape(name)
+	err := c.do(ctx, http.MethodPut, path, nil, nil, callTimeout)
+
+	var se *StatusError
+	if errors.As(err, &se) && se.Code == http.StatusServiceUnavailable {
+		return fmt.Errorf("%w: файл провайдера %q уже новый, а список узлов "+
+			"в mihomo остался старым — движок отверг перечитывание",
+			ErrProviderStale, name)
 	}
 	return err
 }
