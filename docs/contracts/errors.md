@@ -133,6 +133,8 @@ L3-сеть ([ADR-0026](../adr/0026-switch-from-ambiguous.md)).
 | `network_incomplete` | `POST /api/upstream` по секции, которая заведомо не поднимется: нет `ssid`; либо `encryption` не `none`, а пароля нет; либо `network` ведёт не во внешний канал ([ADR-0025](../adr/0025-upstream-narrow-verb.md)) | `{"id": "wifinet2", "missing": "key"}` | дописать сеть через «изменить», затем переключаться |
 | `b4_partial` | прочие сеты погашены, целевой включить не удалось: обход выключен целиком | `{"set": "general"}` | повторить нажатие — b4 отвечает, помогает повтор, а не ожидание |
 | `group_not_selectable` | группа mihomo не принимает ручной выбор | `{"group": "PROXY"}` | поправить профиль mihomo |
+| `member_not_selectable` | выбран не узел: заголовок раздела, «Авто» или запись, которую конвертер не смог перевести ([ADR-0031](../adr/0031-subscription-in-daemon.md)) | `{"name": "⬇️ Обходы белых списков ⬇️", "kind": "separator"}` | выбрать узел; строки других видов панель и так не даёт нажать |
+| `subscription_not_configured` | `POST /api/subscription/update` при пустом `netmode.main.subscription_url` | `{}` | задать адрес подписки: `uci set netmode.main.subscription_url='…' && uci commit netmode` |
 
 `fingerprint_required` — именно `409`, а не `400`: заголовка нет не потому, что
 запрос кривой, а потому, что клиент не доказал знание текущего состояния. Это

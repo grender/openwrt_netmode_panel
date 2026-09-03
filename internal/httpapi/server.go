@@ -50,6 +50,13 @@ type Config struct {
 	LogPath string
 	// SubInterval — как часто обновлять подписку. Пусто → 12 часов.
 	SubInterval time.Duration
+	// SubscriptionURL — адрес подписки провайдера
+	// (netmode.main.subscription_url). Пусто — валидное состояние: демон
+	// работает, расписание молчит, панель показывает подсказку вместо
+	// кнопки. Секрет: в строке лежит идентификатор подписки, поэтому
+	// наружу он не уходит ни одним путём — ни в /api/status, ни в текст
+	// ошибки, ни в журнал демона (ADR-0012).
+	SubscriptionURL string
 	// LEDRoot — каталог светодиодов. Пусто → /sys/class/leds.
 	LEDRoot string
 	// Logf — журнал демона. Пусто → тишина.

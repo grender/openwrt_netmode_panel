@@ -2380,7 +2380,9 @@ components:
       description: |
         Группа `PROXY` и её участники. Тело собирается из `map`, поэтому
         порядок ключей — алфавитный, а не как здесь; порядок в `members`
-        значим и повторяет порядок группы в mihomo.
+        значим и повторяет **порядок подписки** из манифеста
+        (`/etc/netmoded/subscription.json`). Манифеста нет — порядок берётся
+        у mihomo, как раньше.
       required: [available, version, group, type, selected, fixed, pinned, selectable, members]
       additionalProperties: false
       properties:
@@ -2479,9 +2481,14 @@ components:
     Proxy:
       type: object
       description: |
-        Узел или вложенная группа. Форма общая: в Go это одна структура
-        `nikki.Proxy`, и расходиться они не могут.
-      required: [name, type, alive, delay_ms, pinned, selectable]
+        Строка списка узлов. В Go это `subs.Member`: встроенный
+        `nikki.Proxy` плюс `kind` и `reason`. Встроенный, а не скопированный,
+        — форма узла описана здесь одним объектом и разъехаться не может.
+
+        `kind` отделяет узел от того, что узлом не является: провайдер держит
+        в одном списке заголовки разделов и запись «Авто», структурно
+        неотличимые от узлов (`docs/recon/happ.md`).
+      required: [name, type, alive, delay_ms, pinned, selectable, kind]
       additionalProperties: false
       properties:
         name: { type: string }
@@ -2523,6 +2530,29 @@ components:
             (`omitempty`) — то есть при автовыборе.
         pinned: { type: boolean }
         selectable: { type: boolean }
+        kind:
+          type: string
+          enum: [node, auto, separator, unsupported]
+          description: |
+            Чем является строка списка.
+
+            - `node` — узел; единственный вид, который принимает выбор;
+            - `auto` — запись «Авто | Лучший сервер»: у провайдера это
+              балансировщик, у нас ей соответствует снятие закрепления
+              (`POST /api/nikki/proxy` с именем `AUTO`);
+            - `separator` — заголовок раздела; за именем стоит копия
+              соседнего узла, подключиться нельзя;
+            - `unsupported` — запись разобрана, но в узел mihomo не
+              переводится; причина в `reason`.
+
+            Манифеста подписки может не быть (свежая установка, ни одного
+            обновления) — тогда порядок и виды взять неоткуда, и демон
+            отдаёт живой список mihomo, у которого все строки `node`.
+        reason:
+          type: string
+          description: >-
+            Почему строка непригодна. **Ключ отсутствует**, если пусто
+            (`omitempty`); непуст только при `kind: unsupported`.
 
     SetsResponse:
       type: object
