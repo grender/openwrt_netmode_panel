@@ -28,3 +28,30 @@ if ! grep -qE "^config[[:space:]]+main[[:space:]]+['\"]main['\"]" "$SEED"; then
 fi
 
 echo "-- check-netmode-seed: секция main именована"
+
+# Опция subscription_url обязана быть в сиде и обязана быть ПУСТОЙ.
+#
+# Присутствие: адрес подписки владелец вводит руками, и единственное место,
+# где он про эту опцию узнаёт, — сид с комментарием. Опция, которой нет в
+# файле, не существует для владельца: `uci show netmode` её не покажет, и
+# расписание будет молчать без объяснения.
+#
+# Пустота: непустое значение здесь — это чужой идентификатор подписки,
+# уехавший в git. Ни один Go-тест этого не поймает: фейки executor читают
+# значения из map, а не из этого файла, и любой строке одинаково рады.
+if ! grep -qE "^[[:space:]]*option[[:space:]]+subscription_url[[:space:]]" "$SEED"; then
+	echo "check-netmode-seed: в $SEED нет опции subscription_url"
+	echo "  Нужно: option subscription_url ''"
+	echo "  Без неё владелец не узнает, где задавать адрес подписки."
+	exit 1
+fi
+
+if ! grep -qE "^[[:space:]]*option[[:space:]]+subscription_url[[:space:]]+(''|\"\")[[:space:]]*$" "$SEED"; then
+	echo "check-netmode-seed: subscription_url в $SEED не пуст"
+	echo "  В сиде адрес подписки — это секрет, уехавший в git."
+	echo "  Задавать его надо на роутере:"
+	echo "    uci set netmode.main.subscription_url='...' && uci commit netmode"
+	exit 1
+fi
+
+echo "-- check-netmode-seed: subscription_url на месте и пуст"

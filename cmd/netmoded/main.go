@@ -61,9 +61,14 @@ func run() error {
 	}
 	defer srv.Close()
 
-	// Расписание обновления подписки. Строку happ2clash из
-	// /etc/crontabs/root надо убрать руками — чужой crontab демон не правит
-	// (SPEC §9).
+	// Расписание обновления подписки. Конвертер теперь ВНУТРИ демона:
+	// подписку он скачивает и раскладывает сам, скрипта happ2clash на
+	// роутере больше нет (его удаляет scripts/deploy.sh --install).
+	//
+	// Строку happ2clash из /etc/crontabs/root всё равно надо убрать руками —
+	// чужой crontab демон не правит (SPEC §9). Причина теперь другая:
+	// не «конвертер дёргается дважды», а cron раз в N часов зовёт
+	// несуществующий файл, молча получает 127 и шлёт письмо root.
 	go srv.Scheduler().Run(ctx)
 
 	log.Printf("netmoded %s слушает http://%s", version, srv.Addr())
@@ -112,12 +117,25 @@ func loadConfig(ctx context.Context, ex executor.Executor) (httpapi.Config, erro
 		return httpapi.Config{}, err
 	}
 
+	// Адрес подписки. Пусто — валидное состояние, а не ошибка старта: демон
+	// работает, расписание молчит, панель показывает подсказку.
+	//
+	// ОСТОРОЖНО, СЕКРЕТ. В строке лежит идентификатор подписки, поэтому её
+	// нельзя печатать НИГДЕ: ни в log.Printf при старте (журнал демона
+	// читает logread, а его видно из ssh), ни в тексте ошибки — текст ошибки
+	// уходит владельцу в терминал и в джобы. Отсюда и нет проверки вида
+	// «адрес не разбирается как URL»: она потребовала бы вписать значение в
+	// сообщение, чтобы быть полезной. Разбор и все жалобы на него — в
+	// internal, где ответ уже умеет не показывать секрет (ADR-0012).
+	subURL := get("subscription_url", "")
+
 	return httpapi.Config{
-		Listen:      listen,
-		Port:        port,
-		Token:       token,
-		NikkiURL:    nikkiURL(ctx, ex),
-		NikkiSecret: get2(ctx, ex, "nikki", "mixin", "api_secret"),
+		Listen:          listen,
+		Port:            port,
+		Token:           token,
+		NikkiURL:        nikkiURL(ctx, ex),
+		NikkiSecret:     get2(ctx, ex, "nikki", "mixin", "api_secret"),
+		SubscriptionURL: subURL,
 	}, nil
 }
 
