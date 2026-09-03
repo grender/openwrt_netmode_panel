@@ -14,8 +14,10 @@ import (
 
 	"netmoded/internal/b4"
 	"netmoded/internal/executor"
+	"netmoded/internal/happ"
 	"netmoded/internal/luci"
 	"netmoded/internal/nikki"
+	"netmoded/internal/sched"
 )
 
 const testToken = "dGVzdC10b2tlbi1iYXNlNjR1cmwtMzJieXRlcw"
@@ -91,7 +93,20 @@ func newServer(t *testing.T) (*Server, *executor.Fake) {
 	}
 	s.SetB4Client(newFakeB4Client())
 	s.SetNikkiClient(newFakeNikkiClient())
+	// Боевое обновление подписки подменяется целиком: оно ходит в сеть и
+	// пишет в /etc/nikki и /etc/netmoded, которых на машине разработчика
+	// нет. Само оно проверяется в internal/subs; здесь проверяется то, что
+	// стоит ВОКРУГ него — джоб, журнал, статус.
+	s.sched = sched.New(fakeSubUpdater{nodes: 42}, s.logs, 0, s.logf)
 	return s, f
+}
+
+// fakeSubUpdater — обновление подписки, всегда успешное и ровно на nodes
+// узлов.
+type fakeSubUpdater struct{ nodes int }
+
+func (f fakeSubUpdater) Update(context.Context) (happ.Summary, error) {
+	return happ.Summary{Nodes: f.nodes}, nil
 }
 
 // nikkiPanelURL делает GET /api/nikki/panel с заданным Host и возвращает

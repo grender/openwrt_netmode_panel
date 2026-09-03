@@ -2,21 +2,23 @@
 //
 // Расписание забрано у cron намеренно (SPEC §9): тогда «последнее
 // обновление», результат и журнал живут в одном месте и не расходятся.
-// Строку happ2clash из /etc/crontabs/root надо убрать руками — демон
-// чужой crontab не правит.
+// Строку happ2clash из /etc/crontabs/root по-прежнему надо убрать руками —
+// чужой crontab демон не правит. Причина теперь другая: не «конвертер
+// дёргается дважды», а cron зовёт файл, которого на роутере уже нет, молча
+// получает 127 и шлёт письмо root (ADR-0031).
 //
-// `flock` внутри самого happ2clash сохраняется: скрипт остаётся
-// запускаемым из ssh, и пересечения быть не должно.
+// Само обновление сюда не входит: расписание знает, КОГДА дёргать и что
+// записать в журнал, а что при этом происходит с файлами — политика
+// internal/subs. Отсюда и Updater интерфейсом в одну строку.
 package sched
 
 import (
 	"context"
 	"errors"
-	"regexp"
-	"strconv"
 	"sync"
 	"time"
 
+	"netmoded/internal/happ"
 	"netmoded/internal/logs"
 	"netmoded/internal/safe"
 )
@@ -36,9 +38,12 @@ const DefaultInterval = 12 * time.Hour
 // встала.
 const catchUpDelay = time.Minute
 
-// Updater запускает конвертер подписки.
+// Updater выполняет одно обновление подписки целиком.
+//
+// Интерфейс, а не *subs.Updater: расписанию нужен ровно один глагол, и на
+// подставной реализации оно проверяется без сети, без файлов и без движка.
 type Updater interface {
-	UpdateSubscription(ctx context.Context) ([]byte, error)
+	Update(ctx context.Context) (happ.Summary, error)
 }
 
 // Scheduler периодически обновляет подписку.
@@ -187,19 +192,21 @@ func (s *Scheduler) Stop() {
 // ErrAlreadyRunning — обновление уже идёт.
 //
 // Пересечение возможно: расписание сработало ровно тогда, когда владелец
-// нажал «обновить сейчас». Второй запуск не нужен — конвертер всё равно
-// сериализован своим flock, и мы бы просто ждали впустую.
+// нажал «обновить сейчас». Второй запуск не нужен и вреден: у файла
+// провайдера один писатель, и два обновления подряд разошлись бы в нём
+// молча — кто победил, было бы видно только по времени файла.
 var ErrAlreadyRunning = errors.New("sched: обновление уже идёт")
 
 // RunOnce выполняет одно обновление и пишет результат в журнал.
 //
-// Возвращает число разобранных узлов. Ошибка конвертера не считается
+// Возвращает сводку разбора — она уходит в панель и в диагностику целиком,
+// а в журнал из неё попадает число узлов. Ошибка обновления не считается
 // сбоем демона: она попадает в журнал и в статус, а демон живёт дальше.
-func (s *Scheduler) RunOnce(ctx context.Context) (int, error) {
+func (s *Scheduler) RunOnce(ctx context.Context) (happ.Summary, error) {
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
-		return 0, ErrAlreadyRunning
+		return happ.Summary{}, ErrAlreadyRunning
 	}
 	s.running = true
 	s.mu.Unlock()
@@ -211,21 +218,25 @@ func (s *Scheduler) RunOnce(ctx context.Context) (int, error) {
 		s.mu.Unlock()
 	}()
 
-	out, err := s.up.UpdateSubscription(ctx)
-	nodes := ParseNodeCount(out)
+	sum, err := s.up.Update(ctx)
 
-	entry := logs.Entry{TS: s.now().UTC(), Nodes: nodes}
+	entry := logs.Entry{TS: s.now().UTC(), Nodes: sum.Nodes}
 	switch {
 	case err != nil:
 		entry.Status = logs.StatusFail
 		entry.Err = err.Error()
-	case nodes == 0:
-		// Предохранитель happ2clash: при нуле разобранных узлов старый
-		// файл провайдера НЕ перезаписывается (SPEC §2). Для нас это
-		// неудача, а не успех с нулём — иначе панель показала бы
-		// «обновлено, 0 узлов», хотя список остался прежним.
+	case sum.Nodes == 0:
+		// НАМЕРЕННО ДУБЛИРУЮЩАЯ проверка, и убирать её не надо.
+		//
+		// Первичный предохранитель теперь наш и стоит в subs.Update —
+		// там, где владеют файлами: при нуле узлов ни провайдер, ни
+		// манифест не переписываются, и Update возвращает ошибку. Сюда
+		// ноль может прийти только от обновления, которое СООБЩИЛО ОБ
+		// УСПЕХЕ с пустым списком, — то есть от нашей же будущей ошибки.
+		// Цена ловли здесь — одна строка, цена пропуска — «обновлено,
+		// 0 узлов» в панели при неизменившемся списке.
 		entry.Status = logs.StatusFail
-		entry.Err = "конвертер вернул 0 узлов, файл провайдера не перезаписан"
+		entry.Err = "обновление сообщило об успехе, но узлов ноль"
 		err = errors.New(entry.Err)
 	default:
 		entry.Status = logs.StatusOK
@@ -241,9 +252,9 @@ func (s *Scheduler) RunOnce(ctx context.Context) (int, error) {
 	}
 
 	if entry.Status == logs.StatusFail {
-		return nodes, err
+		return sum, err
 	}
-	return nodes, nil
+	return sum, nil
 }
 
 // LastRun — когда обновление выполнялось последний раз в этом процессе.
@@ -258,25 +269,4 @@ func (s *Scheduler) Running() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.running
-}
-
-// nodeCountRe выхватывает число узлов из вывода happ2clash.
-//
-// Формат вывода скрипта не зафиксирован контрактом, поэтому берём число
-// рядом со словом об узлах, а не гадаем по позиции. Не нашли — ноль,
-// и это будет трактовано как неудача: лучше лишний раз сказать «не
-// получилось», чем показать успех, которого не было.
-var nodeCountRe = regexp.MustCompile(`(?i)(\d+)\s*(?:nodes?|узл|proxies|proxy)`)
-
-// ParseNodeCount достаёт число узлов из вывода конвертера.
-func ParseNodeCount(out []byte) int {
-	m := nodeCountRe.FindSubmatch(out)
-	if m == nil {
-		return 0
-	}
-	n, err := strconv.Atoi(string(m[1]))
-	if err != nil {
-		return 0
-	}
-	return n
 }

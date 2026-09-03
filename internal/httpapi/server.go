@@ -16,6 +16,7 @@ import (
 
 	"netmoded/internal/b4"
 	"netmoded/internal/executor"
+	"netmoded/internal/happ"
 	"netmoded/internal/job"
 	"netmoded/internal/led"
 	"netmoded/internal/logs"
@@ -23,6 +24,7 @@ import (
 	"netmoded/internal/nikki"
 	"netmoded/internal/safe"
 	"netmoded/internal/sched"
+	"netmoded/internal/subs"
 	"netmoded/internal/uci"
 	"netmoded/internal/wireless"
 )
@@ -88,8 +90,40 @@ type Server struct {
 	bridgeProbeMu  sync.Mutex
 	bridgeProbeVal *BridgeProbes
 	bridgeProbeAt  time.Time
-	mux            *http.ServeMux
+	// Кэш манифеста подписки: порядок и виды записей, которых нет в Clash API.
+	//
+	// Файл читается не на каждый запрос намеренно. GET /api/nikki/proxies
+	// панель дёргает часто (вкладка узлов опрашивается на каждом открытии и
+	// после каждого замера), а манифест меняется раз в двенадцать часов —
+	// то есть почти каждое чтение отдало бы ровно то же самое, заплатив за
+	// это обращением к флешу.
+	//
+	// RWMutex, а не просто Mutex: читателей много и они конкурируют между
+	// собой, писатель один и приходит раз в полсуток. Замок обязателен в
+	// любом виде — читают HTTP-обработчики, пишет горутина расписания, и
+	// без него это гонка, которую -race поймает, а роутер покажет мусором
+	// в списке узлов.
+	manifestMu sync.RWMutex
+	manifest   []happ.Entry
+	mux        *http.ServeMux
 }
+
+// Пути файлов подписки — константы здесь, а не поля Config.
+//
+// Оба они не настройка владельца, а часть договорённости с соседями:
+// providerPath называет nikki (движок читает этот каталог сам),
+// manifestPath — наш собственный каталог рядом с токеном. Вынеся их в
+// /etc/config/netmode, мы получили бы значение, которое можно поменять
+// только вместе с конфигурацией mihomo, — то есть настройку, ломающую
+// демона при любом изменении.
+const (
+	providerPath = "/etc/nikki/run/providers/sub.yaml"
+	manifestPath = "/etc/netmoded/subscription.json"
+	// providerName — имя провайдера в Clash API: PUT /providers/proxies/sub.
+	// Совпадает с именем файла без расширения, и это требование mihomo, а
+	// не наше удобство.
+	providerName = "sub"
+)
 
 // apiError — единая форма ошибки (docs/contracts/errors.md).
 // Код важнее текста: 409 в этой панели означает три разные вещи, и по
@@ -132,7 +166,24 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 	}
 	s.bridgeFails = &bridgeFailStore{}
 	s.led = led.New(cfg.LEDRoot, s.logf)
-	s.sched = sched.New(ex, s.logs, cfg.SubInterval, s.logf)
+
+	// Обновление подписки. Reload замыкается на s, а не на s.nikki: клиент
+	// подменяется после конструктора (SetNikkiClient — этим пользуются и
+	// тесты, и дев-сервер), и замыкание на значение поля заморозило бы
+	// подмену — обновление ходило бы в отброшенного клиента.
+	up := &subs.Updater{
+		URL:          cfg.SubscriptionURL,
+		ProviderPath: providerPath,
+		ManifestPath: manifestPath,
+		Reload: func(ctx context.Context) error {
+			return s.nikki.ReloadProvider(ctx, providerName)
+		},
+	}
+	s.sched = sched.New(&manifestRefresher{up: up, srv: s}, s.logs, cfg.SubInterval, s.logf)
+	// Кэш заполняется на старте, а не при первом запросе: пустой манифест —
+	// валидное состояние свежей установки, и отличить его от «ещё не
+	// читали» по самому кэшу было бы нечем.
+	s.reloadManifest()
 	s.status.jobs = s.jobs
 	s.status.logs = s.logs
 	// Слот неудачи — ОДИН на демона, и читатель статуса обязан смотреть в
@@ -353,6 +404,63 @@ func (s *Server) Close() {
 
 // Scheduler возвращает планировщик — вызывающий обязан крутить его Run.
 func (s *Server) Scheduler() *sched.Scheduler { return s.sched }
+
+// manifestRefresher — обновление подписки плюс перечитывание кэша манифеста.
+//
+// Обёртка, а не вызов из планировщика: sched знает только КОГДА обновлять и
+// что записать в журнал, а кто ещё интересуется результатом — не его дело
+// (ADR-0001, круги). Так же и subs не знает про HTTP-сервер и его кэш.
+type manifestRefresher struct {
+	up  *subs.Updater
+	srv *Server
+}
+
+// Update обновляет подписку и всегда перечитывает манифест — включая пути
+// неудачи.
+//
+// Безусловно, и это осознанно. Частичный отказ (файлы записаны, движок
+// провайдера не перечитал) тоже оставляет на диске НОВЫЙ манифест, а по
+// одной ошибке отличить такой исход от «не скачалось» можно лишь заведя
+// таксономию сентинелов — то есть договор между двумя пакетами ради одной
+// ветки. Цена безусловного чтения — один лишний read файла раз в двенадцать
+// часов; цена ошибки в таксономии — кэш, который врёт про порядок узлов до
+// перезапуска демона.
+func (m *manifestRefresher) Update(ctx context.Context) (happ.Summary, error) {
+	sum, err := m.up.Update(ctx)
+	m.srv.reloadManifest()
+	return sum, err
+}
+
+// manifestEntries отдаёт кэш манифеста для склейки в subs.Order.
+//
+// Срез отдаётся как есть, без копии: его читают, но не меняют — Order
+// только перебирает записи. Копировать тридцать структур на каждый запрос
+// панели значило бы платить за дисциплину, которую всё равно держит не
+// копия, а этот комментарий.
+func (s *Server) manifestEntries() []happ.Entry {
+	s.manifestMu.RLock()
+	defer s.manifestMu.RUnlock()
+	return s.manifest
+}
+
+// reloadManifest перечитывает манифест с диска в кэш.
+//
+// Ошибка чтения кэш НЕ обнуляет. Битый или внезапно нечитаемый файл — это
+// потеря порядка и видов записей, но прежде прочитанный порядок всё ещё
+// верен для того списка узлов, который сейчас в движке. Обнулив кэш, мы
+// превратили бы одну неудачную запись файла в перетасованный список у
+// владельца — причём молча, потому что список остался бы рабочим.
+func (s *Server) reloadManifest() {
+	entries, err := subs.LoadManifest(manifestPath)
+	if err != nil {
+		s.logf("манифест подписки %s не прочитан (%v): "+
+			"порядок и виды строк остаются от предыдущего чтения", manifestPath, err)
+		return
+	}
+	s.manifestMu.Lock()
+	s.manifest = entries
+	s.manifestMu.Unlock()
+}
 
 // handleStatus не имеет ветки ошибки: Read её не возвращает.
 //

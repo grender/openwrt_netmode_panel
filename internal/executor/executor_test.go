@@ -177,7 +177,7 @@ func TestRealExecutorRejectsUbusObjectNotInEvidence(t *testing.T) {
 func TestTimeoutsAreSet(t *testing.T) {
 	// Каждый внешний вызов обязан иметь дедлайн, иначе зависший uci
 	// подвешивает обработчик, который его вызвал.
-	if UCITimeout <= 0 || ScanTimeout <= 0 || ApplyTimeout <= 0 || SubscriptionTimeout <= 0 {
+	if UCITimeout <= 0 || ScanTimeout <= 0 || ApplyTimeout <= 0 {
 		t.Fatal("таймауты должны быть положительными")
 	}
 	if ScanTimeout < UCITimeout {
@@ -185,9 +185,6 @@ func TestTimeoutsAreSet(t *testing.T) {
 	}
 	if ApplyTimeout < ScanTimeout {
 		t.Error("применение режима дольше скана")
-	}
-	if SubscriptionTimeout < ApplyTimeout {
-		t.Error("обновление подписки — самая долгая операция")
 	}
 }
 
@@ -210,17 +207,14 @@ func TestFakeLoadFixturesFailsLoudly(t *testing.T) {
 	}
 }
 
-func TestFakeApplyModeAndSubscription(t *testing.T) {
+func TestFakeApplyMode(t *testing.T) {
 	f := NewFake()
 	ctx := context.Background()
 
 	if err := f.ApplyMode(ctx, "b4"); err != nil {
 		t.Fatalf("ApplyMode: %v", err)
 	}
-	if _, err := f.UpdateSubscription(ctx); err != nil {
-		t.Fatalf("UpdateSubscription: %v", err)
-	}
-	want := []string{"apply-mode b4", "update-subscription"}
+	want := []string{"apply-mode b4"}
 	for i, w := range want {
 		if i >= len(f.Calls) || f.Calls[i] != w {
 			t.Errorf("вызов[%d] = %v, ожидался %q", i, f.Calls, w)
@@ -376,11 +370,6 @@ func TestExecBuildsCorrectUCICommands(t *testing.T) {
 			"apply-mode",
 			func(e *Exec) error { return e.ApplyMode(ctx, "nikki") },
 			[]string{"/usr/local/bin/netmode-apply", "nikki"},
-		},
-		{
-			"update-subscription",
-			func(e *Exec) error { _, err := e.UpdateSubscription(ctx); return err },
-			[]string{"/usr/local/bin/happ2clash"},
 		},
 	}
 
@@ -623,15 +612,21 @@ func stubBin(t *testing.T, body string) string {
 func TestRunRefusesOutputOverLimit(t *testing.T) {
 	// ~2 МиБ за 2048 итераций встроенного printf: два лимита подряд,
 	// без fork'ов на каждую строку.
+	//
+	// Глагол здесь — ubus со сканом: нужен вызов, который ОТДАЁТ stdout
+	// (проверяем, что усечённые байты не уходят наверх) и имеет дедлайн
+	// заметно длиннее самого теста (проверяем, что процесс сняли на лимите,
+	// а не дождались таймаута). Раньше эту роль играл happ2clash со своими
+	// 120 секундами; скрипта нет, ScanTimeout в 15 с даёт тот же запас.
 	e := New()
-	e.subscribeBin = stubBin(t, `
+	e.ubusBin = stubBin(t, `
 line=$(awk 'BEGIN{s="";while(length(s)<1023)s=s "x";print s}')
 i=0
 while [ $i -lt 2048 ]; do printf '%s\n' "$line"; i=$((i+1)); done
 `)
 
 	start := time.Now()
-	out, err := e.UpdateSubscription(context.Background())
+	out, err := e.UbusCall(context.Background(), "iwinfo", "scan", nil)
 	if err == nil {
 		t.Fatal("вывод сверх лимита принят молча — это и есть OOM в проде")
 	}
@@ -648,8 +643,8 @@ while [ $i -lt 2048 ]; do printf '%s\n' "$line"; i=$((i+1)); done
 		t.Errorf("в тексте ошибки не сказано, что вывод неполон: %v", err)
 	}
 	// Процесс снимается на лимите, а не дочитывается до конца таймаута
-	// (у подписки он 120 с).
-	if d := time.Since(start); d > 30*time.Second {
+	// (у скана он ScanTimeout).
+	if d := time.Since(start); d > ScanTimeout/2 {
 		t.Errorf("вызов длился %v — процесс не сняли на лимите", d)
 	}
 }

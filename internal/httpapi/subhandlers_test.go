@@ -30,8 +30,7 @@ func TestLogsRejectsBadN(t *testing.T) {
 }
 
 func TestSubscriptionUpdateStartsJob(t *testing.T) {
-	s, f := newServer(t)
-	f.Fixtures["subscription-output"] = []byte("parsed 42 nodes\n")
+	s, _ := newServer(t)
 
 	rec := post(t, s, "/api/subscription/update", `{}`, "")
 	if rec.Code != http.StatusAccepted {
@@ -91,8 +90,7 @@ func TestSecondJobIs409(t *testing.T) {
 }
 
 func TestStatusCarriesSubscriptionAndJob(t *testing.T) {
-	s, f := newServer(t)
-	f.Fixtures["subscription-output"] = []byte("parsed 42 nodes\n")
+	s, _ := newServer(t)
 
 	// Часы подменяются ДО первого запроса: иначе метка кэша окажется по
 	// настоящему времени, а сравнение — по поддельному, и кэш будет

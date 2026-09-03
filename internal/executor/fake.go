@@ -834,16 +834,6 @@ func (f *Fake) ApplyBridge(ctx context.Context, action string) error {
 	return nil
 }
 
-func (f *Fake) UpdateSubscription(ctx context.Context) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := f.record("update-subscription"); err != nil {
-		return nil, err
-	}
-	return f.fixture("subscription-output"), nil
-}
-
 // MissingExecutors — те же пути, что перечислил тест, но в каноническом
 // порядке.
 //

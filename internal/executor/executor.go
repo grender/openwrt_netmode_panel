@@ -41,8 +41,10 @@ var ErrNotFound = errors.New("uci: записи нет")
 // Роутер имеет порядка 512 МБ ОЗУ и не имеет свопа: когда память кончается,
 // OOM-killer убивает демон целиком, и владелец теряет управление роутером,
 // причём без единой записи о причине. Таймауты от этого не спасают —
-// зациклившийся happ2clash за отведённые ему 120 секунд успевает налить
-// в stdout столько, сколько успеет.
+// зациклившаяся команда за отведённые ей секунды успевает налить в stdout
+// столько, сколько успеет. Довод снят с happ2clash (ADR-0022), которого на
+// роутере больше нет; лимиты от этого не изменились ничем — они защищают
+// каждую команду, а не ту одну (ADR-0031).
 //
 // Усечение обязано быть видимым, поэтому оно возвращается ошибкой, а не
 // молчаливо обрезанными байтами. Тихое усечение хуже отказа: разбор
@@ -298,10 +300,9 @@ func upstreamErrorForCode(code int, cause error) error {
 // Таймауты. Каждый внешний вызов обязан иметь дедлайн: зависший uci
 // подвешивает обработчик, который его вызвал, а за ним и опрос статуса.
 const (
-	UCITimeout          = 3 * time.Second
-	ScanTimeout         = 15 * time.Second
-	ApplyTimeout        = 60 * time.Second
-	SubscriptionTimeout = 120 * time.Second
+	UCITimeout   = 3 * time.Second
+	ScanTimeout  = 15 * time.Second
+	ApplyTimeout = 60 * time.Second
 
 	// UpstreamApplyTimeout — потолок на netmode-wifi.
 	//
@@ -447,7 +448,6 @@ type Executor interface {
 
 	ApplyMode(ctx context.Context, mode string) error
 	ApplyUpstream(ctx context.Context, t UpstreamTarget) error
-	UpdateSubscription(ctx context.Context) ([]byte, error)
 
 	// Глаголы моста (ADR-0030). Именованные, без generic Run — как у всех.
 	// BridgeStatus возвращает JSON скрипта как есть: {relayd_installed,
@@ -630,7 +630,6 @@ type Exec struct {
 	applyBin      string
 	wifiBin       string
 	bridgeBin     string
-	subscribeBin  string
 	commandRunner func(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
@@ -650,12 +649,11 @@ const (
 // New возвращает исполнителя с путями по умолчанию.
 func New() *Exec {
 	return &Exec{
-		uciBin:       "/sbin/uci",
-		ubusBin:      "/bin/ubus",
-		applyBin:     ApplyBinPath,
-		wifiBin:      WifiBinPath,
-		bridgeBin:    BridgeBinPath,
-		subscribeBin: "/usr/local/bin/happ2clash",
+		uciBin:    "/sbin/uci",
+		ubusBin:   "/bin/ubus",
+		applyBin:  ApplyBinPath,
+		wifiBin:   WifiBinPath,
+		bridgeBin: BridgeBinPath,
 	}
 }
 
@@ -1095,10 +1093,6 @@ func classifyApplyError(err error) error {
 
 func classifyUpstreamError(err error) error {
 	return classifyByExitCode(upstreamErrorForCode, err)
-}
-
-func (e *Exec) UpdateSubscription(ctx context.Context) ([]byte, error) {
-	return e.run(ctx, SubscriptionTimeout, e.subscribeBin)
 }
 
 // isUCINotFound отличает «нет такой записи» от настоящего сбоя.

@@ -12,23 +12,24 @@ import (
 	"testing"
 	"time"
 
+	"netmoded/internal/happ"
 	"netmoded/internal/logs"
 )
 
 type fakeUpdater struct {
 	mu     sync.Mutex
-	out    []byte
+	sum    happ.Summary
 	err    error
 	calls  int
 	block  chan struct{}
 	onCall func()
 }
 
-func (f *fakeUpdater) UpdateSubscription(ctx context.Context) ([]byte, error) {
+func (f *fakeUpdater) Update(ctx context.Context) (happ.Summary, error) {
 	f.mu.Lock()
 	f.calls++
 	blk, onCall := f.block, f.onCall
-	out, err := f.out, f.err
+	sum, err := f.sum, f.err
 	f.mu.Unlock()
 
 	if onCall != nil {
@@ -38,10 +39,10 @@ func (f *fakeUpdater) UpdateSubscription(ctx context.Context) ([]byte, error) {
 		select {
 		case <-blk:
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return happ.Summary{}, ctx.Err()
 		}
 	}
-	return out, err
+	return sum, err
 }
 
 func (f *fakeUpdater) count() int {
@@ -111,15 +112,15 @@ func brokenLogPath(t *testing.T) string {
 }
 
 func TestSuccessfulUpdateIsLogged(t *testing.T) {
-	up := &fakeUpdater{out: []byte("parsed 42 nodes, provider updated\n")}
+	up := &fakeUpdater{sum: happ.Summary{Nodes: 42}}
 	s, l := newSched(t, up)
 
-	n, err := s.RunOnce(context.Background())
+	sum, err := s.RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
-	if n != 42 {
-		t.Errorf("узлов %d, ожидалось 42", n)
+	if sum.Nodes != 42 {
+		t.Errorf("узлов %d, ожидалось 42", sum.Nodes)
 	}
 
 	last, ok, _ := l.Last()
@@ -131,20 +132,20 @@ func TestSuccessfulUpdateIsLogged(t *testing.T) {
 	}
 }
 
-// Предохранитель happ2clash: при нуле разобранных узлов старый файл
-// провайдера НЕ перезаписывается (SPEC §2). Для нас это неудача, а не
-// успех с нулём — иначе панель показала бы «обновлено, 0 узлов», хотя
-// список остался прежним.
+// Вторая линия предохранителя нуля узлов. Первичный стоит в subs.Update,
+// который владеет файлами; здесь ловится обновление, СООБЩИВШЕЕ ОБ УСПЕХЕ
+// с пустым списком, — иначе панель показала бы «обновлено, 0 узлов», хотя
+// список остался прежним. Дублирование намеренное (ADR-0031).
 func TestEmptyResultIsFailureNotSuccess(t *testing.T) {
-	up := &fakeUpdater{out: []byte("parsed 0 nodes, keeping previous file\n")}
+	up := &fakeUpdater{sum: happ.Summary{Nodes: 0}}
 	s, l := newSched(t, up)
 
-	n, err := s.RunOnce(context.Background())
+	sum, err := s.RunOnce(context.Background())
 	if err == nil {
 		t.Fatal("пустой результат выдан за успех")
 	}
-	if n != 0 {
-		t.Errorf("узлов %d, ожидалось 0", n)
+	if sum.Nodes != 0 {
+		t.Errorf("узлов %d, ожидалось 0", sum.Nodes)
 	}
 
 	last, ok, _ := l.Last()
@@ -160,11 +161,11 @@ func TestEmptyResultIsFailureNotSuccess(t *testing.T) {
 }
 
 func TestConverterErrorIsLogged(t *testing.T) {
-	up := &fakeUpdater{err: errors.New("happ2clash: подписка недоступна")}
+	up := &fakeUpdater{err: errors.New("subs: подписка не скачалась: i/o timeout")}
 	s, l := newSched(t, up)
 
 	if _, err := s.RunOnce(context.Background()); err == nil {
-		t.Fatal("ошибка конвертера проглочена")
+		t.Fatal("ошибка обновления проглочена")
 	}
 
 	last, _, _ := l.Last()
@@ -179,7 +180,7 @@ func TestConverterErrorIsLogged(t *testing.T) {
 // Пересечение реально: расписание сработало ровно тогда, когда владелец
 // нажал «обновить сейчас».
 func TestConcurrentRunIsRefused(t *testing.T) {
-	up := &fakeUpdater{out: []byte("41 nodes"), block: make(chan struct{})}
+	up := &fakeUpdater{sum: happ.Summary{Nodes: 41}, block: make(chan struct{})}
 	s, _ := newSched(t, up)
 
 	started := make(chan struct{})
@@ -206,7 +207,7 @@ func TestConcurrentRunIsRefused(t *testing.T) {
 // Обновлять подписку на каждый перезапуск значило бы дёргать провайдера
 // почём зря.
 func TestNoUpdateOnStart(t *testing.T) {
-	up := &fakeUpdater{out: []byte("41 nodes")}
+	up := &fakeUpdater{sum: happ.Summary{Nodes: 41}}
 	l := logs.New(filepath.Join(t.TempDir(), "updates.log"))
 	s := New(up, l, 50*time.Millisecond, nil)
 
@@ -226,7 +227,7 @@ func TestNoUpdateOnStart(t *testing.T) {
 }
 
 func TestStopEndsLoop(t *testing.T) {
-	up := &fakeUpdater{out: []byte("41 nodes")}
+	up := &fakeUpdater{sum: happ.Summary{Nodes: 41}}
 	l := logs.New(filepath.Join(t.TempDir(), "updates.log"))
 	s := New(up, l, 20*time.Millisecond, nil)
 
@@ -243,31 +244,8 @@ func TestStopEndsLoop(t *testing.T) {
 	s.Stop()
 }
 
-func TestParseNodeCount(t *testing.T) {
-	tests := []struct {
-		out  string
-		want int
-	}{
-		{"parsed 42 nodes", 42},
-		{"Разобрано 14 узлов", 14},
-		{"wrote 7 proxies to sub.yaml", 7},
-		{"0 nodes parsed", 0},
-		{"", 0},
-		// Не нашли числа — ноль, и это будет трактовано как неудача.
-		// Лучше лишний раз сказать «не получилось», чем показать успех,
-		// которого не было.
-		{"готово", 0},
-		{"всё хорошо, файл записан", 0},
-	}
-	for _, tt := range tests {
-		if got := ParseNodeCount([]byte(tt.out)); got != tt.want {
-			t.Errorf("ParseNodeCount(%q) = %d, ожидалось %d", tt.out, got, tt.want)
-		}
-	}
-}
-
 func TestLastRunRecorded(t *testing.T) {
-	up := &fakeUpdater{out: []byte("41 nodes")}
+	up := &fakeUpdater{sum: happ.Summary{Nodes: 41}}
 	s, _ := newSched(t, up)
 
 	if !s.LastRun().IsZero() {
@@ -284,15 +262,15 @@ func TestLastRunRecorded(t *testing.T) {
 // обновление в «неудачу». Ошибка обязана попасть в лог демона, а не пропасть.
 func TestLogWriteFailureIsLoggedNotReturned(t *testing.T) {
 	rec := &recorder{}
-	up := &fakeUpdater{out: []byte("parsed 42 nodes, provider updated\n")}
+	up := &fakeUpdater{sum: happ.Summary{Nodes: 42}}
 	s := New(up, logs.New(brokenLogPath(t)), time.Hour, rec.logf)
 
-	n, err := s.RunOnce(context.Background())
+	sum, err := s.RunOnce(context.Background())
 	if err != nil {
 		t.Errorf("подписка обновилась, но RunOnce вернул ошибку: %v", err)
 	}
-	if n != 42 {
-		t.Errorf("узлов %d, ожидалось 42", n)
+	if sum.Nodes != 42 {
+		t.Errorf("узлов %d, ожидалось 42", sum.Nodes)
 	}
 	if rec.count() == 0 {
 		t.Error("ошибка записи журнала потеряна: наружу не отдана и в лог не попала")
@@ -303,12 +281,12 @@ func TestLogWriteFailureIsLoggedNotReturned(t *testing.T) {
 // независимо от того, записался журнал или нет.
 func TestLogWriteFailureKeepsConverterError(t *testing.T) {
 	rec := &recorder{}
-	up := &fakeUpdater{err: errors.New("happ2clash: подписка недоступна")}
+	up := &fakeUpdater{err: errors.New("subs: подписка не скачалась: i/o timeout")}
 	s := New(up, logs.New(brokenLogPath(t)), time.Hour, rec.logf)
 
 	err := func() error { _, e := s.RunOnce(context.Background()); return e }()
-	if err == nil || err.Error() != "happ2clash: подписка недоступна" {
-		t.Errorf("ошибка конвертера подменена или проглочена: %v", err)
+	if err == nil || err.Error() != "subs: подписка не скачалась: i/o timeout" {
+		t.Errorf("ошибка обновления подменена или проглочена: %v", err)
 	}
 	if rec.count() == 0 {
 		t.Error("сбой журнала не залогирован")
@@ -317,7 +295,7 @@ func TestLogWriteFailureKeepsConverterError(t *testing.T) {
 
 // Пустой logf не должен ронять демона: New обязан подставить заглушку.
 func TestNilLogfIsSafe(t *testing.T) {
-	up := &fakeUpdater{out: []byte("parsed 42 nodes")}
+	up := &fakeUpdater{sum: happ.Summary{Nodes: 42}}
 	s := New(up, logs.New(brokenLogPath(t)), time.Hour, nil)
 	if _, err := s.RunOnce(context.Background()); err != nil {
 		t.Errorf("RunOnce: %v", err)
@@ -391,7 +369,7 @@ func TestFirstDelayWithoutUsableLog(t *testing.T) {
 
 // Stop обязан прерывать И таймер первого срабатывания, и последующий тикер.
 func TestStopDuringFirstWait(t *testing.T) {
-	up := &fakeUpdater{out: []byte("41 nodes")}
+	up := &fakeUpdater{sum: happ.Summary{Nodes: 41}}
 	// Журнал пуст → Run уходит ждать целый час.
 	l := logs.New(filepath.Join(t.TempDir(), "updates.log"))
 	s := New(up, l, time.Hour, nil)
@@ -413,7 +391,7 @@ func TestStopDuringFirstWait(t *testing.T) {
 // То же для отмены контекста: ожидание первого таймера не должно держать
 // демона при завершении.
 func TestContextCancelDuringFirstWait(t *testing.T) {
-	up := &fakeUpdater{out: []byte("41 nodes")}
+	up := &fakeUpdater{sum: happ.Summary{Nodes: 41}}
 	l := logs.New(filepath.Join(t.TempDir(), "updates.log"))
 	s := New(up, l, time.Hour, nil)
 
@@ -439,7 +417,7 @@ func TestContextCancelDuringFirstWait(t *testing.T) {
 // протухшей подписке.
 func TestPanicInTickDoesNotEndSchedule(t *testing.T) {
 	rec := &recorder{}
-	up := &fakeUpdater{out: []byte("41 nodes")}
+	up := &fakeUpdater{sum: happ.Summary{Nodes: 41}}
 	var fired atomic.Bool
 	// Паникуем ровно на первом вызове: второй обязан состояться, иначе
 	// тест не отличает «цикл выжил» от «цикл тихо кончился».
@@ -475,7 +453,7 @@ func TestPanicInTickDoesNotEndSchedule(t *testing.T) {
 // без API. Не посчиталось — берём обычный интервал.
 func TestPanicInFirstDelayFallsBackToInterval(t *testing.T) {
 	rec := &recorder{}
-	up := &fakeUpdater{out: []byte("41 nodes")}
+	up := &fakeUpdater{sum: happ.Summary{Nodes: 41}}
 
 	// Журнал говорит «обновлялись час назад»: без паники firstDelay вернул
 	// бы catchUpDelay, то есть минуту, и обновления в этом тесте не было бы
