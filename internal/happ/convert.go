@@ -72,7 +72,7 @@ func convertVLESS(name string, o xrayOutbound, xhttp bool) (map[string]any, stri
 		// владельца менять версию mihomo, где чинить нечего.
 		return nil, "", fmt.Sprintf(
 			"транспорт %s не переводится нашим конвертером (движок его умеет, перевода нет у нас)",
-			networkOrNone(ss.Network)), nil
+			orNone(ss.Network)), nil
 	}
 
 	p := map[string]any{
@@ -133,9 +133,10 @@ func convertVLESS(name string, o xrayOutbound, xhttp bool) (map[string]any, stri
 		// Голый vless без шифрования в подписке не встречался, и молча
 		// собрать из него узел значило бы отправить трафик открытым,
 		// решив за владельца. Пусть строка останется видимой.
-		return nil, "", fmt.Sprintf("режим шифрования %s у vless не поддержан", securityOrNone(ss.Security)), nil
+		return nil, "", fmt.Sprintf("режим шифрования %s у vless не поддержан", orNone(ss.Security)), nil
 	}
 
+	var unknown []string
 	if ss.Network == "xhttp" {
 		x := ss.XHTTPSettings
 		opts := map[string]any{
@@ -143,11 +144,10 @@ func convertVLESS(name string, o xrayOutbound, xhttp bool) (map[string]any, stri
 			"host": x.Host,
 			"mode": x.Mode,
 		}
-		unknown := copyXHTTPExtra(opts, x.Extra)
+		unknown = copyXHTTPExtra(opts, x.Extra)
 		p["xhttp-opts"] = opts
-		return p, "vless", "", unknown
 	}
-	return p, "vless", "", nil
+	return p, "vless", "", unknown
 }
 
 func convertHysteria(name string, o xrayOutbound) (map[string]any, string, string) {
@@ -192,14 +192,8 @@ func convertHysteria(name string, o xrayOutbound) (map[string]any, string, strin
 	return p, "hysteria2", ""
 }
 
-func networkOrNone(v string) string {
-	if v == "" {
-		return "(не указан)"
-	}
-	return v
-}
-
-func securityOrNone(v string) string {
+// orNone — подстановка для пустого значения в тексте причины.
+func orNone(v string) string {
 	if v == "" {
 		return "(не указан)"
 	}

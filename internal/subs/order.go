@@ -56,8 +56,9 @@ func Order(live map[string]nikki.Proxy, group string, manifest []happ.Entry) []M
 	// содержит всё, что он знает: чужих провайдеров, DIRECT, REJECT и узлы,
 	// которые профиль отфильтровал из группы. Найти имя там и показать
 	// узел выбираемым — значит дать строку, по которой Select ответит 404.
-	inGroup := make(map[string]bool)
-	for _, p := range nikki.Members(live, group) {
+	members := nikki.Members(live, group)
+	inGroup := make(map[string]bool, len(members))
+	for _, p := range members {
 		inGroup[p.Name] = true
 	}
 
@@ -110,7 +111,7 @@ func Order(live map[string]nikki.Proxy, group string, manifest []happ.Entry) []M
 	// мимо демона, или запись прошла, а манифест сохранить не успели.
 	// Прятать реально доступный узел из-за устаревшего манифеста значит
 	// сделать список хуже, чем он был бы вовсе без манифеста.
-	for _, p := range nikki.Members(live, group) {
+	for _, p := range members {
 		if seen[p.Name] {
 			continue
 		}
