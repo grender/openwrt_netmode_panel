@@ -5,7 +5,7 @@ TARGET   := $(BUILDDIR)/$(BIN)
 GOFLAGS_TARGET := GOOS=linux GOARCH=arm64 CGO_ENABLED=0
 LDFLAGS        := -s -w
 
-.PHONY: all verify fmt vet test panel build size checks probe-check geometry clean help
+.PHONY: all verify fmt vet test api panel build size checks probe-check geometry clean help
 
 all: verify
 
@@ -24,6 +24,13 @@ vet:
 
 test:
 	@go test -race -count=2 ./...
+
+## api — перегенерирует клиентскую часть контракта (пути и таксономию
+## причин) из docs/api/openapi.yaml. Нужен node и разборщик YAML; результат
+## коммитится, поэтому в verify этой цели нет — там сверяется только
+## свежесть, и без node она печатает пропуск.
+api:
+	@node scripts/gen-api.mjs
 
 ## panel — собирает панель туда, откуда её забирает go:embed, и пишет
 ## манифест происхождения.
