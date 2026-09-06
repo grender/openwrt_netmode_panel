@@ -440,12 +440,20 @@ func (s *Server) match(got string) bool {
 
 func (s *Server) panelHandler() http.Handler {
 	sub, err := fs.Sub(Panel, "panel")
-	if err != nil {
-		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			writeErr(w, http.StatusInternalServerError, "internal", "панель не встроена")
-		})
+	if err == nil {
+		var st *panelStore
+		st, err = newPanelStore(sub)
+		if err == nil {
+			return st
+		}
 	}
-	return http.FileServer(http.FS(sub))
+	// Отдельная ветка, а не паника: панель — не единственное, ради чего
+	// демон запускают, и API обязан продолжать отвечать даже если её
+	// каталог оказался пуст.
+	s.logf("панель не встроена: %v", err)
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeErr(w, http.StatusInternalServerError, "internal", "панель не встроена")
+	})
 }
 
 // ─────────── обработчики ───────────
