@@ -9,7 +9,7 @@
 #
 # Почему это гвард, а не договорённость. Над allReasons в
 # internal/httpapi/upstreamhandler.go уже лежит подробный комментарий: «у
-# каждой новой строки отсюда есть обязательный хвост — перевод в web/i18n.js
+# каждой новой строки отсюда есть обязательный хвост — перевод в словарях панели
 # и enum в openapi». Комментарий, который просит человека не забыть, — это не
 # инвариант; здесь он не сработал на ПЕРВОМ ЖЕ добавлении. stale_draft приехал
 # только в Go, а openapi, обе локали панели, набор REASONS и мок остались на
@@ -23,8 +23,8 @@
 #   internal/httpapi/upstreamhandler.go   allReasons — ИСТОЧНИК ПРАВДЫ
 #            ↕
 #   docs/api/openapi.yaml                 enum у LastFail.reason
-#   web/i18n.js                           wifi.fail.<код>.{title,text}, ru и en
-#   web/app.js                            набор REASONS
+#   web/panel/src/i18n/{ru,en}.json       wifi.fail.<код>.{title,text}
+#   web/panel/src/api/reasons.gen.ts      набор UPSTREAM_REASONS (порождён)
 #   web/mock-server.mjs                   коды, которые мок умеет отдавать
 #
 # Go читается ПО ОБЪЯВЛЕНИЮ: из среза allReasons, а не из употреблений по
@@ -44,11 +44,19 @@
 set -eu
 
 SPEC=docs/api/openapi.yaml
-I18N=web/i18n.js
-APP=web/app.js
-MOCK=web/mock-server.mjs
+# I18N теперь два файла, по одному на локаль, — путь строит i18n_file().
+APP=web/panel/src/api/reasons.gen.ts
+MOCK=web/mock/fail-reasons.json
 
-for f in "$SPEC" "$I18N" "$APP" "$MOCK" \
+# Отсутствие ЛЮБОГО источника — отказ, а не пропуск.
+#
+# Это не перестраховка. Прежний check-routes.sh начинался с `if [ -f
+# web/app.js ]`, и в день, когда старая панель уехала, проверка «панель не
+# дёргает путь вне контракта» не упала бы — она МОЛЧА пропустилась бы.
+# Здесь ошибка того же рода стоила бы дороже: пять источников свелись бы
+# к трём, и таксономия разъехалась бы там, где её якобы стерегут.
+for f in "$SPEC" "$APP" "$MOCK" \
+	web/panel/src/i18n/ru.json web/panel/src/i18n/en.json \
 	internal/httpapi/upstreamhandler.go internal/httpapi/bridgehandler.go; do
 	[ -f "$f" ] || { echo "check-fail-reasons: нет $f" >&2; exit 1; }
 done
@@ -63,7 +71,7 @@ fail=0
 # $1 имя набора (для сообщений и имён временных файлов)
 # $2 файл Go            $3 имя среза в нём
 # $4 имя схемы openapi  $5 префикс ключей i18n
-# $6 имя набора в app.js $7 имя таблицы в моке
+# $6 имя набора в reasons.gen.ts $7 имя раздела в таблице мока
 # $8 пол разбора (MIN)
 #
 # Нижняя граница разбора у каждого набора своя. Приём взят у
@@ -137,7 +145,7 @@ check_set() {
 	# сам ключ «<префикс>.stale_draft.text».
 	for loc in ru en; do
 		if [ -z "$(i18n_slice "$loc")" ]; then
-			echo "check-fail-reasons [$name]: разбор сузился — в $I18N не нашлась локаль '$loc'" >&2
+			echo "check-fail-reasons [$name]: разбор сузился — файл локали пуст: '$loc'" >&2
 			echo "  файл переформатировали. Почините разбор в check-fail-reasons.sh." >&2
 			exit 1
 		fi
@@ -146,7 +154,7 @@ check_set() {
 
 		half=$(comm -3 "$tmp/$name-i18n-$loc-title" "$tmp/$name-i18n-$loc-text" | tr -d '\t')
 		if [ -n "$half" ]; then
-			echo "check-fail-reasons [$name]: в $I18N ($loc) у причины есть только половина пары title/text:" >&2
+			echo "check-fail-reasons [$name]: в словаре ($loc) у причины есть только половина пары title/text:" >&2
 			echo "$half" | sed 's/^/    /' >&2
 			echo "  панель напечатает недостающую половину как сам ключ. Допишите вторую строку." >&2
 			fail=1
@@ -154,17 +162,22 @@ check_set() {
 		comm -12 "$tmp/$name-i18n-$loc-title" "$tmp/$name-i18n-$loc-text" > "$tmp/$name-i18n-$loc"
 	done
 
-	# ─── 4. app.js: набор ───
+	# ─── 4. панель: ПОРОЖДЁННЫЙ набор ───
 	#
-	# Литерал переносится по строкам, поэтому берётся весь блок от `new Set([`
-	# до закрывающей скобки, а уже из него — строки в кавычках.
-	sed -n "/^const $APPSET = new Set(\[/,/\]);/p" "$APP" \
-		| sed -n "s/[^']*'\([a-z0-9_]*\)'/\1\n/gp" \
-		| sed -n 's/^\([a-z0-9_]\{1,\}\)$/\1/p' | sort -u > "$tmp/$name-app"
+	# Единственный из пяти источников, который порождается из контракта
+	# (scripts/gen-api.mjs), а не пишется руками. Он и не обязан быть
+	# независимой перекличкой: машинный код одинаков по построению, а
+	# разойтись с контрактом ему не даёт проверка свежести в check-routes.sh.
+	# Независимость держат Go, словари и мок — три рукописных источника.
+	sed -n "/^export const $APPSET = \[/,/^\] as const;/p" "$APP" \
+		| sed -n "s/^[[:space:]]*'\([a-z0-9_]*\)',$/\1/p" | sort -u > "$tmp/$name-app"
 
 	# ─── 5. mock: коды, которые мок умеет отдавать ───
-	sed -n "/^const $MOCKTAB = {/,/^};/p" "$MOCK" \
-		| sed -n "s/^[[:space:]]*[^:]*:[[:space:]]*'\([a-z0-9_]*\)'.*/\1/p" | sort -u > "$tmp/$name-mock"
+	#
+	# Таблица переехала из mock-server.mjs в JSON по той же причине, что и
+	# словари: разбор литерала в .mjs был контрактом на форматирование.
+	sed -n "/^	\"$MOCKTAB\": {$/,/^	}/p" "$MOCK" \
+		| sed -n 's/^[[:space:]]*"[^"]*":[[:space:]]*"\([a-z0-9_]*\)".*/\1/p' | sort -u > "$tmp/$name-mock"
 
 	# ─── запасной ключ unknown ───
 	#
@@ -179,7 +192,7 @@ check_set() {
 	# короче выглядит полным.
 	for loc in ru en; do
 		if ! grep -qx unknown "$tmp/$name-i18n-$loc"; then
-			echo "check-fail-reasons [$name]: в $I18N ($loc) нет запасного ключа $PREFIX.unknown (нужны и .title, и .text)" >&2
+			echo "check-fail-reasons [$name]: в словаре ($loc) нет запасного ключа $PREFIX.unknown (нужны и .title, и .text)" >&2
 			echo "  без него панель на незнакомом коде напечатает в интерфейсе сам ключ." >&2
 			fail=1
 		fi
@@ -198,8 +211,8 @@ check_set() {
 	#
 	# Мока здесь нет намеренно: он сценарный, его пол — ниже и отдельный.
 	for pair in "openapi:$SPEC (enum $SCHEMA.reason)" \
-		"i18n-ru:$I18N (локаль ru)" \
-		"i18n-en:$I18N (локаль en)" \
+		"i18n-ru:$(i18n_file ru)" \
+		"i18n-en:$(i18n_file en)" \
 		"app:$APP (набор $APPSET)"; do
 		src=${pair%%:*}
 		where=${pair#*:}
@@ -223,8 +236,8 @@ check_set() {
 
 	# ─── сверка: Go против каждого источника ───
 	for pair in "openapi:$SPEC, enum $SCHEMA.reason:    добавьте код в enum $SCHEMA.reason в $SPEC, с описанием в тоне соседей" \
-		"i18n-ru:$I18N, локаль ru:    добавьте '$PREFIX.<код>.title' и '.text' в локаль ru в $I18N" \
-		"i18n-en:$I18N, локаль en:    добавьте '$PREFIX.<код>.title' и '.text' в локаль en в $I18N" \
+		"i18n-ru:$(i18n_file ru):    добавьте \"$PREFIX.<код>.title\" и \".text\" в $(i18n_file ru)" \
+		"i18n-en:$(i18n_file en):    добавьте \"$PREFIX.<код>.title\" и \".text\" в $(i18n_file en)" \
 		"app:$APP, набор $APPSET:    добавьте код в набор $APPSET в $APP"; do
 		src=$(printf '%s' "$pair" | cut -d: -f1)
 		where=$(printf '%s' "$pair" | cut -d: -f2)
@@ -265,27 +278,40 @@ check_set() {
 
 # ─── разбор словаря панели ───
 
-i18n_slice() {
-	awk -v loc="$1" '
-		$0 ~ ("^\t" loc ": \\{$")  { on = 1; next }
-		on && /^\t[A-Za-z-]+: \{$/ { on = 0 }
-		on                         { print }
-	' "$I18N"
+# Локали лежат в ОТДЕЛЬНЫХ JSON-файлах, по одному на язык.
+#
+# Прежде это был один .js с блоками `\tru: {` и одинарными кавычками, то есть
+# контракт на ФОРМАТИРОВАНИЕ. Инструменты сборки такой контракт ломают: первый
+# же прогон форматтера — и гейт краснеет без единой продуктовой причины, а
+# гейт, краснеющий без причины, однажды глушат. У JSON одна форма кавычек,
+# нет значимых отступов и нет порядка: переформатировать его можно как угодно,
+# grep по ключу всё равно найдёт всё.
+#
+# Переводы при этом остаются РУКОПИСНЫМИ и порождать их из контракта нельзя:
+# это превратило бы гейт в сверку контракта с самим собой, и он позеленел бы
+# навсегда и бессмысленно.
+i18n_file() { echo "web/panel/src/i18n/$1.json"; }
+
+i18n_slice() { # $1 = локаль; печатает непустое, если файл существует и не пуст
+	f=$(i18n_file "$1")
+	[ -f "$f" ] || return 0
+	grep -c '"' "$f" | grep -qx 0 && return 0
+	cat "$f"
 }
 
 i18n_codes() { # $1 = локаль, $2 = суффикс ключа, $3 = префикс ключа
-	i18n_slice "$1" \
-		| sed -n "s/^[[:space:]]*'$3\.\([a-z0-9_]*\)\.$2':.*/\1/p" \
-		| sort -u
+	f=$(i18n_file "$1")
+	[ -f "$f" ] || return 0
+	sed -n "s/^[[:space:]]*\"$3\.\([a-z0-9_]*\)\.$2\":.*/\1/p" "$f" | sort -u
 }
 
 # ─── два прогона ───
 
 check_set upstream internal/httpapi/upstreamhandler.go allReasons \
-	LastFail wifi.fail REASONS UPSTREAM_REASON 10
+	LastFail wifi.fail UPSTREAM_REASONS upstream 10
 
 check_set bridge internal/httpapi/bridgehandler.go allBridgeReasons \
-	BridgeLastFail bridge.fail BRIDGE_REASONS BRIDGE_REASON 9
+	BridgeLastFail bridge.fail BRIDGE_REASONS bridge 9
 
 [ "$fail" -ne 0 ] && exit 1
 

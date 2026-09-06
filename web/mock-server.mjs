@@ -19,7 +19,16 @@ import url from 'node:url';
 import crypto from 'node:crypto';
 
 const HERE = path.dirname(url.fileURLToPath(import.meta.url));
-const WEB = HERE;
+// Корень статики. По умолчанию — собранная панель, а не исходники: до
+// сборки исходник и отгружаемое совпадали, теперь нет. У дев-сервера нет ни
+// минификации, ни вынесенного CSS, ни того же разбиения на чанки, и мерить
+// на нём геометрию значит мерить бандл, который никто не загрузит.
+//
+// MOCK_STATIC= (пусто) — не отдавать статику вовсе: так мок работает под
+// дев-сервером Vite, который отдаёт её сам и проксирует сюда только API.
+const WEB = process.env.MOCK_STATIC === undefined
+	? path.join(HERE, 'panel', 'dist')
+	: (process.env.MOCK_STATIC ? path.resolve(process.env.MOCK_STATIC) : '');
 const EX = path.join(HERE, '..', 'docs', 'api', 'examples');
 const PORT = Number(process.argv[2] || process.env.PORT || 8088);
 
@@ -580,7 +589,7 @@ const startJob = (kind, arg, label, sec, finish) => {
 		// Завершённый джоб держится JOB_KEEP_MS — столько же, сколько у демона.
 		// Здесь стояло 1500, и мок расходился с контрактом ровно в том окне,
 		// на которое опирается панель: «новый джоб успевает стартовать, пока
-		// в статусе лежит доигранный» (web/app.js, разбор засева) на моке
+		// в статусе лежит доигранный» (разбор засева в панели) на моке
 		// не воспроизводилось вовсе, а исход операции успевал уйти с экрана
 		// втрое раньше, чем уйдёт на роутере.
 		setTimeout(() => { if (mine()) state.job = null; }, JOB_KEEP_MS);
@@ -595,14 +604,10 @@ const startJob = (kind, arg, label, sec, finish) => {
 // Но выдумывать одиннадцатую нельзя: код, которого нет в allReasons, с
 // роутера не придёт никогда, и панель отрисовала бы на моке то, чего не
 // бывает. Подмножество стережёт scripts/check-fail-reasons.sh.
-const UPSTREAM_REASON = {
-	'upstream-fail-stale': 'stayed_on_previous',
-	'upstream-fail-nokey': 'not_associated',
-	'upstream-no-ipv4': 'no_ipv4',
-	'upstream-busy': 'busy',
-	'upstream-stale-draft': 'stale_draft',
-	'upstream-no-executor': 'executor_missing',
-};
+const FAIL_REASONS = JSON.parse(
+	await fs.readFile(path.join(HERE, 'mock', 'fail-reasons.json'), 'utf8'),
+);
+const UPSTREAM_REASON = FAIL_REASONS.upstream;
 
 // То же для сценариев проброса (ADR-0030). Отдельная таблица, а не общая:
 // наборы причин разные, и общая позволила бы моку отдать «no_ipv4» на
@@ -617,12 +622,7 @@ const BRIDGE_FIXTURES = {
 	'bridge-fail': 'bridge-fail.json',
 };
 
-const BRIDGE_REASON = {
-	'bridge-fail-iface': 'no_iface',
-	'bridge-fail-relay': 'relay_down',
-	'bridge-fail-install': 'install_failed',
-	'bridge-busy': 'busy',
-};
+const BRIDGE_REASON = FAIL_REASONS.bridge;
 
 // Текст job.error для моста — дословно из internal/httpapi/bridgehandler.go
 // (runBridge): панель и мок обязаны показывать одну и ту же историю про
@@ -1318,7 +1318,12 @@ const server = http.createServer(async (req, res) => {
 		}
 	}
 
-	// Статика.
+	// Статика. Пустой корень — не отдавать её вовсе: под дев-сервером Vite
+	// он отдаёт статику сам, а 404 отсюда честнее, чем чужой index.html.
+	if (!WEB) return send(res, 404, 'static disabled (MOCK_STATIC=)', 'text/plain; charset=utf-8');
+
+	// Версия в query отбрасывается: имя файла стабильное, а ?v= служит
+	// только кэшу браузера (ADR-0036).
 	let rel = u.pathname === '/' ? '/index.html' : u.pathname;
 	const file = path.join(WEB, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
 	if (!file.startsWith(WEB)) return send(res, 403, 'forbidden', 'text/plain');

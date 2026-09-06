@@ -32,23 +32,95 @@ else
 	exit 1
 fi
 
+SRC=web/panel
+
+# ─── версия node ───
+#
+# Мажор МИНИМАЛЬНЫЙ, а не точный (ADR-0035): точный превратил бы обновление
+# ноутбука в красный гейт без продуктовой причины. Две строки шелла вместо
+# абзаца в README — правило, которое проверяется, а не то, которое просят
+# помнить.
+want=$(cat "$SRC/.nvmrc")
+have=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+if [ "$have" -lt "$want" ]; then
+	echo "build-panel: нужен Node $want или новее, найден $have" >&2
+	exit 1
+fi
+
+# ─── зависимости ───
+#
+# Ставим ТОЛЬКО через npm ci и никогда через npm install: install умеет
+# двигать версии внутри диапазонов, и тогда «собери у себя» и «собери на
+# деплое» — две разные сборки, а расхождение между ними обнаруживается на
+# роутере (ADR-0035).
+#
+# Но гонять полную переустановку на КАЖДУЮ сборку незачем: npm ci сносит
+# node_modules целиком и лезет в сеть, то есть делает сборку панели
+# зависимой от интернета там, где зависимости уже стоят и ровно те.
+# Признак «те» — отпечаток лок-файла, положенный рядом ПОСЛЕ успешной
+# установки. Отпечаток, а не время файла: mtime врёт после git checkout,
+# и обе стороны вранья вредны — лишняя переустановка терпима, пропущенная
+# нет.
+STAMP="$SRC/node_modules/.netmoded-lock"
+want_lock=$(sha256 < "$SRC/package-lock.json")
+have_lock=$(cat "$STAMP" 2>/dev/null || echo none)
+
+if [ "$want_lock" != "$have_lock" ]; then
+	( cd "$SRC" && npm ci --silent )
+	printf '%s\n' "$want_lock" > "$STAMP"
+fi
+
+# ─── сборка ───
+
+( cd "$SRC" && npm run build )
+
+[ -f "$SRC/dist/index.html" ] || {
+	echo "build-panel: сборка не дала $SRC/dist/index.html" >&2
+	exit 1
+}
+
 # ─── входы ───
 #
-# Пока это тот же список, что копируется. Когда панель начнёт собираться,
-# список придёт из графа модулей бандлера, а не отсюда: глоб способен
-# промахнуться мимо файла, граф модулей — нет, он и ЕСТЬ то, что скомпилено.
-INPUTS="web/index.html web/app.js web/app.css web/i18n.js web/vendor/htm-preact-standalone.module.js"
+# Это ГЛОБ по дереву исходников плюс явный список файлов, которые в дерево
+# не входят, но пересборку меняют. Честно назвать это графом модулей нельзя:
+# Vite манифеста ВХОДОВ не отдаёт, отдаёт манифест выходов.
+#
+# Дыра у глоба ровно одна: импорт из-за пределов web/panel/. Такой файл в
+# список не попал бы, и свёртка входов стала бы ложью — артефакт зависел бы
+# от байтов, которых манифест не называет. Поэтому дыра закрыта проверкой
+# ниже, а не оговоркой в комментарии.
+INPUTS=$(
+	{
+		find "$SRC/src" -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.css' -o -name '*.json' \)
+		echo "$SRC/index.html"
+		echo "$SRC/vite.config.ts"
+		echo "$SRC/tsconfig.json"
+		echo "$SRC/package.json"
+		echo "$SRC/package-lock.json"
+	} | LC_ALL=C sort -u
+)
 
 for f in $INPUTS; do
 	[ -f "$f" ] || { echo "build-panel: нет входного файла $f" >&2; exit 1; }
 done
 
-# ─── копирование ───
+# Импорт наружу из web/panel/ запрещён: он оставил бы вход вне манифеста.
+# Три '../' и больше — это уже выход за web/panel/src/*/*, то есть за корень.
+outside=$(grep -rn "from '\.\./\.\./\.\./" "$SRC/src" --include='*.ts' --include='*.tsx' || true)
+if [ -n "$outside" ]; then
+	echo "build-panel: панель импортирует файл за пределами $SRC:" >&2
+	echo "$outside" | sed 's/^/    /' >&2
+	echo "  такой вход не попадёт в манифест, и происхождение станет ложью." >&2
+	exit 1
+fi
 
+# ─── артефакт ───
+#
+# Каталог сносится целиком перед копированием: `go:embed all:` увозит на
+# роутер ВСЁ, что найдёт, включая осиротевшие файлы от прошлой сборки.
 rm -rf "$DST"
-mkdir -p "$DST/vendor"
-cp web/index.html web/app.js web/app.css web/i18n.js "$DST/"
-cp web/vendor/htm-preact-standalone.module.js "$DST/vendor/"
+mkdir -p "$DST"
+cp -R "$SRC/dist/." "$DST/"
 
 # ─── манифест ───
 #

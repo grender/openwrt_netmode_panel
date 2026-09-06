@@ -35,7 +35,7 @@ LOCK=internal/httpapi/panel.lock.json
 # с формой артефакта — и меняться должен ОСОЗНАННО: это прямой наследник
 # растяжки «разбор дал N файлов, а в каталоге лежит M». Манифест, потерявший
 # записи, не имеет права совпасть с каталогом, потерявшим те же файлы.
-EXPECTED="index.html app.js app.css i18n.js vendor/htm-preact-standalone.module.js"
+EXPECTED="index.html assets/app.js assets/style.css"
 
 if command -v sha256sum >/dev/null 2>&1; then
 	sha256() { sha256sum | cut -d' ' -f1; }

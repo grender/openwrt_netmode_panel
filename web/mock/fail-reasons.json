@@ -1,0 +1,17 @@
+{
+	"_": "Какие причины провала мок умеет отдавать по сценарию. Вынесено из mock-server.mjs в JSON, чтобы scripts/check-fail-reasons.sh читал его так же, как словари панели: у JSON одна форма кавычек, нет значимых отступов и нет порядка — переформатировать его можно как угодно, а grep по ключу всё равно найдёт всё. Прежняя таблица жила литералом в .mjs и была контрактом на форматирование.",
+	"upstream": {
+		"upstream-fail-stale": "stayed_on_previous",
+		"upstream-fail-nokey": "not_associated",
+		"upstream-no-ipv4": "no_ipv4",
+		"upstream-busy": "busy",
+		"upstream-stale-draft": "stale_draft",
+		"upstream-no-executor": "executor_missing"
+	},
+	"bridge": {
+		"bridge-fail-iface": "no_iface",
+		"bridge-fail-relay": "relay_down",
+		"bridge-fail-install": "install_failed",
+		"bridge-busy": "busy"
+	}
+}

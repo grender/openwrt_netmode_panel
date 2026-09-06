@@ -54,7 +54,10 @@ const T_CDP = 5000;      // ответ на один вызов CDP
 const T_SETTLE = 8000;   // от навигации до устоявшихся метрик
 const T_MOCK = 15000;    // мок начал отвечать на /api/status
 const T_CHROME = 20000;  // Chrome открыл порт отладки
-const T_TOTAL = 180000;  // прогон целиком
+// 18 состояний на трёх ширинах против прежних 16, плюс раскрытия
+// аккордеона. Пошаговые бюджеты не трогаем — именно они называют
+// зависшую фазу, а общий лишь ограничивает прогон целиком.
+const T_TOTAL = 300000;  // прогон целиком
 
 // Ширины. 320 — узкий телефон, 390 — обычный, 1440 — десктоп: брейкпоинт
 // 900px переносит слот джоба в .side и раскладывает .wrap в три колонки,
@@ -62,175 +65,195 @@ const T_TOTAL = 180000;  // прогон целиком
 const WIDTHS = [320, 390, 1440];
 
 // Состояния. scenario — имя из SCENARIOS мока (web/mock-server.mjs), rm —
-// эмуляция prefers-reduced-motion: reduce, tab — вкладка панели (хеш адреса):
-// после разделения на вкладки одна и та же фикстура рисует РАЗНУЮ разметку
-// в зависимости от хеша, и состояние без вкладки перестало быть состоянием.
+// эмуляция prefers-reduced-motion: reduce, hash — что развёрнуто в аккордеоне
+// на узком экране (продуктовая возможность: #uplink разворачивает раздел,
+// #all — все).
 //
-// Пары «покой/джоб» повторяются с rm намеренно: в @media
-// (prefers-reduced-motion: reduce) панель гасит анимации (app.css), и если
-// правило заодно тронет размеры, слот перестанет держать высоту ровно у тех
+// Вкладок больше нет: панель — один экран, на широком сеткой, на узком
+// аккордеоном. Поэтому исчез и признак tab, а вместо него появился hash:
+// на узком экране свёрнутая секция не измеряется никак, и ошибки переполнения
+// прятались бы в ней от C2 — ровно тот слепой угол, который проект уже
+// однажды оплатил.
+//
+// Пары «покой/занята» повторяются с rm намеренно: в @media
+// (prefers-reduced-motion: reduce) панель гасит анимации, и если правило
+// заодно тронет размеры, слот перестанет держать высоту ровно у тех
 // владельцев, которые попросили меньше движения.
-//
-// job-fail-* мерятся на вкладке bypass: блок .note.err с текстом ошибки
-// режима теперь живёт там (web/app.js), и «карточки сдвигаются ровно на его
-// высоту» — объявленное поведение именно этой вкладки. single-bypass /
-// job-bypass — та же пара покой/джоб, но для bypass: слот общий, а карточки
-// под ним у каждой вкладки свои, и держать высоту он обязан на обеих.
 const STATES = [
-	{ key: 'single', scenario: 'single', tab: 'wifi', rm: false },
-	{ key: 'job', scenario: 'job', tab: 'wifi', rm: false },
-	{ key: 'single-bypass', scenario: 'single', tab: 'bypass', rm: false },
-	{ key: 'job-bypass', scenario: 'job', tab: 'bypass', rm: false },
-	{ key: 'job-fail-short', scenario: 'job-fail-short', tab: 'bypass', rm: false },
-	{ key: 'job-fail-long', scenario: 'job-fail-long', tab: 'bypass', rm: false },
-	{ key: 'upstream-fail-seen', scenario: 'upstream-fail-seen', tab: 'wifi', rm: false },
-	{ key: 'upstream-fail-long', scenario: 'upstream-fail-long', tab: 'wifi', rm: false },
-	{ key: 'upstream-job-long', scenario: 'upstream-job-long', tab: 'wifi', rm: false },
-	{ key: 'upstream-long-list', scenario: 'upstream-long-list', tab: 'wifi', rm: false },
-	{ key: 'ambiguous', scenario: 'ambiguous', tab: 'wifi', rm: false },
-	// База сравнения для длинных состояний. Само по себе это состояние ничего
-	// не проверяет — оно нужно C3/C4 (см. BASE ниже).
-	{ key: 'single-long', scenario: 'single-long', tab: 'wifi', rm: false },
-	// Вкладка проброса: своя пара покой/джоб не нужна (джобы моста мок
-	// заводит только по нажатию, а кликов здесь нет по устройству оснастки),
-	// но C2 и C5 обязаны выполняться и на ней — карточка несёт строки
-	// диагностики с адресами, а они на 320px переносятся.
-	{ key: 'bridge-on', scenario: 'bridge-on', tab: 'bridge', rm: false },
-	{ key: 'bridge-off', scenario: 'bridge-off', tab: 'bridge', rm: false },
-	{ key: 'single-rm', scenario: 'single', tab: 'wifi', rm: true },
-	{ key: 'job-rm', scenario: 'job', tab: 'wifi', rm: true },
+	{ key: 'calm', scenario: 'single', hash: 'all', rm: false },
+	{ key: 'busy', scenario: 'job', hash: 'all', rm: false },
+	{ key: 'calm-rm', scenario: 'single', hash: 'all', rm: true },
+	{ key: 'busy-rm', scenario: 'job', hash: 'all', rm: true },
+	// Провал операции: слот показывает его на месте «занята».
+	{ key: 'job-fail-short', scenario: 'job-fail-short', hash: 'all', rm: false },
+	{ key: 'job-fail-long', scenario: 'job-fail-long', hash: 'all', rm: false },
+	// Блок провала переключения сети — под карточкой аплинка.
+	{ key: 'upstream-fail-seen', scenario: 'upstream-fail-seen', hash: 'all', rm: false },
+	{ key: 'upstream-fail-long', scenario: 'upstream-fail-long', hash: 'all', rm: false },
+	{ key: 'upstream-job-long', scenario: 'upstream-job-long', hash: 'all', rm: false },
+	{ key: 'upstream-long-list', scenario: 'upstream-long-list', hash: 'all', rm: false },
+	{ key: 'ambiguous', scenario: 'ambiguous', hash: 'all', rm: false },
+	{ key: 'single-long', scenario: 'single-long', hash: 'all', rm: false },
+	// Полоса аномалии над карточками: включённый проброс с молчащим шлюзом.
+	{ key: 'bridge-on', scenario: 'bridge-on', hash: 'all', rm: false },
+	{ key: 'bridge-off', scenario: 'bridge-off', hash: 'all', rm: false },
+	// Аккордеон: свёрнуто всё и раскрыт один раздел. На широком экране hash
+	// не значит ничего — там секции раскрыты всегда, — и это проверяет C8.
+	{ key: 'acc-closed', scenario: 'single', hash: '', rm: false },
+	{ key: 'acc-uplink', scenario: 'single', hash: 'uplink', rm: false },
+	{ key: 'acc-bridge', scenario: 'bridge-on', hash: 'bridge', rm: false },
 ];
 
-const REST = 'single';
-const JOB = 'job';
+const REST = 'calm';
+const BUSY = 'busy';
 
-// Состояния, где на экране есть блок провала ПЕРЕКЛЮЧЕНИЯ ВНЕШНЕЙ СЕТИ
-// (UpstreamFailNote). Только они годятся под C3/C4, и это не сужение
-// критерия, а его единственное осмысленное прочтение.
-//
-// UpstreamFailNote стоит НИЖЕ карточки Wi-Fi (web/app.js: «Ниже WifiCard,
-// а не выше: причина провала обязана стоять рядом с тем местом, где
-// нажимали») и на вкладке wifi замыкает сетку, поэтому карточку он не
-// двигает вовсе — это C4, — а низ .wrap растит обязательно, и это C3.
-//
-// job-fail-short/long сюда не входят: их .note.err.full живёт на вкладке
-// bypass ниже баннера режимов и двигает карточки под собой. Это объявленное
-// поведение (web/README.md, «Критерий», пункт 2: число больше ровно на
-// высоту блока с текстом ошибки), а не регрессия, и требовать от него C4
-// значило бы требовать отмены принятого решения.
+// Состояния с блоком провала ПЕРЕКЛЮЧЕНИЯ ВНЕШНЕЙ СЕТИ. Только они годятся
+// под C3′/C4′, и это не сужение критерия, а его единственное осмысленное
+// прочтение: блок стоит НИЖЕ карточки аплинка и потому не может её двигать.
 const UPSTREAM_FAIL = ['upstream-fail-seen', 'upstream-fail-long'];
 
-// С ЧЕМ сравнивать каждое из них. Не с REST для всех подряд — и это не
-// удобство, а условие того, чтобы C3/C4 вообще что-нибудь измеряли.
+// С ЧЕМ сравнивать. Таблица сохраняется дословно вместе с доводом — это
+// самая ценная мысль файла.
 //
 // Критерий вида «А отличается от Б» осмыслен, только когда А и Б различаются
-// РОВНО ОДНИМ признаком — тем, который он проверяет (наличием блока провала).
-// upstream-fail-long отличается от single двумя: блоком провала И длиной ssid
-// в шапке (ap.ssid) и баннере (configured_ssid). Длинный ssid переносится на
-// вторую строку и растит то, что стоит НАД карточками, — и C4 падал на этом
-// росте, объявляя дефектом вёрстку, которой не касался.
-//
-// Доказательства, что дело было в длине, а не в блоке провала, два, и они
-// в самом отчёте:
-//   • у upstream-fail-long Δ card1Top в точности равна Δ wifiTop (52 на 320px,
-//     64 на 390px) — сдвинулись обе карточки одинаково, то есть выросло что-то
-//     над ними, а блок провала стоит НИЖЕ обеих и так двигать их не умеет;
-//   • контроль: upstream-fail-seen — тот же блок провала, но ssid короткий —
-//     совпадал с single ТОЧНО на всех трёх ширинах.
-// Отсюда и правило: длинные состояния сравниваем с длинной базой, короткие —
-// с короткой. single-long — это status-upstream-fail-long.json с last_fail:
-// null и тем же списком сетей, то есть та же страница минус ровно блок
-// провала.
+// РОВНО ОДНИМ признаком — тем, который он проверяет. upstream-fail-long
+// отличался от базы двумя: блоком провала И длиной ssid в шапке. Длинный
+// ssid переносил шапку на вторую строку и растил то, что стоит НАД
+// карточками, — и критерий падал на росте, которого блок провала не вызывал.
+// Отсюда правило: длинные состояния сравниваем с длинной базой, короткие —
+// с короткой.
 const BASE = {
 	'upstream-fail-seen': REST,
 	'upstream-fail-long': 'single-long',
 };
 
+// Объявленные движения. Пусто — значит ни одно состояние не имеет права
+// двигать якоря относительно своей базы.
+//
+// Список ЗАКРЫТЫЙ и работает в обе стороны, как UNIMPLEMENTED в
+// check-routes.sh: запись, движения не вызывающая, тоже отказ. Иначе
+// освобождение переживает свою причину и молча гасит критерий — ровно то,
+// чем было прежнее «job-fail-* не подпадают под C4».
+const MOVES = {};
+
 // ─────────── что именно меряем ───────────
 //
 // Один Runtime.evaluate на замер: два вызова подряд разделены сетью и
 // событийным циклом страницы, и между ними успевает пройти тик опроса
-// (POLL_MS=1000 в app.js) — то есть половина чисел оказалась бы от одной
-// разметки, половина от следующей.
+// (1 Гц) — половина чисел оказалась бы от одной разметки, половина от
+// следующей.
 //
 // СТРУКТУРНЫЕ АССЕРТЫ ИДУТ ДО ЗАМЕРА и возвращают ok:false с текстом. Без них
-// скрипт зелен оттого, что померил не то: на первом кадре в .wrap лежат три
-// карточки-скелетона (App(), ветка !status), и все числа снялись бы с
-// загрузочного экрана.
+// скрипт зелен оттого, что померил не то: на первом кадре в сетке лежит
+// карточка-скелетон, и все числа снялись бы с загрузочного экрана.
 //
-// Адресация карточек — ТОЛЬКО индексом в querySelectorAll. :nth-of-type здесь
-// врёт: он считает по типу элемента среди братьев, а перед карточками в .wrap
-// стоят div.note (провал джоба) и div.note (SelectionNote) — тоже DIV. Номер
-// поехал бы, причём в разных состояниях по-разному.
-const MEASURE_FOR = (tab) => `(() => {
-	const tab = ${JSON.stringify(tab)};
-	// Сначала — что открыта НУЖНАЯ вкладка: хеш из адреса мог не примениться
-	// (битый tabFromHash), и тогда все числа снялись бы с чужой разметки.
-	const pressed = document.querySelector('.tabs button[aria-pressed="true"]');
-	if (!pressed) return { ok: false, why: 'нет нажатой кнопки вкладки (.tabs)' };
-	const cards = Array.from(document.querySelectorAll('.wrap .card'));
-	if (cards.length < 1) return { ok: false, why: 'в .wrap нет ни одной карточки' };
-	const head = (c) => { const h = c.querySelector('h2'); return h ? h.textContent.trim() : '(нет h2)'; };
-	// Структурный якорь у каждой вкладки свой: на wifi первой (и единственной)
-	// карточкой обязана быть карточка внешней сети, на bypass последней —
-	// подписка. Совпадение якоря доказывает и вкладку, и что статус доехал.
-	if (tab === 'wifi') {
-		const wifiH = head(cards[0]);
-		if (!/Внешняя сеть|Uplink network/.test(wifiH)) {
-			return { ok: false, why: 'карточка [0] не про Wi-Fi, заголовок: ' + JSON.stringify(wifiH) };
-		}
-	} else if (tab === 'bridge') {
-		const bH = head(cards[0]);
-		if (!/Проброс|bridge/i.test(bH)) {
-			return { ok: false, why: 'карточка [0] не про проброс, заголовок: ' + JSON.stringify(bH) };
-		}
-		// Скелетон значит, что состояние ещё едет: числа снялись бы с
-		// заглушки, а не с карточки.
-		if (cards[0].querySelector('.skel')) {
-			return { ok: false, why: 'карточка проброса ещё в скелетоне' };
-		}
-	} else {
-		const subH = head(cards[cards.length - 1]);
-		if (!/Подписка|Subscription/.test(subH)) {
-			return { ok: false, why: 'последняя карточка не про подписку, заголовок: ' + JSON.stringify(subH) };
-		}
+// ОБРАЩЕНИЕ К DOM — ТОЛЬКО через data-part, data-anchor и состояния ARIA.
+// Ни классов, ни регекспов по заголовкам, и оба запрета не про вкус:
+//   • классы под бандлером принадлежат сборке, а не разметке;
+//   • регексп по заголовку («Внешняя сеть|Uplink network») — это структурное
+//     утверждение, привязанное к ЛОКАЛИ: оно ломается в день, когда кто-то
+//     улучшит русский текст, и падение будет означать не то, что написано.
+// data-part — тождество («это баннер»), data-anchor — участие в критерии
+// («это не должно двигаться»). Два атрибута, а не один: иначе новый якорь
+// требовал бы переименования части.
+const MEASURE = `(() => {
+	const q = (s) => document.querySelector(s);
+	const qa = (s) => Array.from(document.querySelectorAll(s));
+
+	const hero = q('[data-part="hero"]');
+	if (!hero) return { ok: false, why: 'нет баннера [data-part=hero]' };
+
+	const slot = q('[data-part="hero-status"]');
+	if (!slot) return { ok: false, why: 'нет слота [data-part=hero-status]' };
+	const st = slot.dataset.status;
+	if (!['busy', 'result', 'calm'].includes(st)) {
+		return { ok: false, why: 'у слота неизвестное состояние: ' + JSON.stringify(st) };
 	}
-	const slot = document.querySelector('.jobstrip .slot');
-	if (!slot) return { ok: false, why: 'нет общего слота (.jobstrip .slot)' };
+
+	const grid = q('[data-part="grid"]');
+	if (!grid) return { ok: false, why: 'нет сетки [data-part=grid]' };
+
+	const cards = qa('[data-part="card"]');
+	if (cards.length < 1) return { ok: false, why: 'в сетке нет ни одной карточки' };
+
+	// Разложено, но не оформлено — новая опасность, которую внесла сборка.
+	// CSS теперь отдельным файлом, и кадр может быть структурно готов, а
+	// стилей ещё нет: settle() с его двумя одинаковыми снимками вернул бы
+	// такой кадр не поморщившись, а числа с неоформленной страницы — мусор.
+	const heroBg = getComputedStyle(hero).backgroundColor;
+	if (!heroBg || heroBg === 'rgba(0, 0, 0, 0)' || heroBg === 'transparent') {
+		return { ok: false, why: 'стили ещё не применились (фон баннера прозрачен)' };
+	}
+
+	// C7 — пустых областей не бывает.
+	//
+	// Это перевод задокументированной ловушки из протокола в гейт.
+	// Совпадающие числа НЕ ловят пустую дыру: призрак держит высоту, число
+	// не шелохнётся, а место под переключателем окажется белым. Раньше на
+	// это был ответ «посмотрите глазами». Теперь — проверка.
+	const filled = (el) => {
+		if (!el) return false;
+		if ((el.textContent || '').trim().length === 0) return false;
+		return Array.from(el.children).some((c) => {
+			const r = c.getBoundingClientRect();
+			return r.width > 0 && r.height > 0;
+		}) || (el.getBoundingClientRect().height > 0);
+	};
+	const empties = [];
+	if (!filled(slot.querySelector(':scope > *:not(.ghost)'))) empties.push('hero-status');
+	const problem = q('[data-part="problem"]');
+	if (problem && !filled(problem)) empties.push('problem');
+	for (const c of cards) if (!filled(c)) empties.push('card:' + (c.dataset.card || '?'));
+
+	// Аккордеон: aria-expanded обязано согласовываться с видимостью панели.
+	// Открытая по ARIA, но нулевой высоты — настоящая тихая ошибка, которую
+	// не видно ни глазами (панель просто пуста), ни по числам.
+	const accHeads = qa('[data-part="accordion-item"]');
+	const accLies = [];
+	for (const h of accHeads) {
+		const open = h.getAttribute('aria-expanded') === 'true';
+		const id = h.getAttribute('aria-controls');
+		const panel = id ? document.getElementById(id) : null;
+		const shown = !!panel && panel.getBoundingClientRect().height > 0;
+		if (open !== shown) accLies.push((h.textContent || '').trim().slice(0, 24) + ': aria=' + open + ', видно=' + shown);
+	}
 
 	const top = (el) => el.getBoundingClientRect().top;
-	const row = cards[0].querySelector('.row');
-	const wrap = document.querySelector('.wrap:not(.toasts)');
-	if (!wrap) return { ok: false, why: 'нет .wrap с карточками' };
 
-	// Узлы, у которых содержимое шире их самих. Это НЕ критерий, а число
-	// в отчёт: перенос кнопок в .row объявлен осознанной ценой (app.css),
-	// запрещать его нельзя — но и оставлять неизмеренным нельзя, иначе цена
-	// растёт молча. Виновника C2 ищет отдельный список ниже: этот набор
-	// селекторов фиксирован ради сравнимости и до баннера не достаёт вовсе.
-	const SEL = '.note, .note h3, .note p, .hint, .card, .row, .top-id, .sheet';
+	// Якоря. Обобщение прежней «первой карточки»: тот замер видел сдвиг
+	// только у card[0], и прыжок чего угодно ниже был ему невидим.
+	const anchors = qa('[data-anchor]').map((el) => ({
+		id: el.getAttribute('data-anchor'),
+		top: top(el),
+	}));
+	if (anchors.length < 2) {
+		return { ok: false, why: 'якорей [data-anchor] нашлось ' + anchors.length + ', ожидалось не меньше двух' };
+	}
+
 	const desc = (el) => {
+		const part = el.getAttribute('data-part');
+		if (part) return '[data-part=' + part + ']';
 		const sel = el.tagName.toLowerCase() + Array.from(el.classList).map((c) => '.' + c).join('');
-		const same = Array.from(document.querySelectorAll(sel));
+		const same = qa(sel);
 		const i = same.indexOf(el);
 		return sel + (same.length > 1 ? '[' + i + ']' : '');
 	};
-	const overflowers = Array.from(document.querySelectorAll(SEL))
+
+	// Узлы, у которых содержимое шире их самих. Это НЕ критерий, а число
+	// в отчёт: перенос кнопок в строке объявлен осознанной ценой, запрещать
+	// его нельзя — но и оставлять неизмеренным нельзя, иначе цена растёт
+	// молча. Набор фиксирован ради сравнимости от прогона к прогону и
+	// выражен через data-part, а не через классы оформления.
+	const SEL = '[data-part=card], [data-part=hero], [data-part=problem], [data-part=confirm], .row, .note, .hint';
+	const overflowers = qa(SEL)
 		.filter((el) => el.scrollWidth > el.clientWidth + 1)
 		.map((el) => ({ node: desc(el), scrollW: el.scrollWidth, clientW: el.clientWidth,
 			text: (el.textContent || '').trim().slice(0, 48) }));
 
-	// Кто именно уносит документ вправо. Отдельный список, а не расширенный
-	// overflowers, и вот почему: overflowers смотрит на фиксированный набор
-	// селекторов и даёт ЧИСЛО В ОТЧЁТ, сравнимое от прогона к прогону. А C2
-	// про весь документ, и виновник может не иметь к этому набору никакого
-	// отношения — так и вышло: первый же красный прогон нашёл переполнение
-	// в баннере (.slot/.job), которого ни один из тех селекторов не видит.
-	// Критерий, который умеет падать, но не умеет назвать узел, чинить нечем.
-	//
-	// Признак «уносит» — собственная рамка ЗА краем окна (rect.right), а не
-	// scrollWidth: у html и body scrollWidth тоже больше clientWidth, но они
-	// лишь наследуют чужую беду. Оставляем самые глубокие: их предки в списке
+	// Кто именно уносит документ вправо. Механика сохранена дословно: это
+	// лучшая часть прежнего файла. Признак «уносит» — собственная рамка за
+	// краем окна, а не scrollWidth: у html и body он тоже больше clientWidth,
+	// но они лишь наследуют чужую беду. Оставляем самые глубокие: их предки
 	// — тот же дефект, пересказанный на уровень выше.
 	const win = window.innerWidth;
 	const all = Array.from(document.body.querySelectorAll('*'));
@@ -243,9 +266,8 @@ const MEASURE_FOR = (tab) => `(() => {
 	};
 	const bleeders = [...outside]
 		.filter((el) => !Array.from(el.querySelectorAll('*')).some((c) => outside.has(c)))
-		// Сначала узлы С ТЕКСТОМ: «span.blink «Переключаю на Beeline_…»»
-		// называет причину, а «div.bar» — только следствие, уехавшее вместе
-		// с ним. Дальше — по дальности заезда за край.
+		// Сначала узлы С ТЕКСТОМ: они называют причину, а пустая коробка —
+		// только следствие, уехавшее вместе с ней.
 		.sort((a, b) => {
 			const ta = (a.textContent || '').trim() ? 0 : 1;
 			const tb = (b.textContent || '').trim() ? 0 : 1;
@@ -254,25 +276,28 @@ const MEASURE_FOR = (tab) => `(() => {
 		.map((el) => {
 			const r = el.getBoundingClientRect();
 			return {
-				node: desc(el),
-				right: Math.round(r.right),
-				width: Math.round(r.width),
-				inside: shell(el),
-				text: (el.textContent || '').trim().slice(0, 48),
+				node: desc(el), right: Math.round(r.right), width: Math.round(r.width),
+				inside: shell(el), text: (el.textContent || '').trim().slice(0, 48),
 			};
 		});
 
 	return {
 		ok: true,
-		card1Top: top(cards[0]),
-		lastTop: top(cards[cards.length - 1]),
-		// Низ сетки, а не позиция «карточки под блоком провала»: на вкладке
-		// wifi блок провала переключения — ПОСЛЕДНИЙ элемент сетки, ниже него
-		// карточек нет, и доказать его физическое появление (C3) может только
-		// рост низа .wrap.
-		wrapBottom: wrap.getBoundingClientRect().bottom,
+		slotStatus: st,
+		anchors,
+		card1Top: cards[0] ? top(cards[0]) : null,
+		gridBottom: grid.getBoundingClientRect().bottom,
+		// Высота БАННЕРА, а не слота: резервируется теперь именно она, и
+		// только под «занята» (C5′).
+		heroH: hero.getBoundingClientRect().height,
 		slotH: slot.getBoundingClientRect().height,
-		rowH: row ? row.getBoundingClientRect().height : null,
+		scrollH: document.documentElement.scrollHeight,
+		// Сколько дорожек в сетке — так проверяется, что перелом раскладки
+		// вообще что-то делает (C8). Прежде этого не доказывало ничто.
+		gridTracks: getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length,
+		accordions: accHeads.length,
+		accLies,
+		empties,
 		docW: document.documentElement.scrollWidth,
 		winW: win,
 		overflowers,
@@ -452,13 +477,13 @@ const evalJS = async (cdp, expr) => {
 // дорисовывается волнами: сперва статус (карточки режима), потом
 // /api/wifi/networks и /api/logs — между волнами разметка выглядит
 // законченной, но числа ещё поедут.
-const settle = async (cdp, tab) => {
+const settle = async (cdp) => {
 	phase.what = 'стабилизация метрик';
 	const till = Date.now() + T_SETTLE;
 	let prevJSON = '';
 	let last = null;
 	while (Date.now() < till) {
-		const m = await evalJS(cdp, MEASURE_FOR(tab));
+		const m = await evalJS(cdp, MEASURE);
 		const j = JSON.stringify(m);
 		if (m.ok && j === prevJSON) return m;
 		prevJSON = j;
@@ -478,8 +503,8 @@ const padL = (s, n) => String(s).padStart(n);
 
 const printTable = (results) => {
 	const cols = [
-		['card1Top', 9], ['lastTop', 9], ['wrapBot', 9], ['slotH', 7],
-		['rowH', 7], ['docW', 6], ['winW', 6], ['overflow', 8],
+		['card1Top', 9], ['gridBot', 9], ['heroH', 8], ['slotH', 7],
+		['tracks', 7], ['acc', 5], ['docW', 6], ['winW', 6], ['overflow', 9],
 	];
 	for (const w of WIDTHS) {
 		console.log(`\n── ширина ${w}px ` + '─'.repeat(58));
@@ -487,8 +512,9 @@ const printTable = (results) => {
 		for (const st of STATES) {
 			const m = results[w][st.key];
 			const cells = [
-				num(m.card1Top), num(m.lastTop), num(m.wrapBottom), num(m.slotH),
-				num(m.rowH), String(m.docW), String(m.winW), String(m.overflowers.length),
+				num(m.card1Top), num(m.gridBottom), num(m.heroH), num(m.slotH),
+				String(m.gridTracks), String(m.accordions),
+				String(m.docW), String(m.winW), String(m.overflowers.length),
 			];
 			console.log(pad(st.key, 20) + cells.map((v, i) => padL(v, cols[i][1])).join(''));
 		}
@@ -529,18 +555,60 @@ const printBleeders = (results) => {
 const checkCriteria = (results) => {
 	const bad = [];
 	const R = (w, s) => results[w][s];
+	const NARROW = WIDTHS.filter((w) => w < 900);
+	const WIDE = WIDTHS.filter((w) => w >= 900);
 
-	// C1. Существующий критерий проекта, сохраняется дословно: слот держит
-	// высоту призраком из той же разметки, поэтому равенство обязано быть
-	// ТОЧНЫМ. Расхождение в 1px означает, что призрак собран не из того, что
-	// замещает, — то есть прыжок вернётся, просто уменьшенный.
-	// Пара для bypass добавлена после разделения на вкладки: слот один, но
-	// карточки под ним у каждой вкладки свои, и держать их обязан на обеих.
+	// Сравнение якорей: одинаковы ли позиции ВСЕХ якорей между двумя
+	// состояниями. Возвращает список расхождений.
+	const anchorDiff = (a, b) => {
+		const ma = new Map(a.anchors.map((x) => [x.id, x.top]));
+		const mb = new Map(b.anchors.map((x) => [x.id, x.top]));
+		const out = [];
+		for (const [id, ta] of ma) {
+			if (!mb.has(id)) { out.push(`${id}: есть в первом, нет во втором`); continue; }
+			const tb = mb.get(id);
+			if (ta !== tb) out.push(`${id}: ${num(ta)} ≠ ${num(tb)} (Δ${num(tb - ta)})`);
+		}
+		for (const id of mb.keys()) if (!ma.has(id)) out.push(`${id}: нет в первом, есть во втором`);
+		return out;
+	};
+
+	// C1′ — анкерная устойчивость. Обобщение прежнего C1 и строго сильнее
+	// него: тот смотрел на верх ПЕРВОЙ карточки, и прыжок чего угодно ниже
+	// был ему невидим. Точное равенство, а не «примерно»: расхождение в
+	// пиксель означает, что призрак собран не из того, что замещает, — то
+	// есть прыжок вернётся, просто уменьшенный.
+	//
+	// СРАВНИВАЮТСЯ НЕ ВСЕ ЯКОРЯ, и это не послабление. Пара «покой/занята» —
+	// это два РАЗНЫХ сценария мока, и различаются они не только идущей
+	// операцией: в одном движок отвечает списком из тридцати трёх узлов,
+	// в другом лежит и рисует скелетон. Позиции разделов НИЖЕ первого
+	// зависят от этих данных, и требовать от них совпадения значит мерить
+	// фикстуру, а не вёрстку — та самая ошибка «А отличается от Б двумя
+	// признаками», которая однажды уже заставила завести таблицу BASE.
+	//
+	// Поэтому здесь сравнивается ровно то, до чего изменение состояния
+	// панели физически достаёт: кнопки режима (они НАД слотом, и двигать их
+	// не может ничто) и заголовок первого раздела (он сразу под баннером,
+	// и двигается тогда и только тогда, когда баннер вырос). Всё, что ниже,
+	// проверяет C5′ через высоту баннера — единственным числом и без
+	// зависимости от данных.
+	const STABLE = (a) => /^mode-|^sec-uplink$/.test(a);
+	const PAIRS = [
+		[REST, BUSY],
+		[REST + '-rm', BUSY + '-rm'],
+	];
 	for (const w of WIDTHS) {
-		for (const [a, b] of [[REST, JOB], [REST + '-rm', JOB + '-rm'],
-			['single-bypass', 'job-bypass']]) {
-			if (R(w, a).card1Top !== R(w, b).card1Top) {
-				bad.push(`C1: ${w}px — card1Top ${a}=${num(R(w, a).card1Top)} ≠ ${b}=${num(R(w, b).card1Top)}`);
+		for (const [a, b] of PAIRS) {
+			const key = `${a}→${b}`;
+			const diff = anchorDiff(R(w, a), R(w, b)).filter((d) => STABLE(d.split(':')[0]));
+			if (diff.length && !MOVES[key]) {
+				bad.push(`C1′: ${w}px, ${key} — якоря сдвинулись: ${diff.join('; ')}`);
+			}
+			if (!diff.length && MOVES[key]) {
+				// Освобождение, пережившее свою причину, — это молча
+				// погашенный критерий. Та же растяжка, что у UNIMPLEMENTED.
+				bad.push(`MOVES: ${w}px, ${key} объявлено движущимся, но якоря не сдвинулись — уберите запись`);
 			}
 		}
 	}
@@ -551,8 +619,6 @@ const checkCriteria = (results) => {
 		for (const st of STATES) {
 			const m = R(w, st.key);
 			if (m.docW > m.winW) {
-				// Три узла, не все: остальные — тот же дефект, пересказанный
-				// соседями по коробке. Полный список печатается таблицей выше.
 				const top3 = m.bleeders.slice(0, 3)
 					.map((b) => `${b.node} до ${b.right} внутри ${b.inside}${b.text ? ' «' + b.text + '»' : ''}`);
 				const rest = m.bleeders.length - top3.length;
@@ -564,52 +630,130 @@ const checkCriteria = (results) => {
 		}
 	}
 
-	// C3. Доказательство, что замер физически видит появление блока провала.
-	// Точка — низ .wrap, а не карточка под блоком: на вкладке wifi блок
-	// провала переключения стоит ПОСЛЕДНИМ в сетке, карточек ниже нет, и
-	// расти от его появления умеет только низ сетки.
+	// C3′. Доказательство, что замер физически ВИДИТ появление блока провала.
+	// Точка — низ сетки: блок стоит последним, карточек ниже нет, и расти от
+	// его появления умеет только он.
 	for (const w of WIDTHS) {
 		for (const s of UPSTREAM_FAIL) {
 			const b = BASE[s];
-			if (!(R(w, s).wrapBottom > R(w, b).wrapBottom)) {
-				bad.push(`C3: ${w}px — wrapBottom ${s}=${num(R(w, s).wrapBottom)} не больше ${b}=${num(R(w, b).wrapBottom)}`);
+			if (!(R(w, s).gridBottom > R(w, b).gridBottom)) {
+				bad.push(`C3′: ${w}px — gridBottom ${s}=${num(R(w, s).gridBottom)} не больше ${b}=${num(R(w, b).gridBottom)}`);
 			}
 		}
 	}
 
-	// C4. И при этом первую карточку блок провала не двигает.
+	// C4′. Измерять вместо освобождения от проверки.
 	//
-	// Сравнение идёт с BASE[s], а не с REST: база обязана совпадать
-	// с состоянием по ДЛИНЕ ssid, иначе разность считает две вещи сразу
-	// и не измеряет ни одной — разбор в комментарии к BASE выше.
+	// Прежний C4 требовал «первая карточка не сдвинулась» и выводил из-под
+	// себя целый класс состояний (job-fail-*), потому что там она сдвигается
+	// законно. Освобождение — слепое пятно: оно не отличает «сдвинулось
+	// объявленное» от «сдвинулось объявленное И заодно что-то выросло».
+	//
+	// Блок провала переключения встаёт МЕЖДУ разделом аплинка и остальными.
+	// Значит правильное утверждение не «ничто не сдвинулось» и не «всё
+	// сдвинулось одинаково», а:
+	//
+	//   • якоря ВЫШЕ блока не сдвинулись вовсе;
+	//   • якоря НИЖЕ сдвинулись все на одно и то же;
+	//   • и ровно на столько же вырос низ сетки.
+	//
+	// Последнее условие и есть то, чего освобождение доказать не может: оно
+	// отличает «появился блок» от «появился блок И что-то ещё выросло».
 	for (const w of WIDTHS) {
 		for (const s of UPSTREAM_FAIL) {
 			const base = BASE[s];
-			if (R(w, s).card1Top !== R(w, base).card1Top) {
-				const d1 = R(w, s).card1Top - R(w, base).card1Top;
-				// Блок провала стоит НИЖЕ единственной карточки вкладки wifi,
-				// двигать её он не умеет физически — значит, любой сдвиг здесь
-				// пришёл сверху: шапка, табы, общий слот или заметки над
-				// карточкой. Это и есть то, что C4 ловит.
-				bad.push(`C4: ${w}px — card1Top ${s}=${num(R(w, s).card1Top)} ≠ ${base}=${num(R(w, base).card1Top)}`
-					+ ` (Δ${num(d1)}: вырос кто-то НАД карточкой — шапка/табы/слот/заметки)`);
+			const a = R(w, base), b = R(w, s);
+			const ma = new Map(a.anchors.map((x) => [x.id, x.top]));
+			const deltas = new Map();
+			for (const x of b.anchors) if (ma.has(x.id)) deltas.set(x.id, x.top - ma.get(x.id));
+
+			const moved = [...deltas.entries()].filter(([, d]) => d !== 0);
+			const uniq = [...new Set(moved.map(([, d]) => d))];
+			if (uniq.length > 1) {
+				const parts = moved.map(([id, d]) => `${id}:Δ${num(d)}`);
+				bad.push(`C4′: ${w}px, ${s} — сдвинувшиеся якоря разъехались (${parts.join(', ')});`
+					+ ' значит внутри сетки выросло что-то ещё, кроме блока провала');
+				continue;
+			}
+			if (moved.length === 0) {
+				bad.push(`C4′: ${w}px, ${s} — блок провала не сдвинул НИ ОДНОГО якоря:`
+					+ ' либо он не появился, либо якорей под ним нет и критерий ничего не мерит');
+				continue;
+			}
+			const shift = uniq[0];
+			const grew = b.gridBottom - a.gridBottom;
+			// Допуск в полпикселя: обе величины считаются из
+			// getBoundingClientRect, и субпиксельное округление у сдвига
+			// и у роста происходит в разных местах.
+			if (Math.abs(shift - grew) > 0.5) {
+				bad.push(`C4′: ${w}px, ${s} — якоря сдвинулись на ${num(shift)}, а низ сетки вырос на ${num(grew)};`
+					+ ' разница означает, что вместе с блоком выросло что-то ещё');
 			}
 		}
 	}
 
-	// C5. Высота слота — одно число на всю панель. Разойдись она хоть где-то,
-	// C1 стал бы проверять совпадение двух одинаково съехавших чисел.
-	const seen = new Map();
+	// C5′ — адресная резервация. Заменяет снятый C5 («высота слота — одно
+	// число на всю панель»).
+	//
+	// Инвариантом никогда не была постоянная высота слота: им было «ничто,
+	// к чему пользователь тянется, не уезжает из-под пальца». Держать
+	// призрак под максимум из трёх состояний значит платить мёртвой полосой
+	// постоянно — во всех состояниях, на всех ширинах, — ради тоста, который
+	// живёт пять секунд. Поэтому резервируется ТОЛЬКО «занята»: она наступает
+	// по клику владельца, длится 5–20 секунд, и именно тогда он тянется
+	// к следующему контролу.
 	for (const w of WIDTHS) {
-		for (const st of STATES) {
-			const h = R(w, st.key).slotH;
-			if (!seen.has(h)) seen.set(h, []);
-			seen.get(h).push(`${w}px/${st.key}`);
+		for (const [a, b] of [[REST, BUSY], [REST + '-rm', BUSY + '-rm']]) {
+			if (R(w, a).heroH !== R(w, b).heroH) {
+				bad.push(`C5′: ${w}px — высота баннера ${a}=${num(R(w, a).heroH)} ≠ ${b}=${num(R(w, b).heroH)};`
+					+ ' призрак слота не держит «занята»');
+			}
 		}
 	}
-	if (seen.size > 1) {
-		const parts = [...seen.entries()].map(([h, where]) => `${num(h)} (${where.join(', ')})`);
-		bad.push(`C5: высота .slot различается — ${parts.join(' | ')}`);
+
+	// C6 — состояния аккордеона измеряются, и ARIA не врёт.
+	//
+	// Ошибки переполнения прячутся в свёрнутых панелях: прежняя оснастка их
+	// не открывала вовсе и не увидела бы никогда.
+	for (const w of NARROW) {
+		for (const key of ['acc-closed', 'acc-uplink', 'acc-bridge']) {
+			const m = R(w, key);
+			if (m.accordions === 0) {
+				bad.push(`C6: ${w}px, ${key} — аккордеона нет вовсе, а на узком экране он обязан быть`);
+			}
+			if (m.accLies.length) {
+				bad.push(`C6: ${w}px, ${key} — aria-expanded расходится с видимостью: ${m.accLies.join('; ')}`);
+			}
+		}
+	}
+
+	// C7 — пустых областей не бывает. Ловит ровно то, чего не ловят числа:
+	// призрак держит высоту, замер доволен, а место пустое.
+	for (const w of WIDTHS) {
+		for (const st of STATES) {
+			const m = R(w, st.key);
+			if (m.empties.length) {
+				bad.push(`C7: ${w}px, ${st.key} — пустые области: ${m.empties.join(', ')}`);
+			}
+		}
+	}
+
+	// C8 — обе раскладки существуют. До сих пор ничто не доказывало, что
+	// перелом на 900px вообще что-то делает: числа просто различались, и
+	// различаться они могли по любой причине.
+	for (const w of WIDE) {
+		if (R(w, REST).gridTracks < 2) {
+			bad.push(`C8: ${w}px — в сетке ${R(w, REST).gridTracks} дорожка, на широком экране их обязано быть больше`);
+		}
+		if (R(w, REST).accordions !== 0) {
+			bad.push(`C8: ${w}px — на широком экране есть кнопки аккордеона (${R(w, REST).accordions}),`
+				+ ' а секции там раскрыты всегда: aria-expanded, которое нельзя изменить, — ложь скринридеру');
+		}
+	}
+	for (const w of NARROW) {
+		if (R(w, REST).gridTracks !== 1) {
+			bad.push(`C8: ${w}px — в сетке ${R(w, REST).gridTracks} дорожек, на узком экране обязана быть одна`);
+		}
 	}
 
 	return bad;
@@ -623,6 +767,18 @@ async function main() {
 	const base = `http://127.0.0.1:${mockPort}`;
 	phase.what = 'запуск мока';
 	const mockErr = [];
+	// Мок отдаёт СОБРАННУЮ панель (умолчание MOCK_STATIC — web/panel/dist).
+	//
+	// До сборки исходник и отгружаемое совпадали, и вопроса не было. Теперь
+	// у дев-сервера нет ни минификации, ни вынесенного CSS, ни того же
+	// разбиения на чанки: мерить на нём — значит мерить бандл, который никто
+	// не загрузит. Отсюда же зависимость цели geometry от panel в Makefile.
+	const dist = path.join(ROOT, 'web', 'panel', 'dist', 'index.html');
+	if (!fs.existsSync(dist)) {
+		console.error('measure-geometry: нет собранной панели (web/panel/dist)');
+		console.error('  соберите её: make panel');
+		process.exit(1);
+	}
 	const mock = spawn(process.execPath, [path.join(ROOT, 'web', 'mock-server.mjs'), String(mockPort)],
 		{ cwd: ROOT, stdio: ['ignore', 'ignore', 'pipe'] });
 	kids.push(mock);
@@ -696,9 +852,9 @@ async function main() {
 			// навигацией не считается, и без нонса состояние с той же вкладкой
 			// осталось бы на старой странице со старым сценарием.
 			const loaded = cdp.wait('Page.loadEventFired', T_SETTLE);
-			await cdp.send('Page.navigate', { url: `${base}/?geom=${++nonce}#${st.tab}` });
+			await cdp.send('Page.navigate', { url: `${base}/?geom=${++nonce}${st.hash ? '#' + st.hash : ''}` });
 			await loaded;
-			results[w][st.key] = await settle(cdp, st.tab);
+			results[w][st.key] = await settle(cdp);
 		}
 	}
 
@@ -707,6 +863,11 @@ async function main() {
 	cleanup();
 
 	// 4. Отчёт.
+	// GEOM_DUMP=<файл> кладёт все замеры как есть. Не украшение: когда
+	// критерий падает на числе, вопрос всегда один — из чего это число
+	// сложилось, — и отвечать на него, дописывая временный вывод в скрипт,
+	// значит каждый раз заново.
+	if (process.env.GEOM_DUMP) fs.writeFileSync(process.env.GEOM_DUMP, JSON.stringify(results, null, 1));
 	printTable(results);
 	printOverflowers(results);
 	printBleeders(results);
@@ -715,7 +876,7 @@ async function main() {
 	const secs = ((Date.now() - started) / 1000).toFixed(1);
 	console.log('');
 	if (bad.length === 0) {
-		console.log(`measure-geometry: все критерии выполнены (C1–C5), ${secs} с`);
+		console.log(`measure-geometry: все критерии выполнены (C1′–C8), ${secs} с`);
 		return 0;
 	}
 	console.log(`measure-geometry: НАРУШЕНО критериев — ${bad.length}`);

@@ -286,7 +286,7 @@ func TestUnknownFieldIsRejected(t *testing.T) {
 }
 
 // Тела, которые шлёт панель, обязаны проходить: строгость разбора не должна
-// стоить записи сетей. Формы взяты из web/app.js (NetworkSheet.submit):
+// стоить записи сетей. Формы взяты из панели (web/panel/src/ui/Sheets.tsx):
 // создание — {ssid, encryption, key?}, правка — {id, key?}.
 func TestPanelBodiesStillAccepted(t *testing.T) {
 	for _, tt := range []struct{ name, body string }{

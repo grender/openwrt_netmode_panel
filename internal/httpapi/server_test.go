@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -181,7 +182,7 @@ func TestRefusesBadTokens(t *testing.T) {
 func TestTokenRequiredEverywhereIncludingStatic(t *testing.T) {
 	s, _ := newServer(t)
 
-	for _, path := range []string{"/api/status", "/api/wifi/networks", "/", "/app.js"} {
+	for _, path := range []string{"/api/status", "/api/wifi/networks", "/", "/assets/app.js"} {
 		if rec := do(t, s, "GET", path, false); rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s без токена → %d, ожидался 401", path, rec.Code)
 		}
@@ -410,18 +411,69 @@ func TestScanRefusesWhenStationRadioUnknown(t *testing.T) {
 // вместе с ней: оба блокера ADR-0016 закрыты замером, обработчик настоящий.
 // Проверки переключения — в upstreamhandler_test.go.
 
+// Панель встроена И СОГЛАСОВАНА САМА С СОБОЙ.
+//
+// Прежняя версия перечисляла имена файлов и проверяла, что каждое отдаётся.
+// С появлением сборки имена стали делом бандлера, а перечень в тесте —
+// вторым местом, которое разъедется молча. Хуже: перечень отвечал на вопрос
+// «лежат ли файлы», а браузер задаёт другой — «отдаёт ли сервер то, на что
+// ссылается отданный им же HTML». Это ДВА перехода, и ломается обычно
+// второй: ровно так появился инцидент «200 и чёрный экран», из-за которого
+// заведён TestQueryTokenSetsCookieSoSubresourcesLoad.
+//
+// Поэтому подресурсы берутся ИЗ ОТДАННОГО HTML и запрашиваются ТОЛЬКО ПО
+// COOKIE — тем же способом, каким их возьмёт браузер.
 func TestPanelIsEmbedded(t *testing.T) {
 	s, _ := newServer(t)
-	for _, path := range []string{"/", "/app.js", "/app.css", "/i18n.js",
-		"/vendor/htm-preact-standalone.module.js"} {
-		rec := do(t, s, "GET", path, true)
-		if rec.Code != http.StatusOK {
-			t.Errorf("%s → %d, панель должна быть встроена в бинарь", path, rec.Code)
+
+	rec := do(t, s, "GET", "/", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/ → %d, панель должна быть встроена в бинарь", rec.Code)
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatal("/ пуст")
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("/ отдан как %q, ожидался text/html", ct)
+	}
+
+	subs := panelSubresources(rec.Body.String())
+	// Антивакуум: регексп, переставший совпадать, обязан краснеть, а не
+	// молча превращать тест в проверку одной страницы.
+	if len(subs) < 2 {
+		t.Fatalf("в отданном HTML нашлось %d подресурсов, ожидалось не меньше двух: %v", len(subs), subs)
+	}
+
+	for _, p := range subs {
+		req := httptest.NewRequest("GET", p, nil)
+		// ТОЛЬКО cookie, без Authorization и без ?token=. Именно так их
+		// заберёт браузер: заголовок и строку запроса он к <script src>
+		// не прикладывает.
+		req.AddCookie(&http.Cookie{Name: "netmode_token", Value: testToken})
+		r := httptest.NewRecorder()
+		s.Handler().ServeHTTP(r, req)
+		if r.Code != http.StatusOK {
+			t.Errorf("%s по одной cookie → %d: панель отдаст пустую страницу", p, r.Code)
 		}
-		if rec.Body.Len() == 0 {
-			t.Errorf("%s пуст", path)
+		if r.Body.Len() == 0 {
+			t.Errorf("%s пуст", p)
 		}
 	}
+}
+
+// panelSubresources вытаскивает из HTML ссылки на собственные ассеты панели.
+func panelSubresources(html string) []string {
+	var out []string
+	re := regexp.MustCompile(`(?:src|href)="(\.?/assets/[^"]+)"`)
+	for _, m := range re.FindAllStringSubmatch(html, -1) {
+		p := strings.TrimPrefix(m[1], ".")
+		// Версия в query нужна кэшу браузера, а не маршрутизации.
+		if i := strings.IndexByte(p, '?'); i >= 0 {
+			p = p[:i]
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 func TestUnknownRouteIs404(t *testing.T) {
@@ -435,7 +487,7 @@ func TestUnknownRouteIs404(t *testing.T) {
 //
 // Симптом был обманчив: GET / возвращал 200, то есть выглядело, будто всё
 // работает, — а страница оставалась чёрной. За <script src> браузер не шлёт
-// ни заголовок Authorization, ни query из адреса страницы, поэтому app.js
+// ни заголовок Authorization, ни query из адреса страницы, поэтому бандл
 // получал 401 и модуль не грузился.
 func TestQueryTokenSetsCookieSoSubresourcesLoad(t *testing.T) {
 	s, _ := newServer(t)
@@ -464,13 +516,21 @@ func TestQueryTokenSetsCookieSoSubresourcesLoad(t *testing.T) {
 		t.Error("Secure нельзя: демон слушает LAN по http, браузер такую куку не сохранит")
 	}
 
-	// Именно так браузер запросит app.js — только с кукой, без query.
-	req := httptest.NewRequest("GET", "/app.js", nil)
-	req.AddCookie(jar)
-	rec2 := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec2, req)
-	if rec2.Code != http.StatusOK {
-		t.Errorf("app.js с кукой → %d, ожидался 200", rec2.Code)
+	// Именно так браузер запросит подресурсы — только с кукой, без query.
+	// Имена берутся из ОТДАННОГО HTML, а не пишутся сюда: с появлением
+	// сборки они принадлежат бандлеру, и зашитое имя разошлось бы молча.
+	subs := panelSubresources(rec.Body.String())
+	if len(subs) < 2 {
+		t.Fatalf("в отданном HTML нашлось %d подресурсов, ожидалось не меньше двух", len(subs))
+	}
+	for _, p := range subs {
+		req := httptest.NewRequest("GET", p, nil)
+		req.AddCookie(jar)
+		rec2 := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec2, req)
+		if rec2.Code != http.StatusOK {
+			t.Errorf("%s с кукой → %d, ожидался 200: панель останется пустой", p, rec2.Code)
+		}
 	}
 }
 

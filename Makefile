@@ -5,7 +5,7 @@ TARGET   := $(BUILDDIR)/$(BIN)
 GOFLAGS_TARGET := GOOS=linux GOARCH=arm64 CGO_ENABLED=0
 LDFLAGS        := -s -w
 
-.PHONY: all verify fmt vet test api panel panel-next build size checks probe-check geometry clean help
+.PHONY: all verify fmt vet test api panel panel-next dev preview build size checks probe-check geometry clean help
 
 all: verify
 
@@ -43,6 +43,21 @@ api:
 ## отстала от своего исходника, и называет команду.
 panel:
 	@scripts/build-panel.sh
+
+## dev — авторская петля: Vite отдаёт панель, API проксируется в мок.
+## Cookie-рукопожатие тут НЕ задействовано: токен подставляется заголовком
+## явно. Отгружаемый путь авторизации проверяется только через preview и
+## cmd/netmoded-dev — см. web/README.md.
+dev:
+	@MOCK_STATIC= node web/mock-server.mjs 8088 & \
+	cd web/panel && npm run dev; \
+	kill %1 2>/dev/null || true
+
+## preview — то, что ОТГРУЖАЕТСЯ: собранный бандл из мока, настоящий путь
+## cookie. Гонять обязательно перед коммитом, трогающим index.html, имена
+## ассетов или withToken.
+preview: panel-next
+	@node web/mock-server.mjs 8088
 
 ## panel-next — сборка НОВОЙ панели. Кладёт результат в web/panel/dist и
 ## никуда его не копирует: пока встроенный артефакт остаётся старой панелью,
@@ -89,7 +104,7 @@ probe-check:
 ## до и после любой правки web/app.css и web/app.js: числа «карточка не
 ## дёрнулась» и «документ не шире окна» проверяются только замером, глазами
 ## скачок в 74px за один кадр пропускается.
-geometry:
+geometry: panel
 	@node scripts/measure-geometry.mjs
 
 clean:
