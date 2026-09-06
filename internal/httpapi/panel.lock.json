@@ -1,0 +1,25 @@
+{
+  "inputs": {
+    "web/index.html": "4c52055faa16809a064c7744fe5beccaa723c1c4",
+    "web/app.js": "8255ddd6b370d7b3be5ea4a7bd047133ca3ab861",
+    "web/app.css": "65c2199d6a7a3d14a7f8770e281b9189f0186c51",
+    "web/i18n.js": "7512d0d407c34eb3bc16df848945ac92a2d5945b",
+    "web/vendor/htm-preact-standalone.module.js": "e24f87b9360d8b342df270d0a8a46f03fb712af8"
+  },
+  "inputs_digest": "a63d9d70449350275c0c113ce5f9c92d4d5f0de16ed2b6ba8b112f8ae861dd4e",
+  "artifact": {
+    "app.css": "22afe266901284987bf76e2f5ab44019a106f4ffabfa2cc3c935deff7bc5d0b9",
+    "app.js": "0379e82dbe0d3363f3621261a4462408360eac9ef223a2ec5b1e6e800add2cc0",
+    "i18n.js": "650ea55de09bd5848bc8e99087184a5d5e67b5d741f9c76cb33363528cb1dd81",
+    "index.html": "a7ffac37d028ebc2e6a608f43a880647e50d5f20da9f75c4b030e3c3b2994f96",
+    "vendor/htm-preact-standalone.module.js": "72284e8e9079c87817145df1110f74e8a2aa040b2fc384922e18dfcb46fc1fd7"
+  },
+  "sizes_gzip": {
+    "app.css": 13033,
+    "app.js": 46312,
+    "i18n.js": 19621,
+    "index.html": 546,
+    "vendor/htm-preact-standalone.module.js": 5336,
+    "total": 84848
+  }
+}

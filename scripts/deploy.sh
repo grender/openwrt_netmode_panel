@@ -91,7 +91,12 @@ say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 # ─────────── сборка ───────────
 
 say "Сборка $VER"
-scripts/sync-panel.sh
+# ПРОВЕРКА, а не сборка панели. Деплой не должен тянуть npm и зависеть от
+# реестра пакетов: увозить свежий бинарь на роутер приходится и с плохого
+# вайфая, и из места, где сборка фронта просто не запустится. Панель
+# собирают отдельной командой (make panel) и коммитят; здесь лишь
+# убеждаемся, что коммит согласован сам с собой.
+scripts/check-panel-build.sh
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath \
 	-ldflags="-s -w -X main.version=$VER" -o "$BIN" ./cmd/netmoded
 scripts/check-size.sh "$BIN"

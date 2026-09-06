@@ -25,11 +25,19 @@ vet:
 test:
 	@go test -race -count=2 ./...
 
-## panel — копирует web/ туда, откуда её забирает go:embed
+## panel — собирает панель туда, откуда её забирает go:embed, и пишет
+## манифест происхождения.
+##
+## НЕ зависимость build и ничего внутри verify. Пока панель была копией пяти
+## файлов, `build: panel` был безобиден и лишь вырождал второй ярус сверки
+## внутри verify. Со сборкой он означал бы: `go build` требует node, а
+## `make verify` перестаёт работать на машине, где есть только Go и шелл.
+## Вместо зависимости — гейт: check-panel-build.sh краснеет, если панель
+## отстала от своего исходника, и называет команду.
 panel:
-	@scripts/sync-panel.sh
+	@scripts/build-panel.sh
 
-build: panel
+build:
 	@mkdir -p $(BUILDDIR)
 	@$(GOFLAGS_TARGET) go build -trimpath -ldflags="$(LDFLAGS)" -o $(TARGET) ./cmd/netmoded
 	@echo "-- built $(TARGET)"
@@ -52,7 +60,7 @@ checks:
 	@scripts/check-netmode-apply.sh
 	@scripts/check-netmode-wifi.sh
 	@scripts/check-netmode-bridge.sh
-	@scripts/check-panel-sync.sh
+	@scripts/check-panel-build.sh
 
 ## probe-check — песочница измерительной оснастки RQ-03. Не в checks намеренно:
 ## пробник не инвариант плана, он одноразовый и на роутере не остаётся. Но

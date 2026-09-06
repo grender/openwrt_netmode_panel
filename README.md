@@ -328,10 +328,17 @@ Nikki веб-морда живёт на том же слушателе, кото
 
 ```sh
 make verify                  # весь гейт: тесты, сборка, четырнадцать охранников
+make panel                   # собрать панель в go:embed и переписать манифест
 make geometry                # замер геометрии панели (нужен Chrome, вне verify)
 go run ./cmd/netmoded-dev    # настоящие обработчики против фикстур роутера
 docker compose up            # панель против node-мока
 ```
+
+`make verify` **не** собирает панель и не зависит от неё: он обязан работать
+на машине, где есть только Go и POSIX-шелл. Правили панель — сделайте
+`make panel` и закоммитьте `internal/httpapi/panel/` вместе с
+`internal/httpapi/panel.lock.json`. Забыли — `check-panel-build` скажет об
+этом красным и назовёт команду.
 
 Подробности по панели — [`web/README.md`](web/README.md).
 
@@ -356,7 +363,7 @@ docker compose up            # панель против node-мока
 | `check-netmode-seed` | секция `netmode.main` в сиде **именованная**: с анонимной `uci get` падает, и переключение режима отказывает мгновенно |
 | `check-netmode-bridge` | синтаксис `netmode-bridge` и одиннадцать сценариев проброса на подставных `ubus`/`ping`/`apk`: замок, идемпотентный демонтаж, отсутствие запрещённых форм вроде `network restart` ([ADR-0030](docs/adr/0030-bridge-layer2-teardown.md)) |
 | `check-netmode-apply` | синтаксис `netmode-apply` и его поведение на подставных `/etc/init.d/*`: коды возврата и то, что при неудавшемся `firewall restart` туннель НЕ поднимается ([ADR-0020](docs/adr/0020-netmode-apply-exit-codes.md)) |
-| `check-panel-sync` | `internal/httpapi/panel/` побайтово равен `web/` — иначе `go:embed` увезёт на роутер прежнюю панель, а `TestPanelIsEmbedded` ловит только отсутствие каталога |
+| `check-panel-build` | `internal/httpapi/panel/` собран из того исходника, что лежит рядом в этом же коммите — иначе `go:embed` увезёт на роутер прежнюю панель, а `TestPanelIsEmbedded` ловит только отсутствие каталога. Четыре яруса: форма манифеста, целостность артефакта, свежесть исходника в дереве и то же самое в `HEAD` |
 
 Вне `verify` — две оснастки, и обе намеренно: `make geometry`
 (`scripts/measure-geometry.mjs`, критерии C1–C5) требует установленного
