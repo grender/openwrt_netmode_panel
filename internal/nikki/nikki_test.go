@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -27,6 +28,11 @@ type fakeClash struct {
 	// есть» неотличимы — а разница между ними в том, уводит ли слэш внутри
 	// имени запрос на посторонний маршрут.
 	lastPUTRaw string
+	// putMessage — тело {"message": …} при putStatus ≥ 400: живой mihomo
+	// кладёт туда причину отказа, и клиент обязан её донести.
+	putMessage string
+	// providerBody — ответ GET /providers/proxies/{name}.
+	providerBody string
 }
 
 func (f *fakeClash) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -51,9 +57,21 @@ func (f *fakeClash) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.lastBody = string(b)
 		if f.putStatus != 0 {
 			w.WriteHeader(f.putStatus)
+			if f.putMessage != "" {
+				_, _ = w.Write([]byte(`{"message":` + strconv.Quote(f.putMessage) + `}`))
+			}
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/providers/proxies/") {
+		if f.providerBody == "" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Resource not found"}`))
+			return
+		}
+		_, _ = w.Write([]byte(f.providerBody))
 		return
 	}
 	if r.Method == http.MethodDelete {
@@ -561,3 +579,67 @@ func TestContextCancellation(t *testing.T) {
 }
 
 var _ Client = (*HTTP)(nil)
+
+// TestReloadProviderCarriesEngineMessage — причина отказа из тела 503 доходит
+// до текста ошибки. Без неё «proxy 3 error: …» и «permission denied» для
+// владельца неразличимы, и обе выглядят как «движок отверг».
+func TestReloadProviderCarriesEngineMessage(t *testing.T) {
+	f, c, done := newClient(t, "118296")
+	defer done()
+	f.putStatus = http.StatusServiceUnavailable
+	f.putMessage = "proxy 3 error: invalid REALITY public key"
+
+	err := c.ReloadProvider(context.Background(), "sub")
+	if !errors.Is(err, ErrProviderStale) {
+		t.Fatalf("503 → %v, ожидалась ErrProviderStale", err)
+	}
+	if !strings.Contains(err.Error(), "invalid REALITY public key") {
+		t.Fatalf("текст движка потерян: %v", err)
+	}
+	var se *StatusError
+	if !errors.As(err, &se) || se.Message != f.putMessage {
+		t.Fatalf("StatusError.Message не заполнен: %+v", se)
+	}
+}
+
+// TestStatusErrorSurvivesBrokenBody — кривое тело не отнимает код ответа.
+func TestStatusErrorSurvivesBrokenBody(t *testing.T) {
+	f, c, done := newClient(t, "118296")
+	defer done()
+	f.putStatus = http.StatusServiceUnavailable
+	f.putMessage = "" // тела нет вовсе
+
+	err := c.ReloadProvider(context.Background(), "sub")
+	if !errors.Is(err, ErrProviderStale) {
+		t.Fatalf("503 без тела → %v", err)
+	}
+	if strings.Contains(err.Error(), "код 503:") {
+		t.Fatalf("пустое сообщение не должно давать висящее двоеточие: %v", err)
+	}
+}
+
+// TestProviderProxiesParsesNames — имена из proxies[].name, в порядке движка.
+func TestProviderProxiesParsesNames(t *testing.T) {
+	f, c, done := newClient(t, "118296")
+	defer done()
+	f.providerBody = `{"name":"sub","type":"Proxy","vehicleType":"File",
+	  "proxies":[{"name":"🇩🇪⚡Германия","type":"Vless"},{"name":"🇵🇱⚡Польша","type":"Vless"}],
+	  "updatedAt":"2026-09-06T10:00:00Z"}`
+
+	names, err := c.ProviderProxies(context.Background(), "sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 2 || names[0] != "🇩🇪⚡Германия" || names[1] != "🇵🇱⚡Польша" {
+		t.Fatalf("имена: %v", names)
+	}
+}
+
+// TestProviderProxiesNotFound — нет такого провайдера → ErrNotFound, как у PUT.
+func TestProviderProxiesNotFound(t *testing.T) {
+	_, c, done := newClient(t, "118296")
+	defer done()
+	if _, err := c.ProviderProxies(context.Background(), "нет-такого"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("404 → %v, ожидалась ErrNotFound", err)
+	}
+}

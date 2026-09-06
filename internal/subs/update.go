@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"netmoded/internal/happ"
 )
@@ -29,6 +30,19 @@ var ErrNotConfigured = errors.New("subs: адрес подписки не зад
 var ErrNoNodes = errors.New("subs: подписка разобрана, но узлов в ней ноль; " +
 	"старый список узлов СОХРАНЁН и продолжает работать")
 
+// ErrProviderIgnored — движок перечитал провайдера без ошибки, но ни одного
+// записанного узла не показал.
+//
+// 204 на PUT /providers/proxies — не «прочитал наш файл». Fetcher mihomo
+// читает файл по СВОЕМУ пути, сверяет хэш с прежним и при совпадении молча
+// отвечает успехом, ничего не меняя; а если файл прочитан, имена узлов может
+// переписать override провайдера. В обоих случаях обновление отчиталось бы
+// «ok, N узлов» по нашему разбору, а в панели не было бы ни одного из них —
+// ровно то, что случилось на роутере 2026-09-06. Сверить список движка с
+// записанным — единственный способ отличить это от успеха.
+var ErrProviderIgnored = errors.New("subs: движок перечитал провайдера, но не показал " +
+	"ни одного записанного узла")
+
 // Updater — одно обновление подписки целиком: скачать, разобрать, положить
 // файлы, попросить движок перечитать.
 //
@@ -47,6 +61,13 @@ type Updater struct {
 	ManifestPath string
 	// Reload — перечитать провайдера движком (nikki.Client.ReloadProvider).
 	Reload func(ctx context.Context) error
+	// Proxies — имена узлов, которые движок держит в провайдере после
+	// перечитывания (nikki.Client.ProviderProxies). Пусто → сверка
+	// пропускается; в боевом графе обязано быть задано — см. ErrProviderIgnored.
+	Proxies func(ctx context.Context) ([]string, error)
+	// Logf — журнал демона для того, что не отказ, но стоит записи:
+	// частичное расхождение списка движка с записанным. Пусто → тишина.
+	Logf func(format string, args ...any)
 	// Fetch — скачать подписку. Пусто → happ.Fetch.
 	//
 	// Подменяется только тестами: боевой путь обязан ходить через happ,
@@ -136,7 +157,71 @@ func (u *Updater) Update(ctx context.Context) (happ.Summary, error) {
 			sum.Nodes, err)
 	}
 
+	if err := u.verifyEngine(ctx, entries, sum.Nodes); err != nil {
+		return sum, err
+	}
 	return sum, nil
+}
+
+// verifyEngine сверяет список узлов движка с тем, что записано.
+//
+// Ни одного совпадения — отказ ErrProviderIgnored с двумя тройками имён:
+// по ним разница видна сразу (префикс от override? старые имена из другого
+// файла?). Часть совпала — не отказ, а строка в журнал: узлы мог убрать
+// filter провайдера, и это предмет разбора, а не поломка. Запрос не удался —
+// отказ с оговоркой, что файлы новые и PUT прошёл: чинить надо не запись.
+func (u *Updater) verifyEngine(ctx context.Context, entries []happ.Entry, nodes int) error {
+	if u.Proxies == nil {
+		return nil
+	}
+	got, err := u.Proxies(ctx)
+	if err != nil {
+		return fmt.Errorf("subs: файлы записаны (%d узлов) и движок их перечитал, "+
+			"а проверить его список не удалось: %w", nodes, err)
+	}
+
+	engine := make(map[string]bool, len(got))
+	for _, n := range got {
+		engine[n] = true
+	}
+	var written, missing []string
+	for _, e := range entries {
+		if e.Kind != happ.KindNode {
+			continue
+		}
+		written = append(written, e.Name)
+		if !engine[e.Name] {
+			missing = append(missing, e.Name)
+		}
+	}
+
+	switch {
+	case len(written) == 0:
+		return nil
+	case len(missing) == len(written):
+		return fmt.Errorf("%w: PUT прошёл (204) и файлы новые, но у движка %d узлов, "+
+			"первые: %s; мы записали %d, первые: %s — он читает другой файл "+
+			"(path провайдера в профиле) или переписывает имена (override)",
+			ErrProviderIgnored, len(got), firstThree(got), len(written), firstThree(written))
+	case len(missing) > 0:
+		if u.Logf != nil {
+			u.Logf("движок показал %d узлов из %d записанных; нет, например: %s "+
+				"(filter провайдера? проверьте профиль)",
+				len(written)-len(missing), len(written), firstThree(missing))
+		}
+	}
+	return nil
+}
+
+// firstThree — до трёх имён через запятую; для текста ошибки, а не для машины.
+func firstThree(names []string) string {
+	if len(names) == 0 {
+		return "(пусто)"
+	}
+	if len(names) > 3 {
+		names = names[:3]
+	}
+	return strings.Join(names, ", ")
 }
 
 // filePerm — права на оба файла: 0600.

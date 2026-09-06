@@ -216,6 +216,16 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 			}
 			return s.nikki.ReloadProvider(ctx, providerName)
 		},
+		// Сверка после перечитывания: 204 от движка не значит «прочитал наш
+		// файл» (см. subs.ErrProviderIgnored). Замыкание по той же причине,
+		// что у Reload.
+		Proxies: func(ctx context.Context) ([]string, error) {
+			if s.nikki == nil {
+				return nil, errors.New("subs: клиент Clash API не настроен")
+			}
+			return s.nikki.ProviderProxies(ctx, providerName)
+		},
+		Logf: s.logf,
 	}
 	s.sched = sched.New(&manifestRefresher{up: up, srv: s}, s.logs, cfg.SubInterval, s.logf)
 	// Кэш заполняется на старте, а не при первом запросе: пустой манифест —

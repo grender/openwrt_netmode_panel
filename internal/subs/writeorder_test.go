@@ -2,7 +2,9 @@ package subs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,5 +146,128 @@ func TestUpdateReloadFailureLeavesNewContent(t *testing.T) {
 	m, _ := os.ReadFile(h.manifest)
 	if !strings.Contains(string(m), "Германия") {
 		t.Errorf("манифест остался старым: %q", m)
+	}
+}
+
+// engineFrom — «честный движок»: имена из файла провайдера, который только
+// что записали. С ним обновление обязано пройти; подмена этого замыкания
+// моделирует движок, читающий другой файл или переписывающий имена.
+func engineFrom(path string) func(context.Context) ([]string, error) {
+	return func(context.Context) ([]string, error) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		var f struct {
+			Proxies []struct {
+				Name string `json:"name"`
+			} `json:"proxies"`
+		}
+		if err := json.Unmarshal(raw, &f); err != nil {
+			return nil, err
+		}
+		var names []string
+		for _, p := range f.Proxies {
+			names = append(names, p.Name)
+		}
+		return names, nil
+	}
+}
+
+// TestUpdateVerifiesEngineList — 204 от движка не значит «прочитал наш
+// файл»: fetcher молча выходит на совпавшем хэше, override переписывает
+// имена. Успех обновления измеряется списком движка, а не нашим разбором.
+func TestUpdateVerifiesEngineList(t *testing.T) {
+	t.Run("движок показал всё — успех", func(t *testing.T) {
+		h := newHarness(t, oneNode, nil)
+		h.up.Proxies = engineFrom(h.provider)
+		if _, err := h.up.Update(context.Background()); err != nil {
+			t.Fatalf("честный движок не должен давать отказ: %v", err)
+		}
+	})
+
+	t.Run("движок показал чужие имена — отказ с обеими тройками", func(t *testing.T) {
+		h := newHarness(t, oneNode, nil)
+		h.up.Proxies = func(context.Context) ([]string, error) {
+			return []string{"🇩🇪⚡Германия 1", "🇨🇭⚡Швейцария 2"}, nil
+		}
+		_, err := h.up.Update(context.Background())
+		if !errors.Is(err, ErrProviderIgnored) {
+			t.Fatalf("ожидался ErrProviderIgnored, получено %v", err)
+		}
+		for _, want := range []string{"204", "🇩🇪⚡Германия 1", "🇩🇪 Германия", "path", "override"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("в тексте %q нет %q", err.Error(), want)
+			}
+		}
+		if h.reloads != 1 {
+			t.Errorf("PUT должен был пройти ровно раз: %d", h.reloads)
+		}
+		body, _ := os.ReadFile(h.provider)
+		if !strings.Contains(string(body), "203.0.113.10") {
+			t.Error("файлы обязаны остаться новыми — отказ не про запись")
+		}
+	})
+
+	t.Run("движок показал часть — не отказ, а строка в журнал", func(t *testing.T) {
+		h := newHarness(t, oneNode, nil)
+		var logged []string
+		h.up.Logf = func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+		h.up.Proxies = func(context.Context) ([]string, error) {
+			// Один записанный узел есть, и ещё чужой — частичное совпадение.
+			return []string{"🇩🇪 Германия", "чужой"}, nil
+		}
+		if _, err := h.up.Update(context.Background()); err != nil {
+			t.Fatalf("частичное совпадение — не отказ: %v", err)
+		}
+		// В oneNode один узел, и он найден: расхождения нет, журнал молчит.
+		if len(logged) != 0 {
+			t.Errorf("журнал не должен получить запись при полном совпадении: %v", logged)
+		}
+	})
+
+	t.Run("запрос списка не удался — отказ с оговоркой", func(t *testing.T) {
+		h := newHarness(t, oneNode, nil)
+		h.up.Proxies = func(context.Context) ([]string, error) { return nil, errors.New("движок молчит") }
+		_, err := h.up.Update(context.Background())
+		if err == nil {
+			t.Fatal("ожидался отказ")
+		}
+		for _, want := range []string{"записаны", "перечитал", "проверить"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("в тексте %q нет %q", err.Error(), want)
+			}
+		}
+		if errors.Is(err, ErrProviderIgnored) {
+			t.Error("недоступный список — не то же, что список без наших узлов")
+		}
+	})
+
+	t.Run("Proxies не задан — сверки нет", func(t *testing.T) {
+		h := newHarness(t, oneNode, nil)
+		h.up.Proxies = nil
+		if _, err := h.up.Update(context.Background()); err != nil {
+			t.Fatalf("без сверки обновление проходит как раньше: %v", err)
+		}
+	})
+}
+
+// TestUpdatePartialEngineListIsLogged — два узла записаны, один пропал:
+// не отказ, но строка в журнале с именем пропавшего.
+func TestUpdatePartialEngineListIsLogged(t *testing.T) {
+	two := strings.Replace(oneNode, `"remarks": "🇩🇪 Германия"`, `"remarks": "🇩🇪 Германия"`, 1)
+	two = "[" + strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(two), "["), "]") + "," +
+		strings.Replace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(oneNode), "["), "]"),
+			`"remarks": "🇩🇪 Германия"`, `"remarks": "🇫🇷 Франция"`, 1) + "]"
+	h := newHarness(t, two, nil)
+	var logged []string
+	h.up.Logf = func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	h.up.Proxies = func(context.Context) ([]string, error) { return []string{"🇩🇪 Германия"}, nil }
+
+	if _, err := h.up.Update(context.Background()); err != nil {
+		t.Fatalf("частичное совпадение — не отказ: %v", err)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "🇫🇷 Франция") || !strings.Contains(logged[0], "1 узлов из 2") {
+		t.Fatalf("ожидалась одна запись с пропавшим узлом и счётом: %v", logged)
 	}
 }

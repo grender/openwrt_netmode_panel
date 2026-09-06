@@ -345,6 +345,19 @@
         "src": "hub/route/provider.go:20-26 (r.Route(\"/{providerName}\") … r.Put(\"/\", updateProvider)), :52-60 (updateProvider: provider.Update() → 204/503), :76-85 (findProviderByName → 404); префикс маршрута — hub/route/server.go:131 r.Mount(\"/providers/proxies\", proxyProviderRouter())",
         "spec": "SPEC-backend-router-panel.md:43 — прежний скрипт happ2clash дёргал ровно этот путь (PUT /providers/proxies/sub). Второе, независимое от исходников подтверждение: путь работал на этом роутере",
         "status_note": "На живом роутере запросом НЕ проверялось. Правило то же, что в RQ-03: догадка вместо замера запрещена. Исходник нужной версии — не догадка, но и не замер: он говорит, ЧТО ответит mihomo, и молчит о том, что при этом произойдёт с трафиком"
+      },
+      {
+        "method": "GET",
+        "path": "/providers/proxies/{name}",
+        "status": "verified_by_source",
+        "purpose": "состояние провайдера у движка: имена узлов, которые он держит СЕЙЧАС. Сверка после PUT — единственный способ отличить «перечитал наш файл» от «ответил 204 на совпавшем хэше другого файла» или «переписал имена override-ом» (ADR-0031, случай 2026-09-06)",
+        "responses": {
+          "200": "тело {name, type, vehicleType, proxies:[{name, type, …}], updatedAt}; демон читает только proxies[].name",
+          "404": "провайдера с таким именем нет — тот же middleware findProviderByName, что у PUT"
+        },
+        "source_tree": "https://github.com/MetaCubeX/mihomo/blob/v1.19.27/hub/route/provider.go (v1.19.27 — та же версия, что снята живьём в nikki.version)",
+        "src": "hub/route/provider.go:20-26 (r.Get(\"/\", getProvider) в том же r.Route(\"/{providerName}\"), что и PUT); форма ответа — ProxyProvider.MarshalJSON в adapter/provider/provider.go",
+        "status_note": "На живом роутере не снималось; форма ответа по исходникам v1.19.27, при первом доступе снять в raw/ и повысить до verified"
       }
     ],
     "delay_zero_means_no_probe": "в history значение delay:0 — это НЕ ноль миллисекунд, а несостоявшаяся проба. Наружу обязано уходить как null, иначе мёртвый узел покажется самым быстрым.",

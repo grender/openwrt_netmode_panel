@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -66,10 +68,39 @@ var ErrProviderStale = errors.New("nikki: провайдер записан, н�
 type StatusError struct {
 	Code int
 	Path string
+	// Message — текст из тела ответа {"message": …}. У mihomo это
+	// единственное место, где названа ПРИЧИНА отказа: у /providers/proxies
+	// 503 несёт «proxy 3 error: invalid REALITY public key» или «open …:
+	// permission denied», и без этого поля оба случая для владельца
+	// выглядят одинаково — «движок отверг». Пусто, если тела нет или оно
+	// не той формы.
+	Message string
 }
 
 func (e *StatusError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("nikki: %s: код %d: %s", e.Path, e.Code, e.Message)
+	}
 	return fmt.Sprintf("nikki: %s: код %d", e.Path, e.Code)
+}
+
+// errBodyLimit — сколько байт тела ошибки читать. Форма тела — одна строка
+// message; больше килобайта здесь не бывает, а потолок нужен по той же
+// причине, что в ADR-0022: чужой сервер не должен решать, сколько памяти
+// займёт наш разбор его отказа.
+const errBodyLimit = 4 << 10
+
+// errMessage достаёт message из тела ошибки Clash API. Любая неудача —
+// пустая строка: тело ошибки объясняет, а не решает, и терять код ответа
+// из-за кривого тела нельзя.
+func errMessage(r io.Reader) string {
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r, errBodyLimit)).Decode(&body); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(body.Message)
 }
 
 // Proxy — узел или группа.
@@ -115,6 +146,10 @@ type Client interface {
 	// Проверить, что демон действительно зовёт перезагрузку после записи,
 	// можно только на подменённом клиенте.
 	ReloadProvider(ctx context.Context, name string) error
+	// ProviderProxies — имена узлов провайдера у движка. В интерфейсе по
+	// той же причине, что ReloadProvider: без него проверка «файл дошёл до
+	// движка» существовала бы только на живом роутере.
+	ProviderProxies(ctx context.Context, name string) ([]string, error)
 	// Delay — проба задержки одного узла. В интерфейсе, потому что замер
 	// пачки (ProbeAll) написан против интерфейса: иначе поведение при
 	// частичном отказе — половина узлов мертва, бюджет вышел — проверялось
@@ -205,9 +240,9 @@ func (c *HTTP) do(ctx context.Context, method, path string, body, out any, timeo
 		// поиск подстроки «код 503» в тексте разъехался бы при первой же
 		// правке формулировки, ровно как это уже было с «код 400».
 		return fmt.Errorf("%w: %w", ErrUnavailable,
-			&StatusError{Code: resp.StatusCode, Path: path})
+			&StatusError{Code: resp.StatusCode, Path: path, Message: errMessage(resp.Body)})
 	case resp.StatusCode >= 400:
-		return &StatusError{Code: resp.StatusCode, Path: path}
+		return &StatusError{Code: resp.StatusCode, Path: path, Message: errMessage(resp.Body)}
 	}
 
 	if out == nil {
@@ -397,11 +432,40 @@ func (c *HTTP) ReloadProvider(ctx context.Context, name string) error {
 
 	var se *StatusError
 	if errors.As(err, &se) && se.Code == http.StatusServiceUnavailable {
+		// StatusError едет в цепочке вторым %w: его текст несёт причину из
+		// тела ответа — единственный след того, ЧТО именно не понравилось
+		// движку. Раньше она выбрасывалась, и «proxy 3 error: …» и
+		// «permission denied» для владельца были неотличимы. Через errors.As
+		// сообщение доступно и машине.
 		return fmt.Errorf("%w: файл провайдера %q уже новый, а список узлов "+
-			"в mihomo остался старым — движок отверг перечитывание",
-			ErrProviderStale, name)
+			"в mihomo остался старым — движок отверг перечитывание (%w)",
+			ErrProviderStale, name, se)
 	}
 	return err
+}
+
+// ProviderProxies — имена узлов, которые движок держит в провайдере СЕЙЧАС.
+//
+// Нужен для одного: проверить после перечитывания, что записанный файл
+// вообще дошёл до движка. PUT отвечает 204 и тогда, когда прочитанный файл
+// не изменился (fetcher сверяет хэш и молча выходит), и тогда, когда имена
+// переписаны override-ом провайдера, — в обоих случаях «успех» без единого
+// нашего узла. Сверять список — единственный способ отличить это от успеха.
+func (c *HTTP) ProviderProxies(ctx context.Context, name string) ([]string, error) {
+	var v struct {
+		Proxies []struct {
+			Name string `json:"name"`
+		} `json:"proxies"`
+	}
+	path := "/providers/proxies/" + url.PathEscape(name)
+	if err := c.do(ctx, http.MethodGet, path, nil, &v, callTimeout); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(v.Proxies))
+	for _, p := range v.Proxies {
+		names = append(names, p.Name)
+	}
+	return names, nil
 }
 
 // delayProbeTimeout — сколько mihomo ждёт ответа узла.

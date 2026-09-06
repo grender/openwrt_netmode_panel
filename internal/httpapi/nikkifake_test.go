@@ -30,6 +30,11 @@ type fakeNikkiClient struct {
 	// reloadErr — чем отвечает перезагрузка провайдера. nil означает
 	// 204 живого mihomo.
 	reloadErr error
+	// providerNames — что движок показывает в провайдере после
+	// перечитывания. nil означает «все узлы из all, кроме групп» — то есть
+	// движок, который честно прочитал наш файл.
+	providerNames []string
+	providerErr   error
 }
 
 func newFakeNikkiClient() *fakeNikkiClient {
@@ -118,6 +123,24 @@ func (f *fakeNikkiClient) Delay(_ context.Context, name string) (int, error) {
 // Списка провайдеров у подделки нет намеренно — обработчику важно не то,
 // какие провайдеры бывают, а позвал ли он перезагрузку после записи файла
 // и что с ней случилось; и то и другое задаётся reloadErr.
+func (f *fakeNikkiClient) ProviderProxies(context.Context, string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.providerErr != nil {
+		return nil, f.providerErr
+	}
+	if f.providerNames != nil {
+		return f.providerNames, nil
+	}
+	var names []string
+	for name, p := range f.all {
+		if len(p.Members) == 0 {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 func (f *fakeNikkiClient) ReloadProvider(_ context.Context, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

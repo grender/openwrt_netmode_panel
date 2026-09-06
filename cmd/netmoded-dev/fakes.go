@@ -141,6 +141,20 @@ func (f *devNikki) Select(_ context.Context, group, member string) error {
 // 204, чтобы стенд не показывал отказ там, где на роутере отказа не будет.
 func (f *devNikki) ReloadProvider(context.Context, string) error { return nil }
 
+// ProviderProxies у стенда отдаёт все узлы, которые стенд знает: провайдера
+// на диске нет, и «движок показал записанные узлы» здесь означает ровно это.
+func (f *devNikki) ProviderProxies(context.Context, string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var names []string
+	for name, p := range f.all {
+		if len(p.Members) == 0 {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 func (f *devNikki) Unfix(_ context.Context, group string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
