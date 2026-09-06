@@ -201,19 +201,15 @@ func (f *devB4) Sets(context.Context) ([]b4.Set, error) {
 	return append([]b4.Set(nil), f.sets...), nil
 }
 
-func (f *devB4) SelectOnly(_ context.Context, id string) error {
+func (f *devB4) SetEnabled(_ context.Context, id string, on bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	found := false
 	for i := range f.sets {
-		on := f.sets[i].ID == id
-		f.sets[i].Enabled = on
-		if on {
-			found = true
+		if f.sets[i].ID != id {
+			continue
 		}
+		f.sets[i].Enabled = on
+		return nil
 	}
-	if !found {
-		return b4.ErrNotFound
-	}
-	return nil
+	return b4.ErrNotFound
 }

@@ -285,6 +285,13 @@ const state = {
 	// Изменения, накопленные POST-ами: мок не переписывает фикстуры, а
 	// накладывает поверх — так исходные данные остаются эталоном.
 	overlay: {},
+	// Состояния, которых НЕ должно быть в overlay. overlay целиком
+	// расплёскивается в /api/status (`...state.overlay`), поэтому всё, что
+	// туда положено, становится полем статуса. Для адреса подписки это
+	// прямая утечка секрета в ответ, который панель опрашивает раз в
+	// секунду; для сетов b4 — лишнее поле, которого на роутере нет.
+	sub: {},
+	b4: {},
 	// Сети, созданные через POST /api/wifi/networks. Держать их обязательно:
 	// панель после сохранения читает networks ИЗ ОТВЕТА на запись и находит
 	// свою запись ДИФФОМ ПО id — вычитает множество id, снятое до записи, из
@@ -404,6 +411,25 @@ const applyEngines = (s) => {
 		if (s.mode !== e || engineDown(e)) { s[e] = SERVICE_DOWN; continue; }
 		if (state.upEngine === e) s[e] = SERVICE_UP[e];
 	}
+	// Блок b4 обязан согласоваться с наложением, которое положил
+	// POST /api/b4/set. Раньше он был константой, и переключение сета не
+	// меняло в статусе ни байта: пока сет был ровно один, расхождения не
+	// видно, но после ADR-0033 состояний три, и «ни одного» в статусе
+	// выглядело бы как «b4 отдаёт general», то есть мок врал бы ровно про
+	// то, ради чего решение и принято.
+	if (s.b4 && s.b4.available && state.b4.enabled) {
+		const names = B4_NAMES;
+		const on = state.b4.enabled.map((id) => names[id]).filter(Boolean);
+		s.b4 = { ...s.b4, set: on.length === 1 ? on[0] : '', enabled_count: on.length };
+	}
+};
+
+// B4_NAMES — id → имя из той же фикстуры, что отдаёт /api/b4/sets. Карта, а не
+// чтение файла: applyEngines синхронна и зовётся из статуса раз в секунду.
+const B4_NAMES = {
+	'4d1f9a2e-7c30-4b58-9a61-0e2f8b7c1d34': 'general',
+	'b8e0c153-2a44-49df-8f27-63a1d905ee72': 'youtube',
+	'0c73a6b1-95d2-4e10-b3cc-51f8e4270a9b': 'discord',
 };
 
 // engineUp — отвечает ли движок прямо сейчас, тем же расчётом, что и статус.
@@ -754,7 +780,12 @@ async function handleAPI(req, res, u) {
 		// кнопку обновления можно было бы увидеть только на роутере с пустым
 		// netmode.main.subscription_url, то есть один раз в жизни, при первой
 		// установке — ровно в тот момент, когда панель открывают впервые.
-		s.subscription = { ...s.subscription, configured: state.scenario !== 'sub-unset' };
+		s.subscription = {
+			...s.subscription,
+			configured: state.sub.configured !== undefined
+				? state.sub.configured
+				: state.scenario !== 'sub-unset',
+		};
 		if (state.job) s.job = state.job;
 		if (s.online) s.online = { ...s.online, checked_at: s.generated_at };
 		// Движки: инвариант роутера плюс окно молчания. mode здесь уже новый
@@ -1131,31 +1162,101 @@ async function handleAPI(req, res, u) {
 	}
 
 	// --- b4 ---
+	// Сеты не эксклюзивны (ADR-0033): наложение хранит МНОЖЕСТВО включённых
+	// id, а не один выбранный. Прежнее `b4SetId` умело выражать только
+	// «включён ровно этот», то есть мок физически не мог воспроизвести ни
+	// «ни одного», ни «несколько» — два из трёх состояний, которые панель
+	// теперь обязана показывать по-разному.
+	const b4Body = async () => {
+		const d = await readJSON('b4-sets.json');
+		if (state.b4.enabled) {
+			const on = new Set(state.b4.enabled);
+			d.sets = d.sets.map((x) => ({ ...x, enabled: on.has(x.id) }));
+		}
+		const enabled = d.sets.filter((x) => x.enabled);
+		d.enabled_count = enabled.length;
+		// Пусто и при нуле, и при двух и более: единственный честный ответ на
+		// «через какой сет идёт трафик», когда ответа нет (b4.Selected).
+		d.selected = enabled.length === 1 ? enabled[0].name : '';
+		return d;
+	};
+
 	if (p === '/api/b4/sets' && method === 'GET') {
 		if (!(await engineUp('b4'))) {
 			return fail(res, 503, 'b4_unavailable', 'Панель b4 не отвечает');
 		}
-		const d = await readJSON('b4-sets.json');
-		if (state.overlay.b4Set) {
-			d.selected = state.overlay.b4Set;
-			d.sets = d.sets.map((x) => ({ ...x, enabled: x.id === state.overlay.b4SetId }));
-		}
-		return send(res, 200, d);
+		return send(res, 200, await b4Body());
 	}
 	if (p === '/api/b4/set' && method === 'POST') {
 		if (!(await engineUp('b4'))) {
 			return fail(res, 503, 'b4_unavailable', 'Панель b4 не отвечает');
 		}
-		const { id } = await readBody(req);
-		const d = await readJSON('b4-sets.json');
-		const hit = d.sets.find((x) => x.id === id);
+		const body = await readBody(req);
+		const id = body && body.id;
+		if (!id) return fail(res, 400, 'bad_request', 'Не указан id сета');
+		// Отсутствующий enabled — 400, а не «выключить»: тот же отказ, что
+		// у демона, иначе мок учил бы панель работать так, как боевой
+		// обработчик не работает.
+		if (typeof (body && body.enabled) !== 'boolean') {
+			return fail(res, 400, 'bad_request', 'Не указано enabled');
+		}
+		const cur = await b4Body();
+		const hit = cur.sets.find((x) => x.id === id);
 		if (!hit) return fail(res, 404, 'not_found', 'Сет не найден');
-		state.overlay.b4SetId = id;
-		state.overlay.b4Set = hit.name;
-		return send(res, 200, { selected: hit.name }); // быстрая операция
+		const on = new Set(cur.sets.filter((x) => x.enabled).map((x) => x.id));
+		if (body.enabled) on.add(id); else on.delete(id);
+		state.b4.enabled = [...on];
+		// Тело как у GET — так же, как отвечает демон: панели список нужен
+		// сразу, а второй запрос был бы гонкой с правкой из морды b4.
+		return send(res, 200, await b4Body()); // быстрая операция
 	}
 
 	// --- подписка и логи ---
+
+	// Маска адреса — ровно та же, что у демона (internal/httpapi/
+	// subscriptionurl.go): схема, хост, путь и ИМЕНА параметров, значения
+	// многоточием. Мок, показывающий больше, учил бы панель верстать то,
+	// чего на роутере не приедет.
+	const maskSub = (raw) => {
+		if (!raw) return '';
+		let u;
+		try { u = new URL(raw); } catch { return 'адрес задан, но не разбирается как URL'; }
+		let out = u.protocol + '//' + u.host + u.pathname;
+		const keys = [...u.searchParams.keys()].sort().map((k) => k + '=…');
+		if (keys.length) out += '?' + keys.join('&');
+		if (u.hash) out += '#…';
+		return out;
+	};
+	// Начальное значение зависит от сценария: sub-unset — свежая установка,
+	// где адрес ещё не задан. Иначе адрес есть и показан маской.
+	const subURL = () => (state.sub.url !== undefined
+		? state.sub.url
+		: (state.scenario === 'sub-unset' ? '' : 'https://sub.example.net/api/v1/client/subscribe?token=S3CRET'));
+
+	if (p === '/api/subscription' && method === 'GET') {
+		const raw = subURL();
+		return send(res, 200, { configured: raw !== '', masked: maskSub(raw) });
+	}
+	if (p === '/api/subscription' && method === 'PUT') {
+		const body = await readBody(req);
+		const raw = typeof (body && body.url) === 'string' ? body.url.trim() : null;
+		if (raw === null) return fail(res, 400, 'bad_request', 'Тело запроса не разбирается как JSON');
+		// Пустая строка стирает настройку — это валидное значение, а не отказ.
+		if (raw !== '') {
+			let u;
+			try { u = new URL(raw); } catch { u = null; }
+			if (!u || !u.host) return fail(res, 400, 'bad_request', 'Адрес не разбирается как URL');
+			if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+				return fail(res, 400, 'bad_request', 'Адрес подписки обязан начинаться с http:// или https://');
+			}
+		}
+		state.sub.url = raw;
+		// Признак в статусе обязан пойти за записью: иначе панель показывает
+		// «адрес не задан» рядом с кнопкой, которая уже работает.
+		state.sub.configured = raw !== '';
+		return send(res, 200, { configured: raw !== '', masked: maskSub(raw) });
+	}
+
 	if (p === '/api/subscription/update' && method === 'POST') {
 		if (busyJob()) return fail(res, 409, 'job_busy', 'Уже идёт другая операция');
 		startJob('subscription', '', 'Обновление подписки', 4);
@@ -1180,6 +1281,11 @@ const server = http.createServer(async (req, res) => {
 		if (name && SCENARIOS[name]) {
 			state.scenario = name;
 			state.overlay = {};
+			// Сбрасываются вместе с наложением: сценарий sub-unset обязан
+			// давать «адрес не задан» и после того, как в прошлом сценарии
+			// его записали через PUT.
+			state.sub = {};
+			state.b4 = {};
 			state.created = [];
 			state.edits = {};
 			state.job = null;

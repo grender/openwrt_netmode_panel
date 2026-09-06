@@ -32,14 +32,16 @@ func (s *Server) handleSubscriptionUpdate(w http.ResponseWriter, r *http.Request
 	// нажатии, и журнал перестали бы читать. Ответ 409 говорит владельцу
 	// то же самое, ничего не записав.
 	//
-	// Читается cfg, а не UCI: адрес берётся из конфигурации один раз при
-	// старте (docs/contracts/uci-netmode.md), и живое чтение обещало бы
-	// панели работающую кнопку там, где обновление всё равно откажет.
-	if s.cfg.SubscriptionURL == "" {
+	// Читается живое значение, а не UCI и не cfg. UCI — потому что демон
+	// всё равно работает со своим значением, и живое чтение обещало бы
+	// панели работающую кнопку там, где обновление откажет. cfg — потому
+	// что с появлением PUT /api/subscription (ADR-0034) там лежит снимок,
+	// сделанный при старте: владелец задал бы адрес и продолжал получать
+	// «не задан» до перезапуска демона.
+	if !s.subURL.configured() {
 		writeErr(w, http.StatusConflict, "subscription_not_configured",
-			"Адрес подписки не задан. Задайте его на роутере: "+
-				"uci set netmode.main.subscription_url='…' && uci commit netmode, "+
-				"затем перезапустите демона: /etc/init.d/netmoded restart")
+			"Адрес подписки не задан. Задайте его в панели — раздел «Подписка», "+
+				"или на роутере: uci set netmode.main.subscription_url='…' && uci commit netmode")
 		return
 	}
 

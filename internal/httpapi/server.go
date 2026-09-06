@@ -98,6 +98,11 @@ type Server struct {
 	// и смешав их, панель показывала бы неудачу переключения сети на
 	// вкладке проброса.
 	bridgeFails *bridgeFailStore
+	// subURL — живой адрес подписки (ADR-0034). Не cfg.SubscriptionURL:
+	// с появлением PUT /api/subscription адрес перестал быть снимком,
+	// сделанным при старте, а читателей у него три — гейт обновления,
+	// расписание и признак Configured в статусе.
+	subURL *subURLStore
 	// Кэш проб моста: ping держит запрос секунды, а вкладку панель
 	// перезапрашивает часто.
 	bridgeProbeMu  sync.Mutex
@@ -199,8 +204,9 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 		cfg.ManifestPath = manifestPath
 	}
 	s.cfg = cfg
+	s.subURL = &subURLStore{v: cfg.SubscriptionURL}
 	up := &subs.Updater{
-		URL:          cfg.SubscriptionURL,
+		URL:          s.subURL.get,
 		ProviderPath: cfg.ProviderPath,
 		ManifestPath: cfg.ManifestPath,
 		Fetch:        cfg.SubscriptionFetch,
@@ -238,7 +244,7 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 	// POST /api/subscription/update. Один источник на оба ответа: иначе
 	// панель показывала бы кнопку рабочей ровно там, где нажатие отбивается
 	// кодом subscription_not_configured. САМ АДРЕС сюда не едет — секрет.
-	s.status.subConfigured = cfg.SubscriptionURL != ""
+	s.status.subConfigured = s.subURL.configured
 	// Слот неудачи — ОДИН на демона, и читатель статуса обязан смотреть в
 	// тот же, в который пишет джоб переключения. Второй экземпляр здесь
 	// означал бы, что доклад пишется в один объект, а показывается из
@@ -355,6 +361,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/nikki/panel", s.handleNikkiPanel)
 	s.mux.HandleFunc("POST /api/nikki/proxy", s.handleNikkiProxy)
 	s.mux.HandleFunc("POST /api/nikki/test", s.handleNikkiTest)
+	s.mux.HandleFunc("GET /api/subscription", s.handleSubscriptionGet)
+	s.mux.HandleFunc("PUT /api/subscription", s.handleSubscriptionPut)
 	s.mux.HandleFunc("POST /api/subscription/update", s.handleSubscriptionUpdate)
 	s.mux.HandleFunc("GET /api/logs", s.handleLogs)
 	s.mux.HandleFunc("GET /api/b4/sets", s.handleB4Sets)

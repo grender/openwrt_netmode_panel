@@ -50,11 +50,21 @@ var ErrProviderIgnored = errors.New("subs: движок перечитал пр�
 // nikki. Оба внешних действия приходят функциями (Fetch, Reload), а не
 // клиентами: так политика проверяется без сети и без движка.
 type Updater struct {
-	// URL — адрес подписки. Пусто → ErrNotConfigured.
+	// URL — адрес подписки. Пусто или nil → ErrNotConfigured.
+	//
+	// ФУНКЦИЯ, а не строка, и по той же причине, по которой функциями
+	// приходят Fetch и Reload: адрес — внешнее состояние, а не свойство
+	// обновлятеля. С тех пор как его можно сменить из панели
+	// (PUT /api/subscription, ADR-0034), поле-строка означало бы снимок,
+	// сделанный при сборке графа: расписание держит Updater годами и
+	// продолжало бы качать по старому адресу до перезапуска демона.
+	// Читается в момент вызова — и читается ровно один раз за Update,
+	// чтобы проверка на пустоту и само скачивание не разъехались, если
+	// адрес сменят между ними.
 	//
 	// СЕКРЕТ: в строке лежит идентификатор владельца. Ни в один текст
 	// ошибки этого пакета он не попадает — см. Update.
-	URL string
+	URL func() string
 	// ProviderPath — файл узлов для mihomo (/etc/nikki/run/providers/sub.yaml).
 	ProviderPath string
 	// ManifestPath — порядок и виды записей (/etc/netmoded/subscription.json).
@@ -85,7 +95,15 @@ type Updater struct {
 // (там это главная ловушка файла — *url.Error несёт полный URL с секретом).
 // Ошибка отдаётся НЕ ОБЁРНУТОЙ ничем, что могло бы вернуть адрес обратно.
 func (u *Updater) Update(ctx context.Context) (happ.Summary, error) {
-	if u.URL == "" {
+	// Один снимок на весь вызов. Читать u.URL() второй раз ниже значило бы
+	// допустить, что проверка на пустоту и скачивание относятся к разным
+	// адресам: правка из панели между двумя чтениями дала бы «настроено»
+	// у первого и пустоту у второго — то есть падение вместо отказа.
+	url := ""
+	if u.URL != nil {
+		url = u.URL()
+	}
+	if url == "" {
 		return happ.Summary{}, ErrNotConfigured
 	}
 	if u.Reload == nil {
@@ -101,7 +119,7 @@ func (u *Updater) Update(ctx context.Context) (happ.Summary, error) {
 		fetch = happ.Fetch
 	}
 
-	raw, err := fetch(ctx, u.URL)
+	raw, err := fetch(ctx, url)
 	if err != nil {
 		return happ.Summary{}, err
 	}

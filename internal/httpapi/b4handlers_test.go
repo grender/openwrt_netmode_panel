@@ -78,36 +78,57 @@ func TestB4SetsResponseKeysAlwaysPresent(t *testing.T) {
 	}
 }
 
-// Эксклюзивность — наша семантика, не b4: там у каждого сета свой флаг,
-// и включённых может быть несколько.
-func TestB4SetSwitchIsExclusive(t *testing.T) {
+// Эксклюзивности больше нет (ADR-0033): у каждого сета свой флаг, включённых
+// может быть сколько угодно, а порядок задаёт приоритет обработки. Тест
+// утверждает ровно обратное прежнему — соседний сет обязан ОСТАТЬСЯ
+// включённым, — потому что «включился целевой» проходило и при старой
+// эксклюзивной семантике и отмену не поймало бы.
+func TestB4SetLeavesOtherSetsAlone(t *testing.T) {
 	s, _ := newServer(t)
 	fake := newFakeB4Client()
 	s.SetB4Client(fake)
 
-	rec := post(t, s, "/api/b4/set", `{"id":"909a6fb1-b9b1-4af1-8ee0-bdce82e3d8ff"}`, "")
+	rec := post(t, s, "/api/b4/set", `{"id":"909a6fb1-b9b1-4af1-8ee0-bdce82e3d8ff","enabled":true}`, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("код %d: %s", rec.Code, rec.Body.String())
 	}
 
-	on := 0
+	on := map[string]bool{}
+	for _, x := range fake.sets {
+		on[x.Name] = x.Enabled
+	}
+	if !on["workki"] {
+		t.Errorf("целевой сет не включён: %v", on)
+	}
+	if !on["HomeSet"] {
+		t.Errorf("включение workki погасило HomeSet — вернулась эксклюзивность: %v", on)
+	}
+}
+
+// Выключение: до ADR-0033 состояние «ни одного сета» из панели было
+// недостижимо, хотя контракт называет его валидным (enabled_count: 0).
+func TestB4SetCanDisable(t *testing.T) {
+	s, _ := newServer(t)
+	fake := newFakeB4Client()
+	s.SetB4Client(fake)
+
+	rec := post(t, s, "/api/b4/set", `{"id":"d98efbc7-96b6-401c-90c4-744f3ec3ccbd","enabled":false}`, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("код %d: %s", rec.Code, rec.Body.String())
+	}
 	for _, x := range fake.sets {
 		if x.Enabled {
-			on++
-			if x.Name != "workki" {
-				t.Errorf("включён не тот сет: %s", x.Name)
-			}
+			t.Errorf("сет %s остался включённым", x.Name)
 		}
-	}
-	if on != 1 {
-		t.Errorf("включено %d сетов, панель навязывает ровно один", on)
 	}
 }
 
 func TestB4SetRequiresID(t *testing.T) {
 	s, _ := newServer(t)
 	// Имя ключом не является: в b4 оно не уникально (sets.go:315).
-	for _, body := range []string{`{}`, `{"id":""}`, `{"name":"workki"}`, `{`} {
+	for _, body := range []string{
+		`{"enabled":true}`, `{"id":"","enabled":true}`, `{"name":"workki","enabled":true}`, `{`,
+	} {
 		rec := post(t, s, "/api/b4/set", body, "")
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("тело %q → %d, ожидался 400", body, rec.Code)
@@ -115,32 +136,30 @@ func TestB4SetRequiresID(t *testing.T) {
 	}
 }
 
-func TestB4SetUnknownIDIs404(t *testing.T) {
+// Запрос без enabled — 400, а не «выключить». Отсутствующий ключ и false
+// в JSON неразличимы по значению, и молчаливое выключение обхода вместо
+// отказа панель не смогла бы объяснить владельцу.
+func TestB4SetRequiresEnabled(t *testing.T) {
 	s, _ := newServer(t)
-	rec := post(t, s, "/api/b4/set", `{"id":"нет-такого"}`, "")
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("код %d, ожидался 404", rec.Code)
+	fake := newFakeB4Client()
+	s.SetB4Client(fake)
+
+	rec := post(t, s, "/api/b4/set", `{"id":"d98efbc7-96b6-401c-90c4-744f3ec3ccbd"}`, "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("код %d, ожидался 400", rec.Code)
+	}
+	for _, x := range fake.sets {
+		if x.Name == "HomeSet" && !x.Enabled {
+			t.Error("запрос без enabled выключил сет вместо отказа")
+		}
 	}
 }
 
-// Частичное переключение — не «сервис недоступен».
-//
-// SelectOnly гасит прочие сеты, затем включает целевой. Если второй шаг
-// упал, обход DPI выключен целиком, но b4 при этом жив и отвечает.
-// Отдать 503 значило бы соврать про причину и предложить владельцу ждать
-// вместо того единственного действия, которое помогает, — повторить.
-func TestB4PartialIsConflictNotUnavailable(t *testing.T) {
+func TestB4SetUnknownIDIs404(t *testing.T) {
 	s, _ := newServer(t)
-	fake := newFakeB4Client()
-	fake.err = b4.ErrPartial
-	s.SetB4Client(fake)
-
-	rec := post(t, s, "/api/b4/set", `{"id":"909a6fb1-b9b1-4af1-8ee0-bdce82e3d8ff"}`, "")
-	if rec.Code != http.StatusConflict {
-		t.Errorf("код %d, ожидался 409", rec.Code)
-	}
-	if got := errCode(t, rec); got != "b4_partial" {
-		t.Errorf("код ошибки %q, ожидался b4_partial", got)
+	rec := post(t, s, "/api/b4/set", `{"id":"нет-такого","enabled":true}`, "")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("код %d, ожидался 404", rec.Code)
 	}
 }
 

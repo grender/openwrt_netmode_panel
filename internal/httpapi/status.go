@@ -243,16 +243,19 @@ type StatusReader struct {
 	now   func() time.Time
 	logf  func(string, ...any)
 
-	// subConfigured — задан ли адрес подписки. Копия признака, а не самого
-	// адреса: значение секретное, и читателю статуса оно не нужно ни для
-	// чего, кроме одного булева поля ответа.
+	// subConfigured — задан ли адрес подписки. Признак, а не сам адрес:
+	// значение секретное, и читателю статуса оно не нужно ни для чего,
+	// кроме одного булева поля ответа.
 	//
-	// Приезжает извне (NewServer), потому что конфигурация читается один
-	// раз при старте, а у читателя статуса доступа к ней нет. Спрашивать
-	// UCI живьём здесь нельзя: демон всё равно работает со значением,
-	// прочитанным при старте, и панель обещала бы рабочую кнопку там, где
-	// POST /api/subscription/update ответит subscription_not_configured.
-	subConfigured bool
+	// ФУНКЦИЯ, а не bool. Прежде адрес читался из UCI один раз при старте,
+	// и снимок был честен. С появлением PUT /api/subscription (ADR-0034)
+	// он меняется на ходу, а замороженный bool означал бы: владелец задал
+	// адрес, панель показывает «не задан» и предлагает идти в ssh — до
+	// перезапуска демона. Спрашивать UCI живьём здесь по-прежнему нельзя:
+	// демон работает со своим значением, и живое чтение обещало бы рабочую
+	// кнопку там, где обновление ответит subscription_not_configured.
+	// Пусто → «не задан»: собранный вручную читатель не обязан это знать.
+	subConfigured func() bool
 
 	mu     sync.Mutex
 	cached *Status
@@ -260,6 +263,13 @@ type StatusReader struct {
 	// down — источники, о недоступности которых уже сказано в журнале.
 	// Живёт под тем же mu, что и кэш: пишется только из build.
 	down map[string]bool
+}
+
+// subIsConfigured — признак с защитой от несобранного графа. Читатель статуса
+// собирают и вручную (тесты, NewStatusReaderWith), и там подписки нет вовсе;
+// без этой обёртки такой читатель падал бы на первом же запросе статуса.
+func (r *StatusReader) subIsConfigured() bool {
+	return r.subConfigured != nil && r.subConfigured()
 }
 
 func NewStatusReader(ex executor.Executor, logf func(string, ...any)) *StatusReader {
@@ -521,7 +531,7 @@ func (r *StatusReader) build(ctx context.Context) *Status {
 		if e, ok, lerr := r.logs.Last(); lerr == nil && ok {
 			ts := e.TS.UTC().Format(time.RFC3339)
 			sub := &Subscription{
-				Configured: r.subConfigured,
+				Configured: r.subIsConfigured(),
 				LastUpdate: &ts, Status: e.Status, Nodes: e.Nodes,
 			}
 			if e.Err != "" {
@@ -533,7 +543,7 @@ func (r *StatusReader) build(ctx context.Context) *Status {
 			// «Обновлений не было» — состояние и заданного адреса тоже:
 			// демон только что поставлен, до первого срабатывания
 			// расписания. Поэтому configured проставляется и здесь.
-			s.Subscription = &Subscription{Configured: r.subConfigured, Status: "never"}
+			s.Subscription = &Subscription{Configured: r.subIsConfigured(), Status: "never"}
 		}
 	}
 

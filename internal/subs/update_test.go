@@ -65,7 +65,7 @@ func newHarness(t *testing.T, body string, fetchErr error) *harness {
 		manifest: filepath.Join(dir, "subscription.json"),
 	}
 	h.up = &Updater{
-		URL:          "https://example.invalid/sub/secret-id",
+		URL:          func() string { return "https://example.invalid/sub/secret-id" },
 		ProviderPath: h.provider,
 		ManifestPath: h.manifest,
 		Reload: func(context.Context) error {
@@ -240,7 +240,7 @@ func TestUpdateReportsFilesWrittenWhenReloadFails(t *testing.T) {
 
 func TestUpdateWithoutURL(t *testing.T) {
 	h := newHarness(t, oneNode, nil)
-	h.up.URL = ""
+	h.up.URL = func() string { return "" }
 
 	if _, err := h.up.Update(context.Background()); !errors.Is(err, ErrNotConfigured) {
 		t.Fatalf("ошибка %v, ожидалась ErrNotConfigured", err)
@@ -449,5 +449,44 @@ func TestUpdateLeavesNoTempOnWriteError(t *testing.T) {
 	mustNotExist(t, h.manifest, "после отказа записи")
 	if h.reloads != 0 {
 		t.Errorf("движок дёрнули при незаписанных файлах: %d", h.reloads)
+	}
+}
+
+// nil в поле URL — то же «не настроено», а не паника. Поле стало функцией
+// (ADR-0034), и у собранного вручную Updater оно вполне может остаться пустым;
+// падение здесь роняло бы горутину расписания, а не отвечало бы владельцу.
+func TestUpdateWithNilURLFunc(t *testing.T) {
+	h := newHarness(t, oneNode, nil)
+	h.up.URL = nil
+
+	if _, err := h.up.Update(context.Background()); !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("ошибка %v, ожидалась ErrNotConfigured", err)
+	}
+	if len(h.fetchArgs) != 0 {
+		t.Errorf("без адреса состоялось скачивание: %v", h.fetchArgs)
+	}
+}
+
+// Адрес читается в МОМЕНТ вызова, а не при сборке. Это и есть смысл замены
+// строки на функцию: расписание держит один Updater всё время жизни демона,
+// и правка адреса из панели обязана дойти до следующего же обновления.
+func TestUpdateReadsURLAtCallTime(t *testing.T) {
+	h := newHarness(t, oneNode, nil)
+	cur := "https://example.invalid/sub/first"
+	h.up.URL = func() string { return cur }
+
+	if _, err := h.up.Update(context.Background()); err != nil {
+		t.Fatalf("первое обновление: %v", err)
+	}
+	cur = "https://example.invalid/sub/second"
+	if _, err := h.up.Update(context.Background()); err != nil {
+		t.Fatalf("второе обновление: %v", err)
+	}
+
+	if len(h.fetchArgs) != 2 {
+		t.Fatalf("скачиваний %d, ожидалось 2", len(h.fetchArgs))
+	}
+	if h.fetchArgs[1] != "https://example.invalid/sub/second" {
+		t.Errorf("второе скачивание пошло по адресу %q — снимок вместо живого значения", h.fetchArgs[1])
 	}
 }

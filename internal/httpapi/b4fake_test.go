@@ -14,8 +14,11 @@ import (
 type fakeB4Client struct {
 	sets []b4.Set
 	err  error
-	// selected запоминает последний выбор, чтобы проверить эксклюзивность.
-	selected string
+	// touched — id сета, которого коснулся последний вызов. Прежде здесь
+	// лежало имя выбранного, чтобы проверять эксклюзивность; после ADR-0033
+	// её нет, и проверять надо ровно обратное — что соседние сеты вызов
+	// не тронул.
+	touched string
 }
 
 func newFakeB4Client() *fakeB4Client {
@@ -39,21 +42,17 @@ func (f *fakeB4Client) Sets(context.Context) ([]b4.Set, error) {
 	return f.sets, nil
 }
 
-func (f *fakeB4Client) SelectOnly(_ context.Context, id string) error {
+func (f *fakeB4Client) SetEnabled(_ context.Context, id string, on bool) error {
 	if f.err != nil {
 		return f.err
 	}
-	found := false
 	for i := range f.sets {
-		on := f.sets[i].ID == id
-		f.sets[i].Enabled = on
-		if on {
-			found = true
-			f.selected = f.sets[i].Name
+		if f.sets[i].ID != id {
+			continue
 		}
+		f.sets[i].Enabled = on
+		f.touched = id
+		return nil
 	}
-	if !found {
-		return b4.ErrNotFound
-	}
-	return nil
+	return b4.ErrNotFound
 }

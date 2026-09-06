@@ -68,6 +68,12 @@ func (s *Server) handleB4Set(w http.ResponseWriter, r *http.Request) {
 
 	var in struct {
 		ID string `json:"id"`
+		// Указатель, а не bool: отсутствующий ключ и false в JSON
+		// декодируются в одно и то же значение, и без указателя запрос
+		// без enabled молча выключал бы сет. Молчаливое выключение обхода
+		// вместо отказа — ровно тот исход, который панель не сможет
+		// объяснить владельцу.
+		Enabled *bool `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", "Тело запроса не разбирается как JSON")
@@ -78,21 +84,18 @@ func (s *Server) handleB4Set(w http.ResponseWriter, r *http.Request) {
 			"Не указан id сета. Имя ключом не является: в b4 оно не уникально.")
 		return
 	}
+	if in.Enabled == nil {
+		writeErr(w, http.StatusBadRequest, "bad_request",
+			"Не указано enabled. Сеты не эксклюзивны (ADR-0033): включённых может "+
+				"быть сколько угодно, поэтому запрос обязан назвать желаемое состояние.")
+		return
+	}
 
-	err := s.b4.SelectOnly(r.Context(), in.ID)
+	err := s.b4.SetEnabled(r.Context(), in.ID, *in.Enabled)
 	switch {
 	case err == nil:
 	case errors.Is(err, b4.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not_found", "Сет не найден")
-		return
-	case errors.Is(err, b4.ErrPartial):
-		// 409, а не 503: b4 отвечает, состояние изменено — но не то, о
-		// котором просили. Прочие сеты погашены, целевой не включён, то
-		// есть обход DPI сейчас выключен целиком. Повтор нажатия — штатный
-		// способ разрешения, поэтому владельцу нужен код, по которому
-		// панель предложит именно повторить, а не «сервис недоступен».
-		writeErr(w, http.StatusConflict, "b4_partial",
-			"Прочие сеты выключены, целевой включить не удалось: обход сейчас отключён. Повторите.")
 		return
 	case errors.Is(err, b4.ErrUnavailable):
 		writeErr(w, http.StatusServiceUnavailable, "b4_unavailable",

@@ -895,7 +895,7 @@ function App() {
 
 			${status.mode === 'b4' && html`
 				<${B4Card} data=${sets} svc=${svc.b4} t=${t} busy=${busy} locked=${locked}
-					onPick=${(id) => act('set:' + id, () => api('/api/b4/set', { method: 'POST', body: JSON.stringify({ id }) }), loadSets)} />`}
+					onPick=${(id, enabled) => act('set:' + id, () => api('/api/b4/set', { method: 'POST', body: JSON.stringify({ id, enabled }) }), loadSets)} />`}
 
 			${status.mode === 'off' && html`
 				<div class="card"><h2>${t('mode.off')}</h2>
@@ -1112,7 +1112,6 @@ const ERR_KEY = {
 	member_not_selectable: 'srv.err.notnode',
 	subscription_not_configured: 'sub.err.unset',
 	b4_unavailable: 'sets.down',
-	b4_partial: 'err.b4.partial',
 	ubus_unavailable: 'err.ubus',
 	uci_unavailable: 'err.uci',
 	scan_failed: 'err.scan',
@@ -1791,9 +1790,14 @@ function B4Card({ data, svc, t, busy, locked, onPick }) {
 		<div class="card">
 			<h2>${t('sets.title')}</h2>
 			<div class="sets">
+				<!-- Нажатие ПЕРЕКЛЮЧАЕТ сет, а не выбирает его (ADR-0033):
+				     эксклюзивности больше нет, включённых может быть сколько
+				     угодно, и «ни одного» — валидное состояние. Желаемое
+				     значение считается от x.enabled и уезжает в запрос явно:
+				     сервер не угадывает, что имел в виду клиент. -->
 				${(data.sets || []).map((x) => html`
 					<button aria-pressed=${x.enabled} disabled=${locked} aria-busy=${on(busy, 'set', x.id)}
-						onClick=${() => onPick(x.id)}>
+						onClick=${() => onPick(x.id, !x.enabled)}>
 						${on(busy, 'set', x.id) && html`<${Spin} /> `}${x.name}</button>`)}
 			</div>
 			<p class="hint tight">${t('sets.hint')}</p>

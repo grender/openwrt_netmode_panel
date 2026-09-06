@@ -27,8 +27,9 @@ type fakeB4 struct {
 	garbage bool
 
 	// batchStatus — код, которым отвечает batch-set-enabled начиная
-	// с batchFailFrom-го вызова (нумерация с 1). Так проверяется провал
-	// именно ВТОРОГО шага переключения, когда первый уже прошёл.
+	// с batchFailFrom-го вызова (нумерация с 1). Счётчик пережил ADR-0033,
+	// хотя вызов теперь один: он же отличает «отказал сразу» от «отказал
+	// после успешного», а это разные пути в do.
 	batchStatus   int
 	batchFailFrom int
 	batchCalls    int
@@ -204,128 +205,119 @@ func TestSelectedAndCount(t *testing.T) {
 
 // ─────────── переключение ───────────
 
-func TestSelectOnlyDisablesOthers(t *testing.T) {
+// Главный инвариант ADR-0033, и он ровно обратен прежнему: включение сета
+// НЕ трогает соседние. До этого решения тот же тест утверждал
+// противоположное («включено только workki»), поэтому проверять надо не
+// «целевой включился», а «HomeSet остался включённым» — иначе эксклюзивность
+// могла бы вернуться через любую правку и тест бы это пропустил.
+func TestSetEnabledLeavesOthersAlone(t *testing.T) {
 	f, c, done := newFakeB4(t)
 	defer done()
 
 	sets, _ := c.Sets(context.Background())
 	workki := sets[0].ID // выключен; HomeSet включён
 
-	if err := c.SelectOnly(context.Background(), workki); err != nil {
-		t.Fatalf("SelectOnly: %v", err)
+	if err := c.SetEnabled(context.Background(), workki, true); err != nil {
+		t.Fatalf("SetEnabled: %v", err)
 	}
 
 	got := f.enabled()
-	if len(got) != 1 || got[0] != "workki" {
-		t.Errorf("включено %v, ожидался только workki", got)
+	if len(got) != 2 {
+		t.Fatalf("включено %v, ожидались оба сета: включение одного погасило соседний", got)
 	}
 }
 
-// Порядок вызовов важен: сначала гасим лишние, потом включаем нужный.
-// Обратный порядок оставил бы промежуток с двумя включёнными сетами —
-// а это уже другое поведение обхода.
-func TestSelectOnlyDisablesBeforeEnabling(t *testing.T) {
+// Выключение — то, чего у панели не было вовсе: SelectOnly умел только
+// включать, и состояние «ни одного сета» из панели было недостижимо, хотя
+// контракт называет его валидным (enabled_count: 0).
+func TestSetEnabledCanTurnOff(t *testing.T) {
 	f, c, done := newFakeB4(t)
 	defer done()
 
 	sets, _ := c.Sets(context.Background())
-	_ = c.SelectOnly(context.Background(), sets[0].ID)
+	homeSet := sets[1].ID // включён
+
+	if err := c.SetEnabled(context.Background(), homeSet, false); err != nil {
+		t.Fatalf("SetEnabled(false): %v", err)
+	}
+	if got := f.enabled(); len(got) != 0 {
+		t.Errorf("включено %v, ожидалась пустота", got)
+	}
+}
+
+// Один вызов, а не два. Это не про экономию: у двухшагового переключения
+// была середина (прочие погашены, целевой не включён), ради которой
+// существовала ErrPartial. Пока вызов один, такого состояния не существует.
+func TestSetEnabledIsOneCall(t *testing.T) {
+	f, c, done := newFakeB4(t)
+	defer done()
+
+	sets, _ := c.Sets(context.Background())
+	_ = c.SetEnabled(context.Background(), sets[0].ID, true)
 
 	f.mu.Lock()
 	calls := append([]string(nil), f.calls...)
 	f.mu.Unlock()
 
 	batches := 0
-	for _, c := range calls {
-		if c == "POST /api/sets/batch-set-enabled" {
+	for _, call := range calls {
+		if call == "POST /api/sets/batch-set-enabled" {
 			batches++
 		}
 	}
-	if batches != 2 {
-		t.Fatalf("вызовов batch-set-enabled %d, ожидалось 2 (погасить, включить): %v", batches, calls)
+	if batches != 1 {
+		t.Fatalf("вызовов batch-set-enabled %d, ожидался 1: %v", batches, calls)
 	}
 }
 
-func TestSelectOnlyAlreadySelectedIsCheap(t *testing.T) {
-	// Сет уже единственный включённый — включать его повторно незачем.
+func TestSetEnabledAlreadyAtValueIsCheap(t *testing.T) {
+	// Значение уже стоит — ходить в сеть незачем.
 	f, c, done := newFakeB4(t)
 	defer done()
 
 	sets, _ := c.Sets(context.Background())
-	homeSet := sets[1].ID // уже включён, других включённых нет
+	homeSet := sets[1].ID // уже включён
 
-	if err := c.SelectOnly(context.Background(), homeSet); err != nil {
-		t.Fatalf("SelectOnly: %v", err)
+	if err := c.SetEnabled(context.Background(), homeSet, true); err != nil {
+		t.Fatalf("SetEnabled: %v", err)
 	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, call := range f.calls {
 		if call == "POST /api/sets/batch-set-enabled" {
-			t.Errorf("лишний вызов при уже выбранном сете: %v", f.calls)
+			t.Errorf("лишний вызов при уже стоящем значении: %v", f.calls)
 			break
 		}
 	}
 }
 
-func TestSelectOnlyUnknownID(t *testing.T) {
+func TestSetEnabledUnknownID(t *testing.T) {
 	_, c, done := newFakeB4(t)
 	defer done()
 
-	err := c.SelectOnly(context.Background(), "нет-такого-uuid")
+	err := c.SetEnabled(context.Background(), "нет-такого-uuid", true)
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("ожидалась ErrNotFound, получено %v", err)
 	}
 }
 
-// Провал ВТОРОГО вызова оставляет систему в состоянии, которого никто не
-// просил: прочие погашены, целевой не включён — обход DPI выключен целиком.
-// Отката нет (ADR-0006) и демон не чинит состояние сам (ADR-0010), поэтому
-// единственное, что можно сделать честно, — назвать состояние отдельной
-// ошибкой, а не выдать его за обычную недоступность.
-func TestEnableStepFailureIsPartial(t *testing.T) {
+// Провал вызова оставляет состояние нетронутым, и называть его особым
+// словом больше незачем: промежуточного состояния у одного вызова нет.
+// Раньше здесь стояли две проверки — на провал первого шага и на провал
+// второго, — и разница между ними и была ErrPartial.
+func TestSetEnabledFailureLeavesStateUntouched(t *testing.T) {
 	f, c, done := newFakeB4(t)
 	defer done()
 
 	sets, _ := c.Sets(context.Background())
-	workki := sets[0].ID // выключен; HomeSet включён, его надо погасить
-
-	f.mu.Lock()
-	f.batchStatus, f.batchFailFrom = http.StatusInternalServerError, 2
-	f.mu.Unlock()
-
-	err := c.SelectOnly(context.Background(), workki)
-	if !errors.Is(err, ErrPartial) {
-		t.Fatalf("провал включения → %v, ожидалась ErrPartial", err)
-	}
-	// ErrUnavailable внутри быть не должно: иначе обработчик уедет в 503
-	// «b4 не отвечает» и промежуточное состояние останется неназванным.
-	if errors.Is(err, ErrUnavailable) {
-		t.Errorf("ErrPartial маскируется под недоступность: %v", err)
-	}
-	// Состояние именно то, о котором говорит ошибка, — и мы его не чиним.
-	if got := f.enabled(); len(got) != 0 {
-		t.Errorf("включено %v, ожидалась пустота", got)
-	}
-}
-
-// Провал ПЕРВОГО вызова — обычная ошибка: ещё ничего не сделано, состояние
-// нетронуто, и называть его промежуточным было бы враньём.
-func TestDisableStepFailureIsNotPartial(t *testing.T) {
-	f, c, done := newFakeB4(t)
-	defer done()
-
-	sets, _ := c.Sets(context.Background())
-	workki := sets[0].ID
+	workki := sets[0].ID // выключен
 
 	f.mu.Lock()
 	f.batchStatus, f.batchFailFrom = http.StatusInternalServerError, 1
 	f.mu.Unlock()
 
-	err := c.SelectOnly(context.Background(), workki)
-	if errors.Is(err, ErrPartial) {
-		t.Errorf("провал гашения объявлен промежуточным состоянием: %v", err)
-	}
+	err := c.SetEnabled(context.Background(), workki, true)
 	if !errors.Is(err, ErrUnavailable) {
 		t.Errorf("500 от b4 → %v, ожидалась ErrUnavailable", err)
 	}
@@ -346,7 +338,7 @@ func TestExplicitSuccessFalseIsRejected(t *testing.T) {
 	f.batchSuccess = boolPtr(false)
 	f.mu.Unlock()
 
-	err := c.SelectOnly(context.Background(), sets[0].ID)
+	err := c.SetEnabled(context.Background(), sets[0].ID, true)
 	if !errors.Is(err, ErrRejected) {
 		t.Errorf("success:false → %v, ожидалась ErrRejected", err)
 	}
@@ -360,11 +352,12 @@ func TestMissingSuccessFieldIsSuccess(t *testing.T) {
 	defer done()
 
 	sets, _ := c.Sets(context.Background())
-	if err := c.SelectOnly(context.Background(), sets[0].ID); err != nil {
+	if err := c.SetEnabled(context.Background(), sets[0].ID, true); err != nil {
 		t.Fatalf("ответ без поля success принят за отказ: %v", err)
 	}
-	if got := f.enabled(); len(got) != 1 || got[0] != "workki" {
-		t.Errorf("включено %v", got)
+	// Оба: workki включили, HomeSet не трогали (ADR-0033).
+	if got := f.enabled(); len(got) != 2 {
+		t.Errorf("включено %v, ожидались оба", got)
 	}
 }
 
@@ -378,8 +371,8 @@ func TestExplicitSuccessTrueIsSuccess(t *testing.T) {
 	f.batchSuccess = boolPtr(true)
 	f.mu.Unlock()
 
-	if err := c.SelectOnly(context.Background(), sets[0].ID); err != nil {
-		t.Fatalf("SelectOnly: %v", err)
+	if err := c.SetEnabled(context.Background(), sets[0].ID, true); err != nil {
+		t.Fatalf("SetEnabled: %v", err)
 	}
 }
 
@@ -398,7 +391,7 @@ func TestUpdatedZeroIsNotAnError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := New(srv.URL).SelectOnly(context.Background(), sets[0].ID); err != nil {
+	if err := New(srv.URL).SetEnabled(context.Background(), sets[0].ID, true); err != nil {
 		t.Errorf("updated:0 принят за ошибку: %v", err)
 	}
 }
@@ -419,7 +412,7 @@ func TestUnavailableIsDistinguishable(t *testing.T) {
 	}{
 		{"version", func() error { _, err := c.Version(context.Background()); return err }},
 		{"sets", func() error { _, err := c.Sets(context.Background()); return err }},
-		{"select", func() error { return c.SelectOnly(context.Background(), "x") }},
+		{"select", func() error { return c.SetEnabled(context.Background(), "x", true) }},
 	} {
 		if err := tt.call(); !errors.Is(err, ErrUnavailable) {
 			t.Errorf("%s: ожидалась ErrUnavailable, получено %v", tt.name, err)
@@ -498,7 +491,7 @@ func TestNeverUsesPutSets(t *testing.T) {
 	defer done()
 
 	sets, _ := c.Sets(context.Background())
-	_ = c.SelectOnly(context.Background(), sets[0].ID)
+	_ = c.SetEnabled(context.Background(), sets[0].ID, true)
 
 	f.mu.Lock()
 	defer f.mu.Unlock()

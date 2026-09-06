@@ -67,8 +67,8 @@ type Version struct {
 type Client interface {
 	Version(ctx context.Context) (Version, error)
 	Sets(ctx context.Context) ([]Set, error)
-	// SelectOnly включает указанный сет и гасит остальные.
-	SelectOnly(ctx context.Context, id string) error
+	// SetEnabled включает или выключает ОДИН сет, не трогая остальные.
+	SetEnabled(ctx context.Context, id string, on bool) error
 }
 
 // ErrUnavailable — b4 не отвечает.
@@ -87,15 +87,11 @@ var ErrNotFound = errors.New("b4: сет не найден")
 // вслепую бессмысленно — сначала надо перечитать список сетов.
 var ErrRejected = errors.New("b4: запрос отклонён")
 
-// ErrPartial — переключение оборвалось между двумя вызовами.
-//
-// Прочие сеты уже погашены, целевой включить не удалось: b4 сейчас не
-// обрабатывает трафик ни одним сетом. Отката нет и не будет (ADR-0006), демон
-// не чинит состояние сам (ADR-0010) — а компенсирующий вызов и не помог бы:
-// если b4 не ответил на включение, он с той же вероятностью не ответит и на
-// компенсацию, и поверх одного непредсказуемого результата ляжет второй.
-// Поэтому состояние называется вслух, а разбирается оно повтором нажатия.
-var ErrPartial = errors.New("b4: прочие сеты выключены, целевой не включён")
+// ErrPartial больше нет, и это следствие ADR-0033, а не уборка. Половинчатое
+// состояние было НАШИМ изобретением: эксклюзивность требовала двух вызовов
+// подряд, и обрыв между ними гасил прочие сеты, не включив целевой. У одного
+// вызова середины не существует — он либо выполнен, либо нет, — поэтому и
+// код b4_partial из контракта убран вместе с ней.
 
 // HTTP — реальный клиент.
 type HTTP struct {
@@ -245,72 +241,52 @@ type batchResponse struct {
 // rejected — b4 явно сказал, что не выполнил запрос.
 func (r batchResponse) rejected() bool { return r.Success != nil && !*r.Success }
 
-// SelectOnly включает указанный сет и гасит все остальные.
+// SetEnabled включает или выключает ОДИН сет, не трогая остальные.
 //
-// Эксклюзивность — НАША семантика, не b4. В самом b4 «текущего сета» не
-// существует: у каждого свой флаг enabled, включённых может быть несколько,
-// а порядок задаёт приоритет обработки (docs/docs/sets/index.md:26).
-// Владелец выбрал модель «один из N», поэтому переключение — два вызова.
+// Это родная модель b4, а не наша: «текущего сета» в нём не существует, у
+// каждого свой флаг enabled, включённых может быть сколько угодно, а порядок
+// в списке задаёт приоритет обработки (docs/docs/sets/index.md:26). Прежняя
+// эксклюзивность была нашей надстройкой и снята ADR-0033.
 //
-// Порядок именно такой: сначала гасим лишние, потом включаем нужный.
-// Обратный порядок оставил бы промежуток, в котором включено два сета
-// сразу, — а это уже другое поведение обхода.
-func (c *HTTP) SelectOnly(ctx context.Context, id string) error {
+// Один вызов вместо двух — и это не оптимизация, а другое множество исходов.
+// У двухшагового переключения существовала середина: прочие погашены, целевой
+// не включён, обход выключен целиком. Здесь такого состояния нет, поэтому нет
+// и ErrPartial: либо b4 применил запрошенное, либо не применил ничего.
+//
+// Список читается заранее ради двух вещей: неизвестный id обязан стать
+// ErrNotFound (без этого b4 ответил бы 200 на ids с несуществующим uuid, и
+// панель показала бы успех несделанного), а совпадающее значение не стоит
+// сетевого вызова.
+func (c *HTTP) SetEnabled(ctx context.Context, id string, on bool) error {
 	sets, err := c.Sets(ctx)
 	if err != nil {
 		return err
 	}
 
 	var target *Set
-	var others []string
 	for i := range sets {
 		if sets[i].ID == id {
 			target = &sets[i]
-			continue
-		}
-		if sets[i].Enabled {
-			others = append(others, sets[i].ID)
+			break
 		}
 	}
 	if target == nil {
 		return ErrNotFound
 	}
 
-	// Гашение УДАЛОСЬ — значит система уже не в исходном состоянии, и провал
-	// второго шага надо называть иначе, чем провал первого.
-	disabled := false
-
-	if len(others) > 0 {
-		var resp batchResponse
-		err := c.do(ctx, http.MethodPost, "/api/sets/batch-set-enabled",
-			batchRequest{IDs: others, Enabled: false}, &resp, switchTimeout)
-		if err != nil {
-			return fmt.Errorf("гашение прочих сетов: %w", err)
-		}
-		if resp.rejected() {
-			return fmt.Errorf("%w: гашение прочих сетов", ErrRejected)
-		}
-		disabled = true
+	// Значение уже стоит. Не ошибка и не повод ходить в сеть: updated:0 у b4
+	// означает ровно это (sets.go:679-683), и отличить его от успеха нечем.
+	if target.Enabled == on {
+		return nil
 	}
 
-	if !target.Enabled {
-		var resp batchResponse
-		err := c.do(ctx, http.MethodPost, "/api/sets/batch-set-enabled",
-			batchRequest{IDs: []string{id}, Enabled: true}, &resp, switchTimeout)
-		switch {
-		case err != nil && disabled:
-			// ErrUnavailable здесь была бы враньём: вызывающий не отличил бы
-			// «ничего не начали» от «всё погасили». Внутренняя причина идёт
-			// через %v, а не %w, чтобы errors.Is(ErrUnavailable) не увёл
-			// обработчик в 503 «b4 не отвечает» мимо этого состояния.
-			return fmt.Errorf("%w: %v", ErrPartial, err)
-		case err != nil:
-			return fmt.Errorf("включение сета: %w", err)
-		case resp.rejected() && disabled:
-			return fmt.Errorf("%w: b4 отклонил включение", ErrPartial)
-		case resp.rejected():
-			return fmt.Errorf("%w: включение сета", ErrRejected)
-		}
+	var resp batchResponse
+	if err := c.do(ctx, http.MethodPost, "/api/sets/batch-set-enabled",
+		batchRequest{IDs: []string{id}, Enabled: on}, &resp, switchTimeout); err != nil {
+		return err
+	}
+	if resp.rejected() {
+		return fmt.Errorf("%w: переключение сета", ErrRejected)
 	}
 	return nil
 }

@@ -172,7 +172,6 @@ export const DICT = {
 		'err.ifname': 'Не удалось определить интерфейс станции — сканировать нечем.',
 		'err.radio': 'Не удалось определить, какое радио работает станцией.',
 		'err.sched': 'Планировщик обновлений не настроен — подписку не обновить.',
-		'err.b4.partial': 'b4 погасил прочие сеты, но целевой не включил: обход DPI сейчас выключен целиком. Нажмите ещё раз.',
 
 		'sel.empty.title': 'Сохранённых сетей нет',
 		'sel.empty.text': 'Свежая установка выглядит именно так. Добавьте сеть — она сохранится выключенной.',
@@ -241,7 +240,7 @@ export const DICT = {
 		'sets.title': 'Сет стратегий',
 		'sets.down': 'Панель b4 не отвечает. Сеты недоступны, режим переключается по-прежнему.',
 		'sets.starting': 'b4 запускается — сеты появятся, как только он ответит.',
-		'sets.hint': 'Выбор одного сета гасит остальные — это поведение панели, не b4.',
+		'sets.hint': 'Сеты независимы: включённых может быть сколько угодно, порядок задаёт приоритет. Нажатие на включённый сет выключает его.',
 
 		'wifi.title': 'Внешняя сеть',
 		'wifi.scan': 'Найти сети',
@@ -582,7 +581,6 @@ export const DICT = {
 		'err.ifname': 'The station interface could not be determined — there is nothing to scan with.',
 		'err.radio': 'Could not tell which radio runs as the station.',
 		'err.sched': 'The update scheduler is not configured — the subscription cannot be updated.',
-		'err.b4.partial': 'b4 disabled the other sets but did not enable the target one: DPI bypass is fully off now. Press again.',
 
 		'sel.empty.title': 'No saved networks',
 		'sel.empty.text': 'A fresh install looks exactly like this. Add a network — it is saved disabled.',
@@ -624,7 +622,7 @@ export const DICT = {
 		'sets.title': 'Strategy set',
 		'sets.down': 'The b4 panel does not respond. Sets are unavailable; mode switching still works.',
 		'sets.starting': 'b4 is starting — sets appear as soon as it answers.',
-		'sets.hint': 'Choosing one set disables the rest — that is the panel behaviour, not b4.',
+		'sets.hint': 'Sets are independent: any number can be on, and their order sets the priority. Pressing an enabled set turns it off.',
 
 		'wifi.title': 'Uplink network',
 		'wifi.scan': 'Scan',
