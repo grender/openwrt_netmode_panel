@@ -5,7 +5,7 @@ TARGET   := $(BUILDDIR)/$(BIN)
 GOFLAGS_TARGET := GOOS=linux GOARCH=arm64 CGO_ENABLED=0
 LDFLAGS        := -s -w
 
-.PHONY: all verify fmt vet test api panel build size checks probe-check geometry clean help
+.PHONY: all verify fmt vet test api panel panel-next build size checks probe-check geometry clean help
 
 all: verify
 
@@ -44,6 +44,13 @@ api:
 panel:
 	@scripts/build-panel.sh
 
+## panel-next — сборка НОВОЙ панели. Кладёт результат в web/panel/dist и
+## никуда его не копирует: пока встроенный артефакт остаётся старой панелью,
+## а собранная новая существует только для того, чтобы её было видно.
+## Исчезнет вместе с переключением — тогда её соберёт сама цель panel.
+panel-next:
+	@cd web/panel && npm ci --silent && npm run build
+
 build:
 	@mkdir -p $(BUILDDIR)
 	@$(GOFLAGS_TARGET) go build -trimpath -ldflags="$(LDFLAGS)" -o $(TARGET) ./cmd/netmoded
@@ -67,6 +74,7 @@ checks:
 	@scripts/check-netmode-apply.sh
 	@scripts/check-netmode-wifi.sh
 	@scripts/check-netmode-bridge.sh
+	@scripts/check-panel-deps.sh
 	@scripts/check-panel-build.sh
 
 ## probe-check — песочница измерительной оснастки RQ-03. Не в checks намеренно:

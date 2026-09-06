@@ -24,8 +24,8 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const SPEC = 'docs/api/openapi.yaml';
-const OUT_ROUTES = 'web/src/api/routes.gen.ts';
-const OUT_REASONS = 'web/src/api/reasons.gen.ts';
+const OUT_ROUTES = 'web/panel/src/api/routes.gen.ts';
+const OUT_REASONS = 'web/panel/src/api/reasons.gen.ts';
 
 // --check — режим гейта: ничего не пишет, сверяет содержимое и краснеет на
 // расхождении. Отдельный режим, а не «сгенерируй во временный каталог и
@@ -234,7 +234,7 @@ export function bridgeReason(code: string): BridgeReason | typeof UNKNOWN_REASON
 if (CHECK) {
 	if (drift > 0) {
 		console.error('  контракт изменился, а клиент панели — нет. Обновите:');
-		console.error('    node scripts/gen-api.mjs && git add web/src/api');
+		console.error('    node scripts/gen-api.mjs && git add web/panel/src/api');
 		process.exit(1);
 	}
 	console.log('-- gen-api: порождённый клиент свеж относительно контракта');
