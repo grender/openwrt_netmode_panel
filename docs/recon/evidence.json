@@ -565,6 +565,14 @@
       "blocks": [],
       "resolve_with": "curl -s -H \"Authorization: Bearer $S\" 'http://127.0.0.1:9090/proxies/PROXY/delay?timeout=3000&url=https://www.gstatic.com/generate_204'",
       "answer": "ЗАКРЫТ (2026-08-07, живой роутер). GET /proxies/{name}/delay?timeout=3000&url=... с заголовком Authorization: Bearer отвечает РОВНО ОДНИМ полем: {\"delay\":25}. Имя проверяется: несуществующее даёт {\"message\":\"Resource not found\"} — то есть успеху можно верить, отдельная проверка существования узла не нужна. Замерено на группе PROXY (type URLTest, 26 членов) — она же и есть настоящий узел, а не заглушка из примера команды. ВАЖНО ДЛЯ РЕАЛИЗАЦИИ: задержки уже приходят в GET /proxies без всякого замера — у каждого узла есть history [{time, delay}], mihomo обновляет её сам примерно раз в пять минут (видно по меткам времени в raw/60-clash-proxies.json). delay:0 в последней записи означает «сейчас не отвечает», это уже учтено в lastDelay (internal/nikki/nikki.go). Значит POST /api/nikki/test — это ТРИГГЕР свежего замера, а не источник чисел: числа панель и так показывает. Для группы /proxies/{группа}/delay возвращает задержку выбранного члена, а не всех — чтобы обновить всех, надо звать по каждому имени из all[]. Форма ответа на групповой эндпоинт /group/{name}/delay НЕ снималась и в реализации не используется: догадка вместо замера здесь запрещена так же, как в RQ-03."
+    },
+    {
+      "id": "RQ-07",
+      "text": "Наборы geosite сделаны по исходникам upstream: снять с роутера версии, профиль, живой /providers/rules и поведение склейки yq",
+      "blocks": [],
+      "severity": "средняя — реализация написана и покрыта тестами, но ни одно утверждение о поведении на железе не измерено",
+      "resolve_with": "uci show nikki | grep -v api_secret; grep -n 'nikki-rules\\|MIXIN_FILE_PATH' /etc/init.d/nikki /etc/nikki/scripts/include.sh; cat /etc/nikki/mixin.yaml; grep -n -A3 '^rules:' /etc/nikki/run/config.yaml | head; ls -la /etc/nikki/run/rules/; S=$(uci get nikki.mixin.api_secret); curl -s -H \"Authorization: Bearer $S\" http://127.0.0.1:9090/providers/rules; mihomo -v; apk info nikki | head -3; df -h /overlay; curl -sI https://api.github.com/repos/MetaCubeX/meta-rules-dat/git/trees/meta | head -5",
+      "answer": null
     }
   ]
 }
