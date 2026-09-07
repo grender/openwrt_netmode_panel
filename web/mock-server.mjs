@@ -1224,7 +1224,10 @@ async function handleAPI(req, res, u) {
 		if (!['profile', 'only', 'except'].includes(body.policy)) {
 			return fail(res, 400, 'bad_request', 'Неизвестная политика наборов geosite');
 		}
-		const names = Array.isArray(body.sets) ? body.sets : [];
+		if (!Array.isArray(body.sets)) {
+			return fail(res, 400, 'bad_request', 'Поле sets обязано быть списком имён');
+		}
+		const names = body.sets;
 		const cat = await readJSON('nikki-rulesets-catalog.json');
 		const catNames = new Set(cat.names);
 		const unknown = names.filter((n) => !catNames.has(n));
@@ -1237,7 +1240,15 @@ async function handleAPI(req, res, u) {
 		const cur = await readJSON(RULESETS[state.scenario] || RULESETS['rulesets-profile']);
 		const fp = (state.overlay.rulesets && state.overlay.rulesets.fingerprint) || cur.fingerprint;
 		const ifMatch = req.headers['if-match'];
-		if (ifMatch && ifMatch !== fp) {
+		// Отсутствие заголовка — тот же отказ, что и несовпадение (реальный
+		// обработчик отбивает оба случая одним stale_rulesets,
+		// rulesetshandlers.go:403-408): автор панели обязан узнать про
+		// обязательность If-Match здесь, а не на роутере.
+		if (!ifMatch) {
+			return fail(res, 409, 'stale_rulesets',
+				'Нужен заголовок If-Match с отпечатком из GET /api/nikki/rulesets: без него запись не докажет, что видела нынешний выбор.');
+		}
+		if (ifMatch !== fp) {
 			return fail(res, 409, 'stale_rulesets',
 				'Выбор наборов изменился, пока вы его правили: перечитайте GET /api/nikki/rulesets и повторите с новым отпечатком.');
 		}
