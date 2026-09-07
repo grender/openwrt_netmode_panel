@@ -93,6 +93,14 @@ func newServer(t *testing.T) (*Server, *executor.Fake) {
 		// тест «манифеста нет» на роутере проверял бы что-то другое.
 		ProviderPath: filepath.Join(t.TempDir(), "sub.yaml"),
 		ManifestPath: filepath.Join(t.TempDir(), "subscription.json"),
+		// Выбор наборов — туда же: боевой путь лежит в /etc/nikki, и
+		// тест, который туда пишет, либо не работает, либо портит машину
+		// разработчика.
+		MixinPath: filepath.Join(t.TempDir(), "mixin.yaml"),
+		// Каталог наборов ходит в GitHub. Стенд поднимается на КАЖДЫЙ
+		// тест, а не один на пакет: `make verify` обязан быть зелёным
+		// офлайн, а тест, который лезет в сеть, зелёный только дома.
+		CatalogBaseURL: newCatalogStand(t, 0).URL,
 	}, f)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)

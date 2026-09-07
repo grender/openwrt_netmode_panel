@@ -16,6 +16,7 @@ import (
 
 	"netmoded/internal/b4"
 	"netmoded/internal/executor"
+	"netmoded/internal/geosite"
 	"netmoded/internal/happ"
 	"netmoded/internal/job"
 	"netmoded/internal/led"
@@ -68,6 +69,15 @@ type Config struct {
 	// проверяется ничем, и её удаление оставляло все тесты зелёными.
 	ProviderPath string
 	ManifestPath string
+	// MixinPath — файл выбора наборов geosite. Пусто → mixinPath.
+	// Тоже НЕ настройка владельца, и по той же причине, что пути выше:
+	// имя файла назначает nikki, а не мы. Поле есть ради тестов, которые
+	// уводят запись в t.TempDir(): /etc/nikki на машине разработчика нет.
+	MixinPath string
+	// CatalogBaseURL — корень GitHub API для каталога наборов. Пусто →
+	// боевой api.github.com. Только для тестов и дев-стенда: боевой адрес
+	// зашит в internal/geosite и в конфигурацию владельца не выведен.
+	CatalogBaseURL string
 	// SubscriptionFetch — скачивание подписки. Пусто → happ.Fetch. Только
 	// для тестов, по той же причине, что и пути выше; боевой путь обязан
 	// идти через happ, который умеет не показывать адрес в ошибках.
@@ -123,7 +133,25 @@ type Server struct {
 	// в списке узлов.
 	manifestMu sync.RWMutex
 	manifest   []happ.Entry
-	mux        *http.ServeMux
+	// catalog — живой каталог имён наборов geosite. Кэш у него свой, в
+	// памяти; демон в GitHub без обращения панели не ходит.
+	catalog *geosite.Client
+	// catalogBody — готовое тело ответа каталога.
+	//
+	// Кэш нужен потому, что тело большое (60 КБ имён) и неизменное между
+	// обновлениями снимка: собирать JSON и жать его заново на каждое
+	// открытие вкладки значило бы тратить процессор роутера на один и тот
+	// же результат. Ключ — версия снимка; сменился снимок, сменился ключ.
+	//
+	// Обычный Mutex, а не RWMutex: под замком не чтение поля, а решение
+	// «собрать заново или отдать готовое», и писателем оказывается любой
+	// первый запрос после обновления каталога.
+	catalogBody struct {
+		mu  sync.Mutex
+		key string
+		f   *panelFile
+	}
+	mux *http.ServeMux
 }
 
 // Пути файлов подписки — константы, а не настройка в /etc/config/netmode.
@@ -138,6 +166,15 @@ type Server struct {
 const (
 	providerPath = "/etc/nikki/run/providers/sub.yaml"
 	manifestPath = "/etc/netmoded/subscription.json"
+	// mixinPath — файл выбора наборов geosite.
+	//
+	// Тоже договорённость с соседом, а не настройка: файл ИМЕННО по
+	// этому пути nikki.init склеивает со своим профилем при каждом старте
+	// (при nikki.mixin.mixin_file_content=1). Сдвинь его — и выбор
+	// владельца перестанет доезжать до mihomo, причём молча: панель
+	// показывала бы применённые наборы, а правила остались бы
+	// профильными.
+	mixinPath = "/etc/nikki/mixin.yaml"
 	// providerName — имя провайдера в Clash API: PUT /providers/proxies/sub.
 	//
 	// Совпадает с именем файла без расширения ПО ЭТОМУ КОНКРЕТНОМУ ПРОФИЛЮ
@@ -203,7 +240,13 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 	if cfg.ManifestPath == "" {
 		cfg.ManifestPath = manifestPath
 	}
+	if cfg.MixinPath == "" {
+		cfg.MixinPath = mixinPath
+	}
 	s.cfg = cfg
+	// Каталог наборов. Нулевой Client рабочий: боевой адрес, HTTP-клиент и
+	// TTL он подставляет сам, а BaseURL здесь непуст только на стенде.
+	s.catalog = &geosite.Client{BaseURL: cfg.CatalogBaseURL, Logf: logf}
 	s.subURL = &subURLStore{v: cfg.SubscriptionURL}
 	up := &subs.Updater{
 		URL:          s.subURL.get,
@@ -361,6 +404,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/nikki/panel", s.handleNikkiPanel)
 	s.mux.HandleFunc("POST /api/nikki/proxy", s.handleNikkiProxy)
 	s.mux.HandleFunc("POST /api/nikki/test", s.handleNikkiTest)
+	s.mux.HandleFunc("GET /api/nikki/rulesets", s.handleRulesetsGet)
+	s.mux.HandleFunc("GET /api/nikki/rulesets/catalog", s.handleRulesetsCatalog)
 	s.mux.HandleFunc("GET /api/subscription", s.handleSubscriptionGet)
 	s.mux.HandleFunc("PUT /api/subscription", s.handleSubscriptionPut)
 	s.mux.HandleFunc("POST /api/subscription/update", s.handleSubscriptionUpdate)

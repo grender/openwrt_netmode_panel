@@ -1,0 +1,9 @@
+{
+  "download": "direct",
+  "fingerprint": "sha256:61e82e11fc8c04bc",
+  "foreign": true,
+  "live": true,
+  "policy": "profile",
+  "sets": [],
+  "tunnel_group": "BYPASS"
+}

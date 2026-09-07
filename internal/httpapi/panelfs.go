@@ -60,28 +60,8 @@ func newPanelStore(sub fs.FS) (*panelStore, error) {
 			ct = "application/octet-stream"
 		}
 
-		sum := sha256.Sum256(b)
-		f := &panelFile{
-			raw:   b,
-			ctype: ct,
-			// Слабый ETag: тело может уехать сжатым, а по RFC 9110 сильный
-			// валидатор обязан описывать ровно те байты, что в теле.
-			etag:      `W/"` + hex.EncodeToString(sum[:8]) + `"`,
-			immutable: strings.HasPrefix(p, "assets/"),
-		}
-
-		// Сжимаем только то, что от этого выигрывает. Картинки и шрифты
-		// уже сжаты, и второй проход даёт минус процент и трату CPU.
-		if compressible(ct) {
-			var buf bytes.Buffer
-			zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
-			if _, werr := zw.Write(b); werr == nil && zw.Close() == nil {
-				// Оставляем, только если сжатие вообще что-то дало.
-				if buf.Len() < len(b) {
-					f.gz = append([]byte(nil), buf.Bytes()...)
-				}
-			}
-		}
+		f := preparedFile(b, ct)
+		f.immutable = strings.HasPrefix(p, "assets/")
 
 		st.files[p] = f
 		return nil
@@ -91,6 +71,39 @@ func newPanelStore(sub fs.FS) (*panelStore, error) {
 	}
 	st.index = st.files["index.html"]
 	return st, nil
+}
+
+// preparedFile — тело, приготовленное к отдаче: сжатие и отпечаток
+// считаются ОДИН раз, а не на каждый запрос.
+//
+// Отдельная функция, потому что тел таких два вида и они не родня: файлы
+// панели (готовятся при старте) и каталог наборов geosite (готовится, когда
+// его принесли с GitHub, — 60 КБ имён, которые панель перечитывает на каждом
+// открытии вкладки). Общее у них ровно то, что здесь: сжать один раз, дать
+// валидатор, чтобы повтор стоил 304.
+func preparedFile(b []byte, ctype string) *panelFile {
+	sum := sha256.Sum256(b)
+	f := &panelFile{
+		raw:   b,
+		ctype: ctype,
+		// Слабый ETag: тело может уехать сжатым, а по RFC 9110 сильный
+		// валидатор обязан описывать ровно те байты, что в теле.
+		etag: `W/"` + hex.EncodeToString(sum[:8]) + `"`,
+	}
+
+	// Сжимаем только то, что от этого выигрывает. Картинки и шрифты
+	// уже сжаты, и второй проход даёт минус процент и трату CPU.
+	if compressible(ctype) {
+		var buf bytes.Buffer
+		zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+		if _, werr := zw.Write(b); werr == nil && zw.Close() == nil {
+			// Оставляем, только если сжатие вообще что-то дало.
+			if buf.Len() < len(b) {
+				f.gz = append([]byte(nil), buf.Bytes()...)
+			}
+		}
+	}
+	return f
 }
 
 func compressible(ct string) bool {
@@ -128,20 +141,32 @@ func (st *panelStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h := w.Header()
-	h.Set("Content-Type", f.ctype)
-	h.Set("ETag", f.etag)
+	// index.html — точка входа, и она обязана перечитываться всегда: именно
+	// в ней лежат адреса ассетов с новой версией. Закэшируй её браузер — и
+	// обновлённая панель не приедет НИКОГДА, потому что о новых адресах он
+	// не узнает.
+	cache := "no-store"
 	if f.immutable {
 		// Адрес несёт версию содержимого, поэтому по нему содержимое
 		// измениться не может: год и immutable.
-		h.Set("Cache-Control", "public, max-age=31536000, immutable")
-	} else {
-		// index.html — точка входа, и она обязана перечитываться всегда:
-		// именно в ней лежат адреса ассетов с новой версией. Закэшируй её
-		// браузер — и обновлённая панель не приедет НИКОГДА, потому что о
-		// новых адресах он не узнает.
-		h.Set("Cache-Control", "no-store")
+		cache = "public, max-age=31536000, immutable"
 	}
+	servePrepared(w, r, f, cache)
+}
+
+// servePrepared отдаёт приготовленное тело: ETag, 304, сжатие, длина.
+//
+// Срок кэша параметром, а не полем: он единственное, чем отдача панели
+// отличается от отдачи каталога наборов. У index.html это no-store, у
+// ассета с версией в адресе — год, у каталога — час. Всё остальное —
+// условный запрос, выбор сжатого тела, Content-Length — обязано быть у
+// них общим, потому что ошибиться здесь можно ровно один раз на каждую
+// копию кода.
+func servePrepared(w http.ResponseWriter, r *http.Request, f *panelFile, cacheControl string) {
+	h := w.Header()
+	h.Set("Content-Type", f.ctype)
+	h.Set("ETag", f.etag)
+	h.Set("Cache-Control", cacheControl)
 
 	// Условный запрос. Отвечаем 304 до всякой записи тела: ради этого
 	// ETag и заводился.

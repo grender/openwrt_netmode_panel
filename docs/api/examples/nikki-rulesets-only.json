@@ -1,0 +1,31 @@
+{
+  "download": "direct",
+  "fingerprint": "sha256:9ab0127ba74cf4bb",
+  "foreign": false,
+  "live": true,
+  "policy": "only",
+  "sets": [
+    {
+      "ip": false,
+      "loaded": true,
+      "name": "youtube",
+      "rules": 1284,
+      "updated_at": "2026-09-07T04:12:33Z"
+    },
+    {
+      "ip": true,
+      "loaded": true,
+      "name": "telegram",
+      "rules": 218,
+      "updated_at": "2026-09-07T04:12:34Z"
+    },
+    {
+      "ip": false,
+      "loaded": false,
+      "name": "openai",
+      "rules": 0,
+      "updated_at": null
+    }
+  ],
+  "tunnel_group": "BYPASS"
+}

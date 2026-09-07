@@ -19,6 +19,8 @@ export const ROUTES = {
 	nikkiPanel: '/api/nikki/panel',
 	nikkiProxies: '/api/nikki/proxies',
 	nikkiProxy: '/api/nikki/proxy',
+	nikkiRulesets: '/api/nikki/rulesets',
+	nikkiRulesetsCatalog: '/api/nikki/rulesets/catalog',
 	nikkiTest: '/api/nikki/test',
 	status: '/api/status',
 	subscription: '/api/subscription',

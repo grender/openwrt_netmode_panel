@@ -73,6 +73,8 @@
 | `status-*.json` → `ap.clients` | всегда `null` | неизвестно, наполняется ли `stations` в `network.wireless status`. **NEEDS RECON:** `ubus call iwinfo assoclist '{"device":"<ifname AP>"}'` |
 | `status-*.json` → `associated_ssid` | нет, значение подтверждено | `raw/24-ubus-iwinfo-info.json` → `ssid: "John24"`, разбирается `wireless.ParseInfo` |
 | `*-long.json` → ssid в 32 байта | имена сетей целиком | таких сетей у нас нет; фикстуры сделаны под замер вёрстки, и синтетична здесь не форма, а сам факт — 32 байта это предел стандарта, а не наблюдение |
+| `nikki-rulesets-{profile,only,foreign}.json` | времена скачивания и числа правил | форма подтверждена исходниками mihomo (`docs/recon/evidence.json` → `GET /providers/rules`), но живого ответа с роутера не снимали. Отпечатки НЕ синтетические: посчитаны `rulesets.Fingerprint` от того же выбора |
+| `nikki-rulesets-catalog.json` → `fetched_at` | синтетическое | момент запроса; `commit`, `names` и `ip` — настоящие, сняты с GitHub 2026-09-07 |
 | `logs.json` | строки лога | формат задан SPEC §9 (`ts`, `nodes`, `status`, `err`) |
 | `status-job-failed.json` → `job.id`, времена | синтетические, как и во всех `status-*` | — |
 | `status-*.json` → `links.luci` | **нет, адрес подтверждён разведкой** | `raw/72-luci-probe.txt`: `lua_prefix='/cgi-bin/luci=…'`, проба этого пути дала `403` с `x-luci-login-required: yes` (отвечает LuCI, нужен вход), `redirect_https='0'`, uhttpd слушает 80. Синтетичен только хост — он и во всех остальных ссылках взят из `Host: 192.168.9.1` |
@@ -108,6 +110,10 @@
 | `wifi-scan.json` | `GET /api/wifi/scan` | станция снимка на 2.4 ГГц, поэтому в списке только он; `band` и `note` выведены, а не зашиты (ADR-0019) |
 | `b4-sets.json` | `GET /api/b4/sets` | включён ровно один — наша эксклюзивность соблюдена |
 | `nikki-proxies.json` | `GET /api/nikki/proxies` | группа `URLTest` в автовыборе: `fixed: ""`, `pinned: false`. Список склеен из манифеста подписки и живого состояния движка (`subs.Order`), поэтому в нём есть все четыре вида строк: `auto`, три `node` (у мёртвого `alive: false` и `delay_ms: null`), `separator` и `unsupported` с `reason`. У строк не-`node` пусты `type` и задержка, а `alive` всегда `false` — пробы не было и быть не могло, различать такие строки следует по `kind` |
+| `nikki-rulesets-profile.json` | `GET /api/nikki/rulesets` | свежая установка: `mixin.yaml` нет вовсе, правила целиком из профиля nikki. Это нормальное состояние, а не отказ. `sets` пуст, а `fingerprint` есть — без него первый же `PUT` нечем сопроводить в `If-Match` |
+| `nikki-rulesets-only.json` | `GET /api/nikki/rulesets` | политика «только эти» и все три исхода сверки с движком сразу: `youtube` скачан (`loaded: true`, 1284 правила), `telegram` — набор с подсетями (`ip: true`), скачан целиком, `openai` выбран, но не скачан (`loaded: false`, `rules: 0`, `updated_at: null`). Последняя строка — самая частая жалоба владельца («включил, не работает»), и ради неё поля `loaded` и `rules` в ответе и стоят |
+| `nikki-rulesets-foreign.json` | `GET /api/nikki/rulesets` | `mixin.yaml` есть, но написан не нами: `foreign: true`, и потому `policy: profile` с пустым `sets` — это не «наборов не выбрано», а «файл чужой, и мы в него не полезем». Отпечаток здесь побайтово тот же, что в `nikki-rulesets-profile.json`, и это не копипаста: он считается от ВЫБОРА, а выбора у нас в обоих случаях нет |
+| `nikki-rulesets-catalog.json` | `GET /api/nikki/rulesets/catalog` | весь живой каталог: 1899 имён, 13 из них с подсетями, пять подборок. Список настоящий — снят с `MetaCubeX/meta-rules-dat` (ветка `meta`) 2026-09-07, `commit` тоже настоящий. Файл нарочно большой: панель обязана переживать полный список, а не сокращённый до десятка имён, и мок обязан отдавать то же, что роутер |
 | `logs.json` | `GET /api/logs` | новые строки первыми, среди них одна `fail` |
 
 В `links` **три поля, и порядок их значим**: `nikki`, `b4`, `luci` — как в

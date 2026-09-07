@@ -958,6 +958,145 @@ paths:
         "502": { $ref: "#/components/responses/NikkiError" }
         "503": { $ref: "#/components/responses/NikkiUnavailable" }
 
+  /api/nikki/rulesets:
+    get:
+      tags: [nikki]
+      summary: Выбранные наборы geosite и что из них скачал движок
+      description: |
+        Ответ склеен из двух источников, и они отвечают на РАЗНЫЕ вопросы:
+        `/etc/nikki/mixin.yaml` говорит, какие наборы выбраны, а Clash API
+        (`GET /providers/rules`) — какие из них mihomo действительно скачал.
+        Слить их в одно поле нельзя: «выбран, но не скачался» — самая частая
+        жалоба владельца («включил, не работает»), и увидеть её можно только
+        там, где оба ответа стоят рядом.
+
+        **`live: false` — это ответ, а не отказ.** Выбор лежит в нашем файле и
+        читается без движка; `503` здесь означал бы, что при упавшем mihomo
+        панель не показывает даже того, что сама записала, — и владелец решил
+        бы, что потерял настройку. Наборы при `live: false` перечисляются
+        полностью.
+
+        Отсюда же **тройственные** `loaded`, `rules` и `updated_at`: при
+        `live: false` все три строго `null`, а не `false` и не ноль. «Набор не
+        загружен» и «неизвестно, загружен ли» — разные утверждения, и
+        подменять второе первым значит соврать ровно там, где владелец ищет
+        причину неработающего обхода.
+
+        `foreign: true` — файл есть, но написан не нами (первая строка не
+        начинается с `# netmoded:`). Тогда `policy` всегда `profile`, а `sets`
+        пуст: это не «наборов не выбрано», а «файл не наш, и мы в него не
+        полезем». Панель обязана показать предупреждение, а не кнопку
+        «Применить», которая молча затрёт чужую работу.
+
+        **Файла нет вовсе — нормальное состояние свежей установки**, а не
+        поломка: nikki приезжает со своим профилем, и пока наборов не
+        выбирали, ответ это `policy: profile` с пустым `sets`.
+      responses:
+        "200":
+          description: Выбор наборов и состояние движка
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RulesetsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/RulesetsFileError" }
+    put:
+      tags: [nikki]
+      summary: Применить выбор наборов (джоб)
+      description: |
+        Записывает `/etc/nikki/mixin.yaml` целиком из присланного выбора,
+        переключает флаг `nikki.mixin.mixin_file_content` и перезапускает
+        движок через `netmode-apply` — то есть **медленная операция**, и
+        ответ у неё `202` с джобом, а не `200` с результатом.
+
+        **`ip` панель не присылает.** Знать, есть ли у имени ещё и подсети,
+        может только каталог (`geo/geoip`), и признак проставляет демон. Дай
+        мы его клиенту — вкладка, открытая до обновления каталога, теряла бы
+        половину набора молча.
+
+        `download` необязателен и по умолчанию `direct`. `sets` при
+        `policy: profile` обязан быть пустым: «правила из профиля» с наборами
+        — это противоречие, а не сокращение.
+
+        `If-Match` обязателен и сверяется с `fingerprint` из `GET`. Это защита
+        от двух вкладок владельца, а не от подбора: разошёлся — `409
+        stale_rulesets`, панель перечитывает и показывает, что изменилось.
+
+        Порядок проверок — от «запись бессмысленна» к «запись невозможна»:
+        чужой файл → устаревшее представление клиента → неизвестные имена →
+        чужой стейджинг UCI → отсутствие группы `BYPASS` в профиле → занятый
+        джоб. До первой записи на флеш не доходит ни одна из них.
+      parameters:
+        - $ref: "#/components/parameters/IfMatchRulesets"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RulesetsWrite" }
+      responses:
+        "202":
+          description: Джоб принят. Ход выполнения — в `GET /api/status`, поле `job`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobEnvelope" }
+        "400": { $ref: "#/components/responses/RulesetsBadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/RulesetsConflict" }
+        "500": { $ref: "#/components/responses/RulesetsFileError" }
+        "503": { $ref: "#/components/responses/RulesetsUnavailable" }
+
+  /api/nikki/rulesets/catalog:
+    get:
+      tags: [nikki]
+      summary: Живой список имён наборов geosite
+      description: |
+        Имена наборов живут в чужом репозитории (`MetaCubeX/meta-rules-dat`,
+        ветка `meta`) и меняются без нашего участия: сегодня их 1899, завтра
+        будет больше. Снимок, зашитый в бинарь, протух бы к первой же сборке —
+        панель показывала бы список, которого уже нет, а `PUT` отбивал бы как
+        «неизвестное» имя, которое в репозитории есть. Поэтому список
+        **читается живым** с GitHub и держится в памяти демона; на флеш он не
+        пишется никогда (ресурс перезаписей у роутера конечен).
+
+        Из этого следуют два состояния, которых у остальных ответов не бывает:
+
+        - **`stale: true`** — снимок старше срока свежести, обновление уже
+          ушло в фон. Список отдаётся СРАЗУ: отставание в именах на несколько
+          часов никого не трогает, а секунда ожидания — трогает. Панель
+          показывает признак, чтобы владелец понимал, почему только что
+          появившегося в репозитории имени в списке нет;
+        - **`503 catalog_unavailable`** — снимка нет вовсе и получить его не
+          удалось (нет интернета, исчерпан лимит GitHub в 60 запросов в час,
+          дерево пришло обрезанным). Уже применённые наборы при этом
+          продолжают показываться в `GET /api/nikki/rulesets`: они читаются из
+          файла и каталога не спрашивают. После неудачи демон выдерживает
+          паузу — иначе вкладка, опрашиваемая в цикле, сама выбрала бы весь
+          часовой лимит и превратила временный отказ в бан на час.
+
+        `packs` — готовые подборки для первого экрана: владелец, открывший
+        вкладку впервые, не знает ни одного из 1899 имён. Список подборок
+        зашит в код, но **фильтруется по каталогу**: имя, исчезнувшее из
+        репозитория, из подборки пропадает, а подборка, от которой ничего не
+        осталось, не приходит вовсе — пустая рубрика на экране хуже, чем её
+        отсутствие.
+
+        Ответ отдаётся мимо общего `writeJSON`: 60 КБ имён едут сжатыми, с
+        `ETag` и `Cache-Control: private, max-age=3600`, а повтор с
+        `If-None-Match` стоит `304`. Тело готовится один раз на версию
+        снимка — собирать и жать его на каждое открытие вкладки значило бы
+        тратить процессор роутера на один и тот же результат.
+      responses:
+        "200":
+          description: |
+            Каталог. Заголовки `ETag` и `Cache-Control` присутствуют всегда;
+            тело сжимается при `Accept-Encoding: gzip`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RulesetsCatalog" }
+        "304":
+          description: Не изменился — `If-None-Match` совпал с `ETag`. Тела нет.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/CatalogUnavailable" }
+
   /api/b4/sets:
     get:
       tags: [b4]
@@ -1300,6 +1439,22 @@ components:
         ADR-0011 называет здесь `400`; побеждает код.
       schema: { type: string }
 
+    IfMatchRulesets:
+      name: If-Match
+      in: header
+      required: true
+      description: |
+        Отпечаток выбора наборов из поля `fingerprint` в
+        `GET /api/nikki/rulesets`. Не совпал — `409 stale_rulesets`, запись не
+        выполняется.
+
+        Отдельный параметр, а не общий с записью в `wireless`: там сверяется
+        отпечаток `/etc/config/wireless` и коды другие
+        (`fingerprint_mismatch`). Один заголовок с двумя разными источниками
+        правды и двумя таксономиями отказов читался бы как одно правило, и
+        клиент однажды прислал бы не тот отпечаток.
+      schema: { type: string }
+
   responses:
     BadRequest:
       description: "`bad_request`"
@@ -1347,6 +1502,74 @@ components:
       description: |
         `nikki_unavailable` — Clash API не ответил.
         `group_missing` — ответил, но группы `PROXY` в профиле нет.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RulesetsFileError:
+      description: |
+        `mixin_corrupt` — файл наш (шапка на месте), но его содержимому верить
+        нельзя: число правил в теле не сходится с записанным состоянием, то
+        есть файл правили руками или запись оборвалась. Показать выбор,
+        которого в правилах нет, хуже, чем попросить применить заново; путь к
+        файлу назван в тексте — чинят это по ssh.
+
+        `read_failed` — файл не прочитан вовсе (права, каталог, ФС только для
+        чтения). О содержимом в этом случае неизвестно ничего, поэтому код
+        другой: «примените заново» тут не поможет.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RulesetsBadRequest:
+      description: |
+        `unknown_set` — среди присланных имён есть отсутствующие в каталоге.
+        Отдельный код, потому что панель подсвечивает именно эти чипы, а текст
+        перечисляет имена: «неверный запрос» не сказало бы владельцу, какое
+        из тридцати имён он написал с опечаткой.
+
+        `bad_request` — форма выбора неверна: неизвестная политика или способ
+        скачивания, `profile` с наборами, одно имя дважды, нечитаемый JSON.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RulesetsConflict:
+      description: |
+        `foreign_mixin` — `mixin.yaml` написан не нами. Перезаписать его
+        значило бы молча уничтожить чужую работу, и выход отсюда один: убрать
+        файл руками.
+
+        `stale_rulesets` — `If-Match` не совпал с нынешним отпечатком: пока
+        владелец выбирал, выбор изменила вторая вкладка или ssh. Чинится
+        перечитыванием `GET`.
+
+        `foreign_staged_changes` — в UCI лежит незакоммиченная чужая правка
+        `nikki`. Наш `commit` опубликовал бы её заодно со своей.
+
+        `job_busy` — уже выполняется другая долгая операция.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RulesetsUnavailable:
+      description: |
+        `group_missing` — Clash API отвечает, но группы `BYPASS` в профиле
+        нет. Правила `RULE-SET,…,BYPASS` без неё не применятся, и mihomo не
+        перезапустится вовсе — отбить лучше до записи файла.
+
+        `catalog_unavailable` — среди имён есть новые, а каталог не
+        загрузился: проверить их нечем. Уже применённые имена при этом
+        принимаются — иначе смена одного лишь «откуда качать» без интернета
+        была бы невозможна.
+
+        `uci_unavailable` — `uci` не ответил, и есть ли чужой стейджинг,
+        неизвестно.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    CatalogUnavailable:
+      description: |
+        `catalog_unavailable` — каталог имён не загружен и загрузить его не
+        удалось. Причина (код ответа GitHub, таймаут, обрезанное дерево) — в
+        тексте: 403 при исчерпанном лимите и отсутствие аплинка чинятся
+        по-разному.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -1407,6 +1630,7 @@ components:
             - unsupported_field
             - unauthorized
             - not_found
+            - unknown_set
             # --- состояние системы (409) ---
             - job_busy
             - ambiguous_selection
@@ -1422,6 +1646,12 @@ components:
             - group_not_selectable
             - member_not_selectable
             - subscription_not_configured
+            # Три кода про наборы geosite читаются вместе: stale_rulesets —
+            # разошёлся If-Match, foreign_mixin — mixin.yaml написан не нами,
+            # unknown_set — имени нет в каталоге (он 400, а не 409: чинится
+            # правкой запроса, а не перечитыванием состояния).
+            - stale_rulesets
+            - foreign_mixin
             # --- внешняя зависимость (503) ---
             - b4_unavailable
             - nikki_unavailable
@@ -1431,6 +1661,9 @@ components:
             - panel_missing
             - ubus_unavailable
             - uci_unavailable
+            # Каталог имён наборов не загружен: чинится аплинком или
+            # ожиданием, но не нами.
+            - catalog_unavailable
             - scan_failed
             - radio_unknown
             - ifname_unknown
@@ -1444,6 +1677,9 @@ components:
             - write_failed
             - commit_failed
             - read_failed
+            # mixin.yaml наш, но его содержимому верить нельзя: число правил
+            # не сходится с записанным состоянием.
+            - mixin_corrupt
             # --- ЗАРЕЗЕРВИРОВАНЫ: описаны контрактом, но демон их не
             #     отдаёт ни на одном пути. Оставлены в наборе, чтобы имена
             #     не были заняты под другой смысл, когда механизм появится.
@@ -2744,6 +2980,201 @@ components:
           description: >-
             Почему строка непригодна. **Ключ отсутствует**, если пусто
             (`omitempty`); непуст только при `kind: unsupported`.
+
+    RulesetsResponse:
+      type: object
+      description: |
+        Тело `GET /api/nikki/rulesets`. Собирается из `map[string]any`,
+        поэтому порядок ключей в примере алфавитный — на него не
+        программируют (см. `docs/api/examples/README.md`).
+      required: [fingerprint, policy, download, tunnel_group, sets, live, foreign]
+      additionalProperties: false
+      properties:
+        fingerprint:
+          type: string
+          description: |
+            Отпечаток выбора для `If-Match` (`sha256:` + 16 hex). Считается по
+            канонической форме — политика, способ скачивания, наборы, — а не
+            по байтам файла: шапка меняется с версией демона, а выбор при этом
+            тот же, и отбивать чужую запись из-за новой формулировки в
+            комментарии незачем.
+
+            Есть и у пустого выбора: без него первый же `PUT` нечем
+            сопроводить.
+          examples: ["sha256:2b7a1f0c9d3e4a58"]
+        policy:
+          type: string
+          enum: [profile, only, except]
+          description: |
+            `profile` — наборов нет, правила целиком из профиля nikki;
+            `only` — в туннель идут только выбранные наборы;
+            `except` — в туннель идёт всё, кроме них.
+        download:
+          type: string
+          enum: [direct, tunnel]
+          description: |
+            Откуда mihomo качает файлы правил. `tunnel` нужен там, где
+            `raw.githubusercontent.com` недоступен у провайдера. При
+            `policy: profile` всегда `direct`: качать нечего.
+        tunnel_group:
+          type: string
+          description: |
+            Имя группы mihomo, означающей «в туннель». Отдаётся, а не
+            зашивается в панель: имя одно на весь профиль, и разъехаться эти
+            два места не должны.
+          examples: ["BYPASS"]
+        sets:
+          type: array
+          items: { $ref: "#/components/schemas/RulesetSet" }
+          description: |
+            Порядок значим — он же порядок правил в `mixin.yaml`. Пустой
+            массив (не `null`) при `policy: profile` и при `foreign: true`.
+        live:
+          type: boolean
+          description: |
+            Ответил ли Clash API на `GET /providers/rules`. `false` — не отказ,
+            а признак: см. описание пути.
+        foreign:
+          type: boolean
+          description: |
+            `mixin.yaml` есть, но написан не нами. Запись в него запрещена
+            (`409 foreign_mixin`).
+
+    RulesetSet:
+      type: object
+      description: Один выбранный набор и его состояние в движке.
+      required: [name, ip, loaded, rules, updated_at]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: Имя набора в `MetaCubeX/meta-rules-dat`.
+          examples: ["youtube"]
+        ip:
+          type: boolean
+          description: |
+            У набора есть ещё и подсети (`geo/geoip/<имя>.mrs`). Владельцем НЕ
+            выбирается: признак ставит каталог, если имя есть в обоих
+            деревьях. Хранится в файле, чтобы читать выбор можно было и без
+            интернета.
+        loaded:
+          type: [boolean, "null"]
+          description: |
+            Движок скачал ВСЕ провайдеры набора (у каждого ненулевой
+            `updatedAt`). У набора с подсетями скачавшиеся домены без подсетей
+            — половина набора, и `loaded` у неё `false`: показать её готовой
+            значит соврать.
+
+            `null` при `live: false` — сверять было не с чем.
+        rules:
+          type: [integer, "null"]
+          description: |
+            Сумма `ruleCount` по провайдерам набора, которые движок
+            показывает. Справка, а не критерий загруженности: несколько
+            наборов в репозитории пусты и скачиваются с нулём правил — по
+            числу они были бы вечно «не загрузились». `null` при `live: false`.
+          examples: [1284]
+        updated_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            Когда движок скачал доменный провайдер набора, RFC 3339 UTC.
+            `null` у незагруженного набора и при `live: false`.
+
+    RulesetsWrite:
+      type: object
+      description: Тело `PUT /api/nikki/rulesets`.
+      required: [policy, sets]
+      additionalProperties: false
+      properties:
+        policy:
+          type: string
+          enum: [profile, only, except]
+          description: |
+            С `profile` список `sets` обязан быть пустым: «правила из профиля»
+            с наборами — противоречие, а не сокращение.
+        download:
+          type: string
+          enum: [direct, tunnel]
+          default: direct
+          description: |
+            Необязателен. `tunnel` — качать правила через туннель; нужен там,
+            где `raw.githubusercontent.com` недоступен у провайдера.
+        sets:
+          type: array
+          items: { type: string }
+          description: |
+            **Только имена.** Признак подсетей не присылается: знать, есть ли
+            имя в дереве `geoip`, может только каталог, и проставляет его
+            демон. Вкладка, открытая до обновления каталога, иначе теряла бы
+            половину набора молча.
+
+            Порядок значим — он станет порядком правил. Повтор имени —
+            `400 bad_request`.
+          examples: [["youtube", "telegram", "openai"]]
+
+    RulesetsCatalog:
+      type: object
+      description: Тело `GET /api/nikki/rulesets/catalog`.
+      required: [commit, fetched_at, stale, names, ip, packs]
+      additionalProperties: false
+      properties:
+        commit:
+          type: string
+          description: |
+            SHA корневого дерева ветки `meta`. Показывается владельцу: это
+            единственный способ понять, какой именно список перед ним.
+          examples: ["c9f1fd664797ccdc85783c5746827a3f22ce6068"]
+        fetched_at:
+          type: string
+          format: date-time
+          description: Когда снимок получен (в том числе продлён ответом `304`).
+        stale:
+          type: boolean
+          description: |
+            Снимок старше срока свежести. Не ошибка: список отдан сразу, а
+            обновление ушло в фон. Панель показывает признак, чтобы владелец
+            понимал, почему нового имени в списке нет.
+        names:
+          type: array
+          items: { type: string }
+          description: |
+            Имена доменных наборов, отсортированы. Только файлы `*.mrs` из
+            `geo/geosite`: за `.list` и `.yaml` файла правил для mihomo нет.
+          examples: [["youtube", "telegram", "openai"]]
+        ip:
+          type: array
+          items: { type: string }
+          description: |
+            Имена из `names`, у которых есть ещё и подсети. **Пересечение**, а
+            не всё дерево `geoip`: имя вроде `cn`, которого нет среди доменов,
+            предлагать нечего — подсети лишь дополняют набор доменов.
+          examples: [["telegram", "cloudflare"]]
+        packs:
+          type: array
+          items: { $ref: "#/components/schemas/Pack" }
+          description: |
+            Подборки для первого экрана, отфильтрованные по каталогу.
+            Опустевшая подборка не приходит вовсе.
+
+    Pack:
+      type: object
+      description: |
+        Готовая подборка наборов. Список зашит в код и правится вместе с
+        демоном: это не про технику, а про первый экран — владелец, открывший
+        вкладку впервые, не знает ни одного имени из полутора тысяч.
+      required: [id, sets]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: Ключ подборки; подпись рисует панель по своему словарю.
+          examples: ["messengers"]
+        sets:
+          type: array
+          items: { type: string }
+          description: Имена, оставшиеся в подборке после сверки с каталогом.
+          examples: [["telegram", "whatsapp", "discord"]]
 
     SetsResponse:
       type: object
