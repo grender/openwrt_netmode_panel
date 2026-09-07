@@ -14,7 +14,7 @@
 set -eu
 
 EV=docs/recon/evidence.json
-DIRS="internal/b4 internal/nikki internal/luci internal/led internal/executor internal/wireless"
+DIRS="internal/b4 internal/nikki internal/luci internal/led internal/executor internal/wireless internal/geosite"
 
 [ -f "$EV" ] || { echo "check-evidence: нет $EV" >&2; exit 1; }
 
@@ -60,7 +60,14 @@ for l in $lits; do
 		# маршруты в корне, — и единственным защищённым его путём был /ui*,
 		# попавший сюда по отдельному поводу. То есть двадцать девять узлов
 		# читались по литералу, который никто не обязан был подтверждать.
-		/api/*|/ui*|/cgi-bin/*|/sys/class/leds/*|network.wireless|network.interface.*|iwinfo|/proxies*|/providers/*|/version|/delay*)
+		# Адреса GitHub добавлены 2026-09-07 вместе с internal/geosite:
+		# каталог наборов geosite читается ЖИВЫМ с чужого сервера, и три
+		# литерала — хост API, путь дерева ветки meta и префикс адреса
+		# самих правил — это ровно та поверхность, которую нельзя
+		# вспоминать по памяти. Ошибка в любом из них проявится не у
+		# нас, а на роутере: пустым списком в панели или наборами,
+		# которые mihomo молча не скачает.
+		/api/*|/ui*|/cgi-bin/*|/sys/class/leds/*|network.wireless|network.interface.*|iwinfo|/proxies*|/providers/*|/version|/delay*|*api.github.com*|/repos/*|*raw.githubusercontent.com*)
 			if ! grep -qF "$l" "$EV"; then
 				missing="$missing $l"
 			fi

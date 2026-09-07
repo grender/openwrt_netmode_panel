@@ -1,0 +1,78 @@
+{
+  "sha": "9ce4607bf83ac1fd723e5596ab185a72e21c69fe",
+  "url": "{{BASE}}/trees/geosite",
+  "tree": [
+    {
+      "path": "category-ai-!cn.mrs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+      "size": 20480,
+      "url": "{{BASE}}/blobs/a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+    },
+    {
+      "path": "category-ai-!cn.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b2c3d4e5f60718293a4b5c6d7e8f901234567891",
+      "size": 30720,
+      "url": "{{BASE}}/blobs/b2c3d4e5f60718293a4b5c6d7e8f901234567891"
+    },
+    {
+      "path": "classical",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "c3d4e5f60718293a4b5c6d7e8f90123456789102",
+      "url": "{{BASE}}/trees/geosite-classical"
+    },
+    {
+      "path": "netflix@ads.list",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d4e5f60718293a4b5c6d7e8f9012345678910213",
+      "size": 1024,
+      "url": "{{BASE}}/blobs/d4e5f60718293a4b5c6d7e8f9012345678910213"
+    },
+    {
+      "path": "netflix@ads.mrs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e5f60718293a4b5c6d7e8f901234567891021324",
+      "size": 768,
+      "url": "{{BASE}}/blobs/e5f60718293a4b5c6d7e8f901234567891021324"
+    },
+    {
+      "path": "telegram.mrs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f60718293a4b5c6d7e8f90123456789102132435",
+      "size": 2048,
+      "url": "{{BASE}}/blobs/f60718293a4b5c6d7e8f90123456789102132435"
+    },
+    {
+      "path": "telegram.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0718293a4b5c6d7e8f9012345678910213243546",
+      "size": 3072,
+      "url": "{{BASE}}/blobs/0718293a4b5c6d7e8f9012345678910213243546"
+    },
+    {
+      "path": "youtube.list",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "18293a4b5c6d7e8f901234567891021324354657",
+      "size": 5120,
+      "url": "{{BASE}}/blobs/18293a4b5c6d7e8f901234567891021324354657"
+    },
+    {
+      "path": "youtube.mrs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8293a4b5c6d7e8f90123456789102132435465768",
+      "size": 4096,
+      "url": "{{BASE}}/blobs/8293a4b5c6d7e8f9012345678910213243546576"
+    }
+  ],
+  "truncated": false
+}

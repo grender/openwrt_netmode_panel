@@ -1,0 +1,43 @@
+{
+  "sha": "9b1ce4a0d2f74c1e8ab35f60c7d9e2a4b8f01c37",
+  "url": "{{BASE}}/repos/MetaCubeX/meta-rules-dat/git/trees/9b1ce4a0d2f74c1e8ab35f60c7d9e2a4b8f01c37",
+  "tree": [
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1f0c2b6de4a97835cb1d0e5f4a2739bc6d80e1aa",
+      "size": 4096,
+      "url": "{{BASE}}/blobs/1f0c2b6de4a97835cb1d0e5f4a2739bc6d80e1aa"
+    },
+    {
+      "path": "asn",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "2a7d9c04e1b3f586a0cd7e29b4f1830d6c5a92e7",
+      "url": "{{BASE}}/trees/asn"
+    },
+    {
+      "path": "geo",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "3c8e0a15f2d46b97c1de8f30a5b2941e7d6b03f8",
+      "url": "{{BASE}}/trees/geo"
+    },
+    {
+      "path": "geo-lite",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "4d9f1b26a3e57ca8d2ef9041b6c3052f8e7c14a9",
+      "url": "{{BASE}}/trees/geo-lite"
+    },
+    {
+      "path": "sing",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "5ea02c37b4f68db9e3fa1152c7d4163a9f8d25ba",
+      "url": "{{BASE}}/trees/sing"
+    }
+  ],
+  "truncated": false
+}

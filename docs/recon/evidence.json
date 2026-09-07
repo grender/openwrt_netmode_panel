@@ -502,6 +502,29 @@
       "verified_end_to_end": "с Wi-Fi роутера (192.168.9.238) после правила: ПК 192.168.0.90 — 3/3, виртуалки 192.168.0.5 и .250 (MAC OUI 08:00:27, VirtualBox) — 3/3 каждая, контрольный хост uplink 192.168.0.209 — 2/2 (не сломан). Без правила — 100% потерь у всех трёх (raw/88 §5)"
     }
   },
+  "geosite_catalog": {
+    "status": "verified_by_source",
+    "_why_not_verified": "Числа и форма ответов сняты curl'ом 2026-09-07 С НОУТБУКА, а не с роутера: живой пробы с грендер-роутера не было. Для гейта check-evidence.sh этого достаточно (литералы процитированы), для утверждений о поведении на роутере — нет. Первая живая проба обязана повысить запись до verified и приложить raw/. Отдельно не проверено с роутера: доходит ли до api.github.com текущий аплинк и укладывается ли холодная загрузка в обещанные 1-3 с.",
+    "source_docs": "GitHub REST API, Git database / Git trees: GET /repos/{owner}/{repo}/git/trees/{tree_sha} — ответ {sha, url, tree[{path,mode,type,sha,size,url}], truncated}; поле truncated=true означает, что список записей неполон и надо обходить дерево по частям. Conditional requests (REST API overview): ответ 304 Not Modified на запрос с If-None-Match НЕ засчитывается в лимит запросов. Rate limits for the REST API: 60 запросов в час на IP для неаутентифицированных запросов.",
+    "base_url": "https://api.github.com",
+    "root_tree_path": "/repos/MetaCubeX/meta-rules-dat/git/trees/meta",
+    "raw_file_prefix": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/",
+    "file_url_shape": "<raw_file_prefix> + geosite|geoip + / + <имя> + .mrs",
+    "walk": "Пошагово, БЕЗ ?recursive=1: корень ветки meta -> запись path=geo type=tree (её поле url) -> в дереве geo записи geoip и geosite (их url) -> два листовых дерева. Четыре запроса на холодную загрузку.",
+    "measured_2026-09-07": {
+      "geosite_blobs": 5698,
+      "geosite_mrs_names": 1899,
+      "geoip_mrs_names": 260,
+      "intersection": 13,
+      "intersection_names": "telegram, google, cloudflare, facebook, netflix, twitter, fastly, tor, cn, private, hm, sb, st",
+      "siblings": "каждое имя лежит тремя файлами: .mrs, .yaml, .list — считаются только .mrs (их читает mihomo)",
+      "names_alphabet": "строчная латиница, цифры, '-', '@', '!' (например category-ai-!cn, netflix@ads)",
+      "json_size": "~800 КБ на четыре дерева (по проводу gzip ~90 КБ)"
+    },
+    "recursive_unusable": "GET .../git/trees/meta?recursive=1 возвращает truncated:true примерно на 94 000 записей — из-за каталога asn/. Дерево geosite в такой ответ не помещается, поэтому рекурсивный обход не используется вовсе (замер 2026-09-07).",
+    "rate_limit": "60 запросов в час на IP без токена. Холодная загрузка стоит четырёх; повторная проверка свежести — один запрос корня с If-None-Match, и ответ 304 в лимит не входит.",
+    "used_by": "internal/geosite (catalog.go, fetch.go): кэш ТОЛЬКО в памяти демона, на флеш не пишется; TTL 6 ч."
+  },
   "open_questions": [
     {
       "id": "RQ-01",

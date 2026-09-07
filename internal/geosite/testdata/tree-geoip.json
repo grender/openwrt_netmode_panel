@@ -1,0 +1,54 @@
+{
+  "sha": "7ac24e59d618afdb501c3374e9f6385cb0fa47dc",
+  "url": "{{BASE}}/trees/geoip",
+  "tree": [
+    {
+      "path": "asn",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "293a4b5c6d7e8f9012345678910213243546576a",
+      "url": "{{BASE}}/trees/geoip-asn"
+    },
+    {
+      "path": "cn.list",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3a4b5c6d7e8f9012345678910213243546576a8b",
+      "size": 65536,
+      "url": "{{BASE}}/blobs/3a4b5c6d7e8f9012345678910213243546576a8b"
+    },
+    {
+      "path": "cn.mrs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4b5c6d7e8f9012345678910213243546576a8b9c",
+      "size": 32768,
+      "url": "{{BASE}}/blobs/4b5c6d7e8f9012345678910213243546576a8b9c"
+    },
+    {
+      "path": "private.mrs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5c6d7e8f9012345678910213243546576a8b9cad",
+      "size": 512,
+      "url": "{{BASE}}/blobs/5c6d7e8f9012345678910213243546576a8b9cad"
+    },
+    {
+      "path": "telegram.mrs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6d7e8f9012345678910213243546576a8b9cadbe",
+      "size": 1024,
+      "url": "{{BASE}}/blobs/6d7e8f9012345678910213243546576a8b9cadbe"
+    },
+    {
+      "path": "telegram.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7e8f9012345678910213243546576a8b9cadbecf",
+      "size": 1536,
+      "url": "{{BASE}}/blobs/7e8f9012345678910213243546576a8b9cadbecf"
+    }
+  ],
+  "truncated": false
+}

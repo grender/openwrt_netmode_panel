@@ -1,0 +1,43 @@
+{
+  "sha": "3c8e0a15f2d46b97c1de8f30a5b2941e7d6b03f8",
+  "url": "{{BASE}}/trees/geo",
+  "tree": [
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6fb13d48c5079eca4f0b2263d8e5274bafe936cb",
+      "size": 512,
+      "url": "{{BASE}}/blobs/6fb13d48c5079eca4f0b2263d8e5274bafe936cb"
+    },
+    {
+      "path": "geoip",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "7ac24e59d618afdb501c3374e9f6385cb0fa47dc",
+      "url": "{{BASE}}/trees/geoip"
+    },
+    {
+      "path": "geoip-lite",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "8bd35f6ae729b0ec612d4485fa074961d10b58ed",
+      "url": "{{BASE}}/trees/geoip-lite"
+    },
+    {
+      "path": "geosite",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "9ce4607bf83ac1fd723e5596ab185a72e21c69fe",
+      "url": "{{BASE}}/trees/geosite"
+    },
+    {
+      "path": "geosite-lite",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "0df5718ca94bd20e834f66a7bc296b83f32d7a0f",
+      "url": "{{BASE}}/trees/geosite-lite"
+    }
+  ],
+  "truncated": false
+}
