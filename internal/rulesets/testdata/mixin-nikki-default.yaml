@@ -1,0 +1,15 @@
+# This file is used to mixin the profile.
+# Content of this file will be merged into the running config.
+#
+# nikki-proxies and nikki-rules are prepended to proxies and rules.
+#
+# nikki-proxies:
+#   - name: example
+#     type: ss
+#     server: 127.0.0.1
+#     port: 8388
+#     cipher: chacha20-ietf-poly1305
+#     password: password
+#
+# nikki-rules:
+#   - DOMAIN-SUFFIX,example.com,DIRECT

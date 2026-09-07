@@ -1,0 +1,31 @@
+# netmoded: файл пишет панель (раздел «Узлы Nikki» → «Что в туннель · наборы»).
+# Не правьте руками — при следующем применении он переписывается целиком.
+# netmoded-rulesets: policy=only download=direct sets=netflix@ads,category-ai-!cn+ip
+rule-providers:
+  nm-geosite-netflix@ads:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/netflix@ads.mrs
+    path: ./rules/nm-geosite-netflix@ads.mrs
+    interval: 86400
+  nm-geosite-category-ai-!cn:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ai-!cn.mrs
+    path: ./rules/nm-geosite-category-ai-!cn.mrs
+    interval: 86400
+  nm-geoip-category-ai-!cn:
+    type: http
+    behavior: ipcidr
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/category-ai-!cn.mrs
+    path: ./rules/nm-geoip-category-ai-!cn.mrs
+    interval: 86400
+nikki-rules:
+  - 'RULE-SET,nm-geosite-netflix@ads,BYPASS'
+  - 'RULE-SET,nm-geosite-category-ai-!cn,BYPASS'
+  - 'RULE-SET,nm-geoip-category-ai-!cn,BYPASS,no-resolve'
+  - 'GEOIP,PRIVATE,DIRECT,no-resolve'
+  - 'MATCH,DIRECT'

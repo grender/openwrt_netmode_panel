@@ -1,0 +1,31 @@
+# netmoded: файл пишет панель (раздел «Узлы Nikki» → «Что в туннель · наборы»).
+# Не правьте руками — при следующем применении он переписывается целиком.
+# netmoded-rulesets: policy=only download=direct sets=youtube,telegram+ip
+rule-providers:
+  nm-geosite-youtube:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/youtube.mrs
+    path: ./rules/nm-geosite-youtube.mrs
+    interval: 86400
+  nm-geosite-telegram:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/telegram.mrs
+    path: ./rules/nm-geosite-telegram.mrs
+    interval: 86400
+  nm-geoip-telegram:
+    type: http
+    behavior: ipcidr
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/telegram.mrs
+    path: ./rules/nm-geoip-telegram.mrs
+    interval: 86400
+nikki-rules:
+  - 'RULE-SET,nm-geosite-youtube,BYPASS'
+  - 'RULE-SET,nm-geosite-telegram,BYPASS'
+  - 'RULE-SET,nm-geoip-telegram,BYPASS,no-resolve'
+  - 'GEOIP,PRIVATE,DIRECT,no-resolve'
+  - 'MATCH,DIRECT'

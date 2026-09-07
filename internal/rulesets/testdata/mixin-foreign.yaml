@@ -1,0 +1,4 @@
+# правила владельца, написанные руками до появления панели
+nikki-rules:
+  - 'DOMAIN-SUFFIX,example.com,DIRECT'
+  - 'MATCH,BYPASS'

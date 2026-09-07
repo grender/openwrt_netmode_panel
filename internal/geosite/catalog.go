@@ -132,6 +132,22 @@ func newCatalog(commit, etag string, at time.Time, names []string, ip map[string
 	return &Catalog{Commit: commit, ETag: etag, FetchedAt: at, Names: names, ip: ip}
 }
 
+// NewForTest — снимок каталога с заданными именами, БЕЗ похода в сеть.
+//
+// Существует ради тестов соседних пакетов (internal/rulesets проверяет имена
+// и проставляет признак подсетей по каталогу). Без неё им пришлось бы либо
+// поднимать httptest с четырьмя деревьями GitHub на каждую проверку имени,
+// либо собирать Catalog литералом — а карта ip неэкспортируема, и признак
+// подсетей всегда оказывался бы ложным, то есть проверка проверяла бы не то.
+// В бою не используется: снимки собирает refresh.
+func NewForTest(names, ip []string) *Catalog {
+	set := make(map[string]bool, len(ip))
+	for _, n := range ip {
+		set[n] = true
+	}
+	return newCatalog("test", "", time.Now(), append([]string(nil), names...), set)
+}
+
 // Has — есть ли такое имя среди доменных наборов.
 //
 // nil-приёмник отвечает «нет», а не паникует: спросить могут раньше, чем
