@@ -83,8 +83,15 @@ func (s *Server) rulesetsBody(ctx context.Context, cfg rulesets.Config, foreign 
 	var live map[string]nikki.RuleProvider
 	haveLive := false
 	if s.nikki != nil {
-		if got, err := s.nikki.RuleProviders(ctx); err == nil {
+		got, err := s.nikki.RuleProviders(ctx)
+		if err == nil {
 			live, haveLive = got, true
+		} else {
+			// Единственный след причины. Наружу уезжает только
+			// live:false, и по нему «движок лёг» неотличимо от
+			// «ответил не тем»; без этой строки владелец, у которого
+			// наборы вечно «неизвестно», не узнает даже, куда смотреть.
+			s.logf("наборы geosite: провайдеры правил не прочитаны: %v", err)
 		}
 	}
 

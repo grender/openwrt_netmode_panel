@@ -647,7 +647,10 @@ func TestFailedRefreshHoldsOffNextAttempt(t *testing.T) {
 	s := newStand(t)
 	j := &journal{}
 	c, done := newClient(t, s, time.Millisecond, j)
-	c.retryHold = 100 * time.Millisecond
+	// Полсекунды, а не сотня миллисекунд: пять Get и ожидание фона под
+	// -race на загруженной машине легко переползают через сотню, и тест
+	// краснел бы от нагрузки, а не от поведения.
+	c.retryHold = 500 * time.Millisecond
 
 	if _, err := c.Get(context.Background()); err != nil {
 		t.Fatalf("Get: %v", err)
@@ -679,7 +682,7 @@ func TestFailedRefreshHoldsOffNextAttempt(t *testing.T) {
 	select {
 	case <-done:
 		t.Fatal("внутри паузы началось обновление — пауза не держит")
-	case <-time.After(150 * time.Millisecond):
+	case <-time.After(700 * time.Millisecond):
 	}
 	if hits, _ := s.counts(); hits != afterFail {
 		t.Errorf("внутри паузы ушло %d лишних запросов", hits-afterFail)

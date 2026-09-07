@@ -3001,7 +3001,11 @@ components:
 
             Есть и у пустого выбора: без него первый же `PUT` нечем
             сопроводить.
-          examples: ["sha256:2b7a1f0c9d3e4a58"]
+
+            Пример — отпечаток того самого выбора, что лежит в
+            `examples/nikki-rulesets-only.json` (`only`, `direct`, `youtube`,
+            `telegram+ip`, `openai`): значение посчитано, а не выдумано.
+          examples: ["sha256:9ab0127ba74cf4bb"]
         policy:
           type: string
           enum: [profile, only, except]
@@ -3141,7 +3145,10 @@ components:
           description: |
             Имена доменных наборов, отсортированы. Только файлы `*.mrs` из
             `geo/geosite`: за `.list` и `.yaml` файла правил для mihomo нет.
-          examples: [["youtube", "telegram", "openai"]]
+
+            Пример укорочен: на роутере их 1899, весь список — в
+            `examples/nikki-rulesets-catalog.json`.
+          examples: [["openai", "telegram", "youtube"]]
         ip:
           type: array
           items: { type: string }
@@ -3149,7 +3156,10 @@ components:
             Имена из `names`, у которых есть ещё и подсети. **Пересечение**, а
             не всё дерево `geoip`: имя вроде `cn`, которого нет среди доменов,
             предлагать нечего — подсети лишь дополняют набор доменов.
-          examples: [["telegram", "cloudflare"]]
+
+            Поэтому пример — подмножество примера `names` выше, а не
+            самостоятельный список.
+          examples: [["telegram"]]
         packs:
           type: array
           items: { $ref: "#/components/schemas/Pack" }
