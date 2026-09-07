@@ -150,6 +150,11 @@ type Client interface {
 	// той же причине, что ReloadProvider: без него проверка «файл дошёл до
 	// движка» существовала бы только на живом роутере.
 	ProviderProxies(ctx context.Context, name string) ([]string, error)
+	// RuleProviders — состояние провайдеров ПРАВИЛ у движка. В интерфейсе по
+	// той же причине, что ProviderProxies: «набор написан в UCI» и «набор
+	// загружен движком» — разные факты, и различить их можно только спросив
+	// сам движок, а значит проверять это на подменённом клиенте.
+	RuleProviders(ctx context.Context) (map[string]RuleProvider, error)
 	// Delay — проба задержки одного узла. В интерфейсе, потому что замер
 	// пачки (ProbeAll) написан против интерфейса: иначе поведение при
 	// частичном отказе — половина узлов мертва, бюджет вышел — проверялось
@@ -466,6 +471,49 @@ func (c *HTTP) ProviderProxies(ctx context.Context, name string) ([]string, erro
 		names = append(names, p.Name)
 	}
 	return names, nil
+}
+
+// RuleProvider — состояние провайдера ПРАВИЛ у движка (не узлов — за это
+// отвечает ProviderProxies).
+//
+// UpdatedAt нулевое (в JSON — "0001-01-01T00:00:00Z", то есть буквально
+// time.Time{}) означает, что движок ни разу не смог скачать файл. Это не
+// теоретический случай: первая неудачная загрузка mihomo не останавливает
+// (hub/executor/executor.go:327-336) — узел просто стартует с пустым
+// набором правил. По одному тому, что имя провайдера прописано в UCI, узнать
+// это нельзя: профиль может годами ссылаться на geosite-набор, который
+// движок так ни разу и не получил, и без этого вызова «написан в UCI» и
+// «загружен движком» неразличимы.
+type RuleProvider struct {
+	Name        string    `json:"name"`
+	Behavior    string    `json:"behavior"`
+	Format      string    `json:"format"`
+	RuleCount   int       `json:"ruleCount"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+	VehicleType string    `json:"vehicleType"`
+}
+
+// RuleProviders возвращает провайдеров правил, которые движок держит СЕЙЧАС.
+//
+// Корень ответа — объект, а не массив: {"providers": {"имя": {...}}}, той же
+// формы, что и у /providers/proxies. Поле type из тела намеренно не
+// разбирается: у провайдера правил оно всегда "Rule" (в отличие от узлов,
+// где type несёт протокол), и хранить константу незачем.
+func (c *HTTP) RuleProviders(ctx context.Context) (map[string]RuleProvider, error) {
+	var wire struct {
+		Providers map[string]RuleProvider `json:"providers"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/providers/rules", nil, &wire, callTimeout); err != nil {
+		return nil, err
+	}
+	out := make(map[string]RuleProvider, len(wire.Providers))
+	for name, p := range wire.Providers {
+		if p.Name == "" {
+			p.Name = name
+		}
+		out[name] = p
+	}
+	return out, nil
 }
 
 // delayProbeTimeout — сколько mihomo ждёт ответа узла.

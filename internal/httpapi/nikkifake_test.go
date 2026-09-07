@@ -35,6 +35,11 @@ type fakeNikkiClient struct {
 	// движок, который честно прочитал наш файл.
 	providerNames []string
 	providerErr   error
+	// ruleProviders — что движок отдаёт на RuleProviders. nil даёт пустую
+	// карту: обработчику важно не содержимое по умолчанию, а то, что он
+	// сделает с конкретно заданным набором (нулевой UpdatedAt и прочее).
+	ruleProviders    map[string]nikki.RuleProvider
+	ruleProvidersErr error
 }
 
 func newFakeNikkiClient() *fakeNikkiClient {
@@ -139,6 +144,25 @@ func (f *fakeNikkiClient) ProviderProxies(context.Context, string) ([]string, er
 		}
 	}
 	return names, nil
+}
+
+// RuleProviders повторяет GET /providers/rules: f.err имеет приоритет над
+// ruleProvidersErr, как и у прочих вызовов подделки, — недоступность самого
+// движка обязана перекрывать более частную ошибку.
+func (f *fakeNikkiClient) RuleProviders(context.Context) (map[string]nikki.RuleProvider, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.ruleProvidersErr != nil {
+		return nil, f.ruleProvidersErr
+	}
+	out := make(map[string]nikki.RuleProvider, len(f.ruleProviders))
+	for name, p := range f.ruleProviders {
+		out[name] = p
+	}
+	return out, nil
 }
 
 func (f *fakeNikkiClient) ReloadProvider(_ context.Context, name string) error {

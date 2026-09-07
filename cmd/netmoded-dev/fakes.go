@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"sync"
+	"time"
 
 	"netmoded/internal/b4"
 	"netmoded/internal/nikki"
@@ -24,6 +25,11 @@ import (
 type devNikki struct {
 	mu  sync.Mutex
 	all map[string]nikki.Proxy
+	// ruleNames отдаёт имена провайдеров правил, которые стенду нужно
+	// показать. nil означает «геосайт-наборов ещё нет» — панель обязана
+	// пережить пустой ответ так же, как настоящий движок без единого
+	// провайдера. Заполняет её более поздняя задача; здесь только контракт.
+	ruleNames func(context.Context) []string
 }
 
 // separator — разделитель, который провайдер кладёт в подписку между
@@ -153,6 +159,36 @@ func (f *devNikki) ProviderProxies(context.Context, string) ([]string, error) {
 		}
 	}
 	return names, nil
+}
+
+// RuleProviders изображает GET /providers/rules. Последнее имя из ruleNames
+// (когда их больше одного) отдаётся с нулевым UpdatedAt и RuleCount:0 —
+// «файл ни разу не скачан» иначе на стенде увидеть неоткуда: ноутбук
+// разработчика к mihomo не ходит вовсе, и без этой подделки состояние
+// «набор записан в UCI, но движок его не получил» проверялось бы только
+// на живом роутере.
+func (f *devNikki) RuleProviders(ctx context.Context) (map[string]nikki.RuleProvider, error) {
+	var names []string
+	if f.ruleNames != nil {
+		names = f.ruleNames(ctx)
+	}
+	out := make(map[string]nikki.RuleProvider, len(names))
+	for i, name := range names {
+		p := nikki.RuleProvider{
+			Name:        name,
+			Behavior:    "Domain",
+			Format:      "MrsRule",
+			VehicleType: "HTTP",
+			RuleCount:   100 + i,
+			UpdatedAt:   time.Now().UTC(),
+		}
+		if len(names) > 1 && i == len(names)-1 {
+			p.RuleCount = 0
+			p.UpdatedAt = time.Time{}
+		}
+		out[name] = p
+	}
+	return out, nil
 }
 
 func (f *devNikki) Unfix(_ context.Context, group string) error {

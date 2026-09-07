@@ -358,6 +358,19 @@
         "source_tree": "https://github.com/MetaCubeX/mihomo/blob/v1.19.27/hub/route/provider.go (v1.19.27 — та же версия, что снята живьём в nikki.version)",
         "src": "hub/route/provider.go:20-26 (r.Get(\"/\", getProvider) в том же r.Route(\"/{providerName}\"), что и PUT); форма ответа — ProxyProvider.MarshalJSON в adapter/provider/provider.go",
         "status_note": "На живом роутере не снималось; форма ответа по исходникам v1.19.27, при первом доступе снять в raw/ и повысить до verified"
+      },
+      {
+        "method": "GET",
+        "path": "/providers/rules",
+        "status": "verified_by_source",
+        "purpose": "состояние провайдеров ПРАВИЛ (не узлов) у движка. Нужен для geosite-наборов: значение записано в UCI не означает, что mihomo его вообще скачал — первая неудачная загрузка не останавливает движок, и без этого вызова «набор в конфиге» и «набор реально загружен» неразличимы",
+        "responses": {
+          "200": "тело {providers: {\"имя\": {name, type, vehicleType, behavior, format, ruleCount, updatedAt}}} — объект по всем провайдерам разом, без пути с {name}, в отличие от /providers/proxies",
+          "updatedAt_zero": "\"0001-01-01T00:00:00Z\" (time.Time{}) означает, что файл ни разу не был скачан"
+        },
+        "source_tree": "https://github.com/MetaCubeX/mihomo/blob/Alpha/hub/route/provider.go (ветка Alpha, снято 2026-09-07)",
+        "src": "hub/route/provider.go:113-138 (GET / у роутера правил → {providers: {...}}, PUT /{name} → provider.Update()); rules/provider/provider.go:107-118 (MarshalJSON: behavior, format, name, ruleCount, type, updatedAt, vehicleType); неудача первой загрузки не останавливает mihomo — hub/executor/executor.go:327-336",
+        "status_note": "На живом роутере НЕ снималось: роутер недоступен 2026-09-07. При первом доступе положить ответ в raw/9x-providers-rules.json и повысить статус до verified"
       }
     ],
     "delay_zero_means_no_probe": "в history значение delay:0 — это НЕ ноль миллисекунд, а несостоявшаяся проба. Наружу обязано уходить как null, иначе мёртвый узел покажется самым быстрым.",

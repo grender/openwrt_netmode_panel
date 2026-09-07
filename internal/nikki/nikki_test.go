@@ -33,6 +33,8 @@ type fakeClash struct {
 	putMessage string
 	// providerBody — ответ GET /providers/proxies/{name}.
 	providerBody string
+	// rulesBody — ответ GET /providers/rules.
+	rulesBody string
 }
 
 func (f *fakeClash) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -72,6 +74,15 @@ func (f *fakeClash) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = w.Write([]byte(f.providerBody))
+		return
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/providers/rules" {
+		if f.rulesBody == "" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Resource not found"}`))
+			return
+		}
+		_, _ = w.Write([]byte(f.rulesBody))
 		return
 	}
 	if r.Method == http.MethodDelete {
@@ -547,6 +558,7 @@ func TestUnavailable(t *testing.T) {
 		{"select", func() error { return c.Select(context.Background(), "PROXY", "x") }},
 		{"unfix", func() error { return c.Unfix(context.Background(), "PROXY") }},
 		{"reload", func() error { return c.ReloadProvider(context.Background(), "subscription") }},
+		{"ruleProviders", func() error { _, err := c.RuleProviders(context.Background()); return err }},
 	} {
 		if err := tt.call(); !errors.Is(err, ErrUnavailable) {
 			t.Errorf("%s: %v", tt.name, err)
@@ -641,5 +653,54 @@ func TestProviderProxiesNotFound(t *testing.T) {
 	defer done()
 	if _, err := c.ProviderProxies(context.Background(), "нет-такого"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("404 → %v, ожидалась ErrNotFound", err)
+	}
+}
+
+// ─────────── провайдеры правил ───────────
+
+// TestRuleProvidersDistinguishesDownloadedFromNever — нулевой updatedAt у
+// одного провайдера и ненулевой у другого: ровно это отличает «файл ни разу
+// не скачан» от «скачан и лежит», и по одному только ruleCount>0 это не
+// проверить — у нескачанного он тоже может не быть нулём в чужих сборках.
+func TestRuleProvidersDistinguishesDownloadedFromNever(t *testing.T) {
+	f, c, done := newClient(t, "118296")
+	defer done()
+	f.rulesBody = `{"providers":{
+		"geosite-ru":{"name":"geosite-ru","type":"Rule","vehicleType":"HTTP",
+			"behavior":"Domain","format":"MrsRule","ruleCount":15234,
+			"updatedAt":"2026-09-06T10:00:00Z"},
+		"geosite-ads":{"name":"geosite-ads","type":"Rule","vehicleType":"HTTP",
+			"behavior":"Domain","format":"MrsRule","ruleCount":0,
+			"updatedAt":"0001-01-01T00:00:00Z"}
+	}}`
+
+	providers, err := c.RuleProviders(context.Background())
+	if err != nil {
+		t.Fatalf("RuleProviders: %v", err)
+	}
+	if len(providers) != 2 {
+		t.Fatalf("провайдеров %d, ожидалось 2", len(providers))
+	}
+
+	ru, ok := providers["geosite-ru"]
+	if !ok {
+		t.Fatal("geosite-ru не найден")
+	}
+	if ru.RuleCount != 15234 || ru.Behavior != "Domain" || ru.Format != "MrsRule" || ru.VehicleType != "HTTP" {
+		t.Errorf("geosite-ru = %+v", ru)
+	}
+	if ru.UpdatedAt.IsZero() {
+		t.Error("скачанный провайдер получил нулевой UpdatedAt")
+	}
+
+	ads, ok := providers["geosite-ads"]
+	if !ok {
+		t.Fatal("geosite-ads не найден")
+	}
+	if !ads.UpdatedAt.IsZero() {
+		t.Errorf("нескачанный провайдер получил ненулевой UpdatedAt: %v", ads.UpdatedAt)
+	}
+	if ads.Name != "geosite-ads" {
+		t.Errorf("имя = %q", ads.Name)
 	}
 }
