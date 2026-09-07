@@ -357,6 +357,14 @@ func parseSets(val string) ([]Set, error) {
 		if name == "" {
 			return nil, fmt.Errorf("%w: пустое имя набора в %q", ErrCorrupt, val)
 		}
+		// Посторонний знак в имени — это файл, правленный руками: сами мы
+		// таких имён не пишем (их отсеивает каталог). Принять его значило
+		// бы вернуть имя обратно в mixin.yaml при следующей записи и
+		// повалить nikki на разборе YAML. Запятая внутри имени сюда и не
+		// доедет — она уже разъехалась на два набора выше.
+		if !geosite.ValidName(name) {
+			return nil, fmt.Errorf("%w: в имени набора %q недопустимые знаки", ErrCorrupt, name)
+		}
 		sets = append(sets, Set{Name: name, IP: ip})
 	}
 	return sets, nil
@@ -407,6 +415,17 @@ func Validate(c Config, cat *geosite.Catalog, applied []Set) error {
 	noCatalog := false
 
 	for _, s := range c.Sets {
+		// Знаки проверяются раньше каталога и НЕЗАВИСИМО от него, в том
+		// числе у уже применённого имени. Имя приходит телом PUT, а
+		// применённым мог стать через правку файла руками — и уедет в
+		// одинарные кавычки правила и в строку состояния через запятую,
+		// где посторонний знак ломает не наш разбор, а старт nikki.
+		// Каталог такое имя отсеивает у себя (geosite.ValidName), но он
+		// на этом пути не обязателен, поэтому проверка стоит и здесь.
+		if !geosite.ValidName(s.Name) {
+			return fmt.Errorf("rulesets: в имени набора %q недопустимые знаки — "+
+				"бывают латиница, цифры и . _ - @ !", s.Name)
+		}
 		if seen[s.Name] {
 			return fmt.Errorf("rulesets: набор %q выбран дважды", s.Name)
 		}

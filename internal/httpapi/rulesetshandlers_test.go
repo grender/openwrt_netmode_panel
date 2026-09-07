@@ -780,6 +780,47 @@ func TestRulesetsPutInOtherModeSkipsRestart(t *testing.T) {
 	}
 }
 
+// TestRulesetsPutFailsWhenModeUnreadable — режим не прочитался: джоб падает
+// честно, а не докладывает «Применено».
+//
+// Отказ uci при чтении режима давал бы пустую строку, а пустая строка — не
+// «nikki», то есть шаг перезапуска молча пропускался бы. Владелец видел бы
+// в панели успех над правилами, которых движок не перечитывал, и отличить
+// это от настоящего успеха ему нечем: файл на месте, флаг на месте, туннель
+// работает по-старому.
+func TestRulesetsPutFailsWhenModeUnreadable(t *testing.T) {
+	s, f := newServer(t)
+	addBypass(t, s)
+	f.Errors["uci get netmode.main.mode"] = errors.New("uci: I/O error")
+
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesetsFP(t, s))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+	}
+	state, msg := jobOutcome(t, s)
+	if state != job.Failed {
+		t.Fatalf("джоб %s, ожидался failed: непрочитанный режим выдан за успех", state)
+	}
+	// Текст обязан сказать три вещи: файл и флаг записаны, Nikki не
+	// перезапущен, повтор безопасен. Без первой владелец применит заново
+	// вслепую, без второй — не поймёт, почему ничего не изменилось, без
+	// третьей — побоится повторять вовсе.
+	for _, want := range []string{"записаны", "не перезапущен", "Повторить"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("в тексте %q нет %q", msg, want)
+		}
+	}
+	if got := f.CallsContaining("apply-mode"); len(got) != 0 {
+		t.Errorf("движок перезапущен при неизвестном режиме: %v", got)
+	}
+	if _, ok := mixinBytes(t, s); !ok {
+		t.Error("файл наборов не записан — отказ наступил не там, где сказано в тексте")
+	}
+	if callCount(f.Calls, "set nikki.mixin.mixin_file_content=1") != 1 {
+		t.Errorf("флаг не переключён: %v", f.Calls)
+	}
+}
+
 // TestRulesetsPutKeepsFlagAlreadyOn — флаг уже 1: ни set, ни commit.
 //
 // Запись ради того же значения стоила бы коммита пакета nikki на флеше, а
@@ -831,12 +872,12 @@ func TestRulesetsPutRefusesBeforeAnyWrite(t *testing.T) {
 		code:   "bad_request",
 	}, {
 		name:   "имени нет в каталоге",
-		body:   `{"policy":"only","sets":["нетакогонабора"]}`,
+		body:   `{"policy":"only","sets":["nosuchsetname"]}`,
 		status: http.StatusBadRequest,
 		code:   "unknown_set",
 		// Имя в тексте: панель подсвечивает именно эти чипы, и «неверный
 		// запрос» не сказало бы, какое из тридцати имён написано с опечаткой.
-		text: []string{"нетакогонабора"},
+		text: []string{"nosuchsetname"},
 	}, {
 		name:   "profile с наборами",
 		body:   `{"policy":"profile","sets":["youtube"]}`,
@@ -1155,7 +1196,7 @@ func corruptMixin() []byte {
 	return []byte(
 		"# netmoded: файл пишет панель.\n" +
 			"# Не правьте руками.\n" +
-			"# netmoded-rulesets: policy=only download=direct sets=youtube,вымышленный\n")
+			"# netmoded-rulesets: policy=only download=direct sets=youtube,imaginaryset\n")
 }
 
 // TestRulesetsPutRewritesCorruptFile — испорченный файл записи не мешает.
@@ -1198,7 +1239,7 @@ func TestRulesetsPutRewritesCorruptFile(t *testing.T) {
 		// применённым — оно проехало бы мимо каталога, и в mixin.yaml
 		// уехал бы набор, которого в репозитории нет: провайдер с битой
 		// ссылкой и вечное «не загрузился» в панели.
-		rec := putRulesets(t, s, `{"policy":"only","sets":["вымышленный"]}`, "")
+		rec := putRulesets(t, s, `{"policy":"only","sets":["imaginaryset"]}`, "")
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("код %d, ожидался 400; тело %s", rec.Code, rec.Body.String())
 		}

@@ -222,7 +222,7 @@ func (c *Client) fetchTree(ctx context.Context, raw, etag string) (*tree, string
 		return nil, "", false, fmt.Errorf("geosite: тело ответа GitHub не дочитано: %w", err)
 	}
 	if len(body) > maxBody {
-		return nil, "", false, fmt.Errorf("%w (%d Б)", ErrTooLarge, maxBody)
+		return nil, "", false, fmt.Errorf("%w (потолок %d Б)", ErrTooLarge, maxBody)
 	}
 
 	var t tree
@@ -299,7 +299,7 @@ func (c *Client) refresh(ctx context.Context) (*Catalog, error) {
 		return nil, err
 	}
 
-	names := mrsNames(site)
+	names := c.names(site, KindSite)
 	if len(names) == 0 {
 		// Ноль имён — это не пустой каталог, это сломанный ответ: в
 		// geo/geosite их 1899. Принять ноль значило бы отбить при
@@ -311,7 +311,7 @@ func (c *Client) refresh(ctx context.Context) (*Catalog, error) {
 	// дополняют набор доменов. Имя вроде «cn», которое есть только в
 	// geoip, предлагать нечего — доменов за ним нет.
 	ipAll := make(map[string]bool, len(ipTree.Tree))
-	for _, n := range mrsNames(ipTree) {
+	for _, n := range c.names(ipTree, KindIP) {
 		ipAll[n] = true
 	}
 	ip := make(map[string]bool)
@@ -347,19 +347,44 @@ func subtreeURL(t *tree, name string) (string, error) {
 	return "", fmt.Errorf("geosite: в дереве нет каталога %q — раскладка репозитория изменилась", name)
 }
 
-// mrsNames — имена наборов из дерева.
+// names — имена наборов из дерева, с отсевом посторонних.
+//
+// Отсев считается вслух: молча укоротившийся список необъясним — имя из
+// репозитория в панели не показывается, а почему, не видно нигде.
+func (c *Client) names(t *tree, kind Kind) []string {
+	out, skipped := mrsNames(t)
+	if skipped > 0 {
+		c.logf("каталог geosite: в дереве %s пропущено имён с посторонними знаками: %d", kind, skipped)
+	}
+	return out
+}
+
+// mrsNames — имена наборов из дерева и число отброшенных.
 //
 // Записи type != "blob" (подкаталоги) и файлы с другими суффиксами
-// отбрасываются: за ними нет файла правил, который скачает mihomo.
-func mrsNames(t *tree) []string {
+// отбрасываются молча: за ними нет файла правил, который скачает mihomo, и
+// в дереве их большинство.
+//
+// А вот имя с посторонним знаком (см. ValidName) — случай другой: файл
+// правил за ним есть, но взять такое имя нельзя. Репозиторий чужой, и
+// сегодняшний набор знаков там нам никто не обещал; принять «it's» значило
+// бы записать его в одинарные кавычки правила mixin.yaml и повалить nikki
+// при ближайшем перезапуске — том самом, которым владелец применяет наборы.
+// Поэтому отсев здесь, у самого входа, а не там, где имя взорвётся.
+func mrsNames(t *tree) (names []string, skipped int) {
 	out := make([]string, 0, len(t.Tree)/3+1)
 	for _, e := range t.Tree {
 		if e.Type != "blob" || !strings.HasSuffix(e.Path, mrsSuffix) {
 			continue
 		}
-		out = append(out, strings.TrimSuffix(e.Path, mrsSuffix))
+		name := strings.TrimSuffix(e.Path, mrsSuffix)
+		if !ValidName(name) {
+			skipped++
+			continue
+		}
+		out = append(out, name)
 	}
-	return out
+	return out, skipped
 }
 
 // shortSHA — sha для журнала.

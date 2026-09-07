@@ -72,6 +72,22 @@
       "sha": "8293a4b5c6d7e8f90123456789102132435465768",
       "size": 4096,
       "url": "{{BASE}}/blobs/8293a4b5c6d7e8f9012345678910213243546576"
+    },
+    {
+      "path": "bad name.mrs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0123456789abcdef0123456789abcdef01234567",
+      "size": 512,
+      "url": "{{BASE}}/blobs/0123456789abcdef0123456789abcdef01234567"
+    },
+    {
+      "path": "it's.mrs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "89abcdef0123456789abcdef0123456789abcdef",
+      "size": 512,
+      "url": "{{BASE}}/blobs/89abcdef0123456789abcdef0123456789abcdef"
     }
   ],
   "truncated": false

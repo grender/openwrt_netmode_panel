@@ -44,6 +44,10 @@ type stand struct {
 	// доказать «старый список отдаётся СРАЗУ»: пока обновление заперто,
 	// вернуться Get может только из кэша.
 	gate chan struct{}
+	// arrived ≠ nil — в него уходит сигнал о каждом пришедшем запросе.
+	// Нужен там, где тест обязан дождаться, пока клиент ДОЙДЁТ до сети:
+	// иначе ждать пришлось бы сном «на глазок».
+	arrived chan struct{}
 	// truncPath — на этом дереве отвечать с "truncated": true.
 	truncPath string
 	// oversize — отвечать телом больше maxBody.
@@ -100,7 +104,17 @@ func (s *stand) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	status, gate, trunc, oversize := s.status, s.gate, s.truncPath, s.oversize
 	body := s.trees[r.URL.Path]
+	arrived := s.arrived
 	s.mu.Unlock()
+
+	// Сигнал о приходе — ДО шлюза: тест ждёт именно того мгновения, когда
+	// клиент уже в сети, но ответа ещё не получил.
+	if arrived != nil {
+		select {
+		case arrived <- struct{}{}:
+		default:
+		}
+	}
 
 	if gate != nil && r.URL.Path == standRootPath {
 		<-gate
@@ -194,6 +208,20 @@ func newClient(t *testing.T, s *stand, ttl time.Duration, j *journal) (*Client, 
 		}
 	}
 	return c, done
+}
+
+// waitArrived ждёт, пока запрос ДОЙДЁТ до стенда.
+//
+// Отдельно от waitRefresh: тот ждёт конца работы, а этот — её начала. Оба
+// нужны затем, чтобы в тестах не было сна «на глазок»: он делает проверку
+// зелёной или красной по нагрузке машины, а не по поведению кода.
+func waitArrived(t *testing.T, arrived <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("клиент не сходил в GitHub за 5 с")
+	}
 }
 
 func waitRefresh(t *testing.T, done <-chan struct{}) {
@@ -716,5 +744,152 @@ func TestCatalogNamesAreSortedOnBuild(t *testing.T) {
 	// прошёл бы мимо него — на нём и держится проверка.
 	if !cat.Has("anthropic") {
 		t.Error("Has не нашёл имя, поданное вне порядка: список не отсортирован")
+	}
+}
+
+// TestOddNamesFromRepoAreDropped — имя с пробелом или апострофом в каталог
+// не попадает.
+//
+// Имена приходят из ЧУЖОГО репозитория, а уезжают в две конструкции, где
+// посторонний знак ломает не наш разбор, а работу движка: строку правила
+// mixin.yaml в одинарных кавычках и машинное состояние sets=… через запятую.
+// Имя вида «it's» дало бы битый YAML при следующем старте nikki, имя с
+// запятой — состояние, которое Parse разбирает как два набора. Отбрасывать
+// такое надо там, где оно появляется, а не там, где оно взрывается.
+func TestOddNamesFromRepoAreDropped(t *testing.T) {
+	s := newStand(t)
+	j := &journal{}
+	c, _ := newClient(t, s, time.Hour, j)
+
+	cat, err := c.Get(context.Background())
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	for _, bad := range []string{"bad name", "it's"} {
+		if cat.Has(bad) {
+			t.Errorf("имя %q попало в каталог — оно уедет в mixin.yaml как есть", bad)
+		}
+	}
+	if len(cat.Names) != 4 {
+		t.Errorf("имён %d (%v), ожидалось 4: посторонние отброшены, остальные на месте", len(cat.Names), cat.Names)
+	}
+	// Молчаливая пропажа имени необъяснима: список короче, чем в
+	// репозитории, и почему — не видно нигде.
+	if !strings.Contains(j.text(), "пропущено") {
+		t.Errorf("журнал молчит о пропущенных именах: %q", j.text())
+	}
+}
+
+// TestColdGetFinishesRefreshInBackground — оборванный холодный обход
+// доводится фоном.
+//
+// Панель ждёт побочный список восемь секунд, а холодный обход — четыре
+// последовательных запроса в GitHub. На медленном аплинке каждая попытка
+// умирает вместе с запросом панели, кэш остаётся пустым, и «Повторить»
+// начинает с нуля СНОВА И СНОВА — каталога владелец не получает никогда.
+// Поэтому неудача синхронной попытки запускает один фоновый обход со своим
+// сроком: следующее нажатие обязано найти готовый каталог.
+func TestColdGetFinishesRefreshInBackground(t *testing.T) {
+	s := newStand(t)
+	j := &journal{}
+	c, done := newClient(t, s, time.Hour, j)
+
+	arrived := make(chan struct{}, 8)
+	gate := make(chan struct{})
+	s.set(func(s *stand) { s.arrived, s.gate = arrived, gate })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := c.Get(ctx)
+		errCh <- err
+	}()
+
+	// Контекст рвётся не по часам, а по факту: клиент уже в сети, запрос
+	// упёрся в шлюз. Сон «на глазок» сделал бы тест зелёным или красным по
+	// нагрузке машины, а не по поведению кода.
+	waitArrived(t, arrived)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("Get отдал каталог, хотя обход оборвался")
+		}
+		if !errors.Is(err, ErrUnavailable) {
+			t.Errorf("ошибка %v не опознаётся как ErrUnavailable — панели нечем ответить 503", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Get не вернулся после отмены контекста — он привязан не к тому сроку")
+	}
+
+	// Шлюз открыт: фоновый обход, начатый вместо оборванного, обязан
+	// дойти до конца сам.
+	close(gate)
+	waitRefresh(t, done)
+
+	cat := c.Current()
+	if cat == nil {
+		t.Fatal("фон не довёз каталог: «Повторить» начнёт всё с нуля")
+	}
+
+	before, _ := s.counts()
+	again, err := c.Get(context.Background())
+	if err != nil {
+		t.Fatalf("Get после фона: %v", err)
+	}
+	if again != cat {
+		t.Error("Get отдал не тот снимок, что принёс фон")
+	}
+	if after, _ := s.counts(); after != before {
+		t.Errorf("Get после фона сходил в GitHub ещё %d раз — кэша он не нашёл", after-before)
+	}
+}
+
+// TestConcurrentColdGetsWalkGitHubOnce — холодных вызовов много, обход один.
+//
+// То же правило «одно обновление за раз», что и у просроченного кэша, но на
+// холодном пути: панель, открытая на трёх устройствах, иначе превратила бы
+// пустой кэш в три обхода — двенадцать запросов из шестидесяти в час.
+func TestConcurrentColdGetsWalkGitHubOnce(t *testing.T) {
+	s := newStand(t)
+	j := &journal{}
+	c, _ := newClient(t, s, time.Hour, j)
+
+	arrived := make(chan struct{}, 8)
+	gate := make(chan struct{})
+	s.set(func(s *stand) { s.arrived, s.gate = arrived, gate })
+
+	start := make(chan struct{})
+	got := make([]*Catalog, 3)
+	errs := make([]error, 3)
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			got[i], errs[i] = c.Get(context.Background())
+		}(i)
+	}
+	close(start)
+
+	// Пока первый заперт шлюзом, остальные обязаны ждать ЕГО, а не идти
+	// в GitHub своей дорогой.
+	waitArrived(t, arrived)
+	close(gate)
+	wg.Wait()
+
+	for i := range got {
+		if errs[i] != nil {
+			t.Fatalf("Get #%d: %v", i, errs[i])
+		}
+		if got[i] == nil || got[i] != got[0] {
+			t.Errorf("Get #%d отдал другой снимок: обходов было больше одного", i)
+		}
+	}
+	if hits, _ := s.counts(); hits != 4 {
+		t.Errorf("запросов %d, ожидалось 4: три холодных вызова — один обход", hits)
 	}
 }

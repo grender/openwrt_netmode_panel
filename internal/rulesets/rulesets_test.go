@@ -226,6 +226,12 @@ func TestParseCorrupt(t *testing.T) {
 		{"неизвестное скачивание", []byte(head + stateMark + " policy=only download=carrier sets=\n")},
 		{"неизвестное поле состояния", []byte(head + stateMark + " policy=only mood=good sets=\n")},
 		{"пустое имя набора", []byte(head + stateMark + " policy=only download=direct sets=youtube,\n")},
+		// Тело здесь СХОДИТСЯ с состоянием — одно правило на один набор,
+		// — и без проверки знаков такой файл проезжал бы молча: имя с
+		// апострофом уехало бы обратно в mixin.yaml и порвало бы YAML на
+		// следующем старте nikki.
+		{"имя с апострофом", []byte(head + stateMark + " policy=only download=direct sets=it's\n" +
+			"nikki-rules:\n" + ruleSiteLinePrefix + "it's,BYPASS'\n")},
 	}
 
 	for _, tc := range cases {
@@ -307,7 +313,10 @@ func testCatalog() *geosite.Catalog {
 // TestValidate — таблица отказов и разрешений.
 func TestValidate(t *testing.T) {
 	cat := testCatalog()
-	applied := []Set{{Name: "было-применено", IP: true}}
+	// Второе имя применено, но написано непозволительно: попасть в файл
+	// оно могло только правкой руками, а PUT с ним придёт как «уже
+	// применённое», то есть мимо сверки с каталогом.
+	applied := []Set{{Name: "already-applied", IP: true}, {Name: "bad'name"}}
 
 	cases := []struct {
 		name    string
@@ -328,7 +337,7 @@ func TestValidate(t *testing.T) {
 		{name: "из профиля без наборов", cat: cat,
 			cfg: Config{Policy: PolicyProfile, Download: DownloadDirect}},
 		{name: "уже применённое имя валидно и без каталога", cat: nil,
-			cfg: Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{{Name: "было-применено"}}}},
+			cfg: Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{{Name: "already-applied"}}}},
 
 		{name: "неизвестная политика", cat: cat, wantErr: true,
 			cfg: Config{Policy: "maybe", Download: DownloadDirect}},
@@ -341,10 +350,19 @@ func TestValidate(t *testing.T) {
 				{Name: "youtube"}, {Name: "telegram"}, {Name: "youtube"},
 			}}},
 		{name: "имён нет в каталоге", cat: cat, wantErr: true,
-			wantUnknown: true, wantIn: []string{"нетакого", "итакого"},
+			wantUnknown: true, wantIn: []string{"nosuchset", "norsuchone"},
 			cfg: Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-				{Name: "youtube"}, {Name: "нетакого"}, {Name: "итакого"},
+				{Name: "youtube"}, {Name: "nosuchset"}, {Name: "norsuchone"},
 			}}},
+		// Текст обязан назвать причину именно знаками: имя с запятой есть
+		// в списке «неизвестных» и без проверки, но чинится оно не поиском
+		// по каталогу.
+		{name: "посторонний знак в имени", cat: cat, wantErr: true,
+			wantIn: []string{"a,b", "недопустим"},
+			cfg:    Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{{Name: "a,b"}}}},
+		{name: "посторонний знак у уже применённого имени", cat: cat, wantErr: true,
+			wantIn: []string{"недопустим"},
+			cfg:    Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{{Name: "bad'name"}}}},
 		{name: "каталога нет, а имя новое", cat: nil, wantErr: true, wantIs: ErrNoCatalog,
 			cfg: Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{{Name: "youtube"}}}},
 	}
@@ -383,14 +401,14 @@ func TestValidate(t *testing.T) {
 // порядке выбора: владелец должен увидеть, какие именно чипы убрать.
 func TestValidateListsUnknownNames(t *testing.T) {
 	err := Validate(Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-		{Name: "зет"}, {Name: "youtube"}, {Name: "аз"},
+		{Name: "zzz"}, {Name: "youtube"}, {Name: "aaa"},
 	}}, testCatalog(), nil)
 
 	var unknown *UnknownSetsError
 	if !errors.As(err, &unknown) {
 		t.Fatalf("ошибка %v не *UnknownSetsError", err)
 	}
-	if want := []string{"зет", "аз"}; !reflect.DeepEqual(unknown.Names, want) {
+	if want := []string{"zzz", "aaa"}; !reflect.DeepEqual(unknown.Names, want) {
 		t.Errorf("перечислено %v, ожидалось %v", unknown.Names, want)
 	}
 }
