@@ -45,7 +45,12 @@ func main() {
 
 	// Клиенты Nikki и b4 подменяются: на ноуте на 9090 и 7000 никого нет,
 	// и без подмены панель показывала бы только «недоступно».
-	srv.SetNikkiClient(newDevNikki())
+	// Подделка Clash API обязана показывать провайдеры правил ТЕХ ЖЕ имён,
+	// что записаны в mixin.yaml: иначе на стенде каждый набор вечно «не
+	// загрузился», и вкладку наборов невозможно ни нарисовать, ни отладить.
+	nk := newDevNikki()
+	srv.SetNikkiClient(nk)
+	nk.ruleNames = srv.RulesetProviderNames
 	srv.SetB4Client(newDevB4())
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
+	"netmoded/internal/atomicfile"
 	"netmoded/internal/geosite"
+	"netmoded/internal/job"
 	"netmoded/internal/nikki"
 	"netmoded/internal/rulesets"
+	"netmoded/internal/uci"
 )
 
 // handleRulesetsGet — что владелец выбрал и что из этого реально работает.
@@ -287,4 +292,396 @@ func packsIn(cat *geosite.Catalog) []geosite.Pack {
 		out = append(out, geosite.Pack{ID: p.ID, Sets: sets})
 	}
 	return out
+}
+
+const (
+	// rulesetsETASec — сколько примерно занимает применение: запись файла,
+	// коммит флага, netmode-apply и первый ответ Clash API укладываются в
+	// те же 15 с, что и смена режима (SPEC §5).
+	rulesetsETASec = 15
+	// rulesetsWait — сколько ждать движок после перезапуска. Двадцати
+	// секунд хватает mihomo, чтобы поднять Clash API; скачивание правил
+	// сюда не входит — его результат проверяется тем, что успело приехать.
+	rulesetsWait = 20 * time.Second
+	// rulesetsPoll — шаг опроса.
+	rulesetsPoll = time.Second
+)
+
+// mixinFlagOpt — nikki.mixin.mixin_file_content, то есть «склеивать ли
+// mixin.yaml с профилем».
+//
+// Файл без этого флага лежит на диске мёртвым грузом: nikki.init его просто
+// не читает. Поэтому запись файла и переключение флага — одна операция, а
+// не две настройки, и разъехаться им нельзя.
+const mixinFlagOpt = "mixin_file_content"
+
+// handleRulesetsPut применяет выбор наборов.
+//
+// Медленная операция: файл на флеш, коммит UCI, перезапуск движка —
+// значит джоб и 202, а не 200 с результатом (ADR-0013).
+//
+// Порядок проверок идёт от «запись бессмысленна» к «запись невозможна», и
+// все они стоят ДО первой записи. Это не аккуратность, а единственный
+// доступный нам вид отката: отката нет (ADR-0006), после uci commit
+// отказаться уже нечем, а перезаписанный mixin.yaml не вернуть.
+func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
+	// 1. Форма тела.
+	//
+	// ip панель не присылает: знать, есть ли имя в дереве geoip, может
+	// только каталог, и признак проставляет демон (Resolve ниже). Дай мы
+	// его клиенту — вкладка, открытая до обновления каталога, теряла бы
+	// половину набора молча.
+	var in struct {
+		Policy   string   `json:"policy"`
+		Download string   `json:"download"`
+		Sets     []string `json:"sets"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", "Тело запроса не разбирается как JSON")
+		return
+	}
+	if in.Download == "" {
+		// Умолчание, а не отказ: «откуда качать» спрашивают редко, и
+		// требовать поле на каждой записи значило бы заставлять панель
+		// помнить его ради одного случая из ста.
+		in.Download = string(rulesets.DownloadDirect)
+	}
+	want := rulesets.Config{
+		Policy:   rulesets.Policy(in.Policy),
+		Download: rulesets.Download(in.Download),
+		// Пустой срез, а не nil: дальше он идёт в Render и в отпечаток, и
+		// разница «наборов нет» / «поле не пришло» там ничего не значит.
+		Sets: make([]rulesets.Set, 0, len(in.Sets)),
+	}
+	for _, name := range in.Sets {
+		want.Sets = append(want.Sets, rulesets.Set{Name: name})
+	}
+
+	// 2. Что лежит на диске сейчас.
+	cur, foreign, herr := s.readMixin()
+	if foreign {
+		writeErr(w, http.StatusConflict, "foreign_mixin",
+			"Файл "+s.cfg.MixinPath+" написан не нами. Перезаписать его значило бы "+
+				"молча уничтожить чужую работу: уберите файл на роутере и повторите.")
+		return
+	}
+	// Испорченный файл записи НЕ мешает, и это не поблажка. Его содержимое
+	// нам неизвестно, значит и отпечаток его бессмыслен; а PUT как раз
+	// переписывает файл целиком — то есть чинит ровно ту поломку, о которой
+	// GET докладывает 500. Отбить здесь значило бы запереть владельца:
+	// применить нельзя, потому что применённое нечитаемо.
+	corrupt := herr != nil && herr.code == "mixin_corrupt"
+	if herr != nil && !corrupt {
+		herr.send(w)
+		return
+	}
+
+	// 3. Отпечаток: не устарело ли представление клиента.
+	//
+	// У испорченного файла его не спрашиваем — сверять было бы не с чем, а
+	// применённых наборов у него нет (cur пуст), и в проверке имён ниже он
+	// участвует как свежая установка.
+	if !corrupt && r.Header.Get("If-Match") != rulesets.Fingerprint(cur) {
+		writeErr(w, http.StatusConflict, "stale_rulesets",
+			"Выбор наборов изменился, пока вы его правили: перечитайте "+
+				"GET /api/nikki/rulesets и повторите с новым отпечатком.")
+		return
+	}
+
+	// 4. Каталог — только если он действительно нужен.
+	//
+	// Уже применённое имя валидно и без него: иначе повторное применение
+	// без интернета — скажем, одна лишь смена «откуда качать» — отбивалось
+	// бы на именах, которые сам же демон и записал. Синхронная загрузка
+	// стоит секунд, и платить их за запись, которую проверять не по чему,
+	// незачем.
+	cat := s.catalog.Current()
+	if needsCatalog(want.Sets, cat, cur.Sets) {
+		// Get отдаёт снимок и при неудачном походе в сеть — его мог
+		// принести кто-то другой, пока мы ходили; отказ означает, что
+		// отдавать нечего вовсе.
+		got, err := s.catalog.Get(r.Context())
+		if err != nil && got == nil {
+			// Причина в тексте: 403 при исчерпанном лимите GitHub и
+			// отсутствие аплинка чинятся по-разному.
+			writeErr(w, http.StatusServiceUnavailable, "catalog_unavailable",
+				"Список наборов geosite не загружен, проверить новые имена нечем: "+err.Error())
+			return
+		}
+		if got != nil {
+			cat = got
+		}
+	}
+
+	// 5. Форма выбора и существование имён.
+	if err := rulesets.Validate(want, cat, cur.Sets); err != nil {
+		var unknown *rulesets.UnknownSetsError
+		if errors.As(err, &unknown) {
+			// Имена перечислены: панель подсвечивает именно эти чипы, а
+			// «неверный запрос» не сказало бы владельцу, какое из тридцати
+			// имён он написал с опечаткой.
+			writeErr(w, http.StatusBadRequest, "unknown_set",
+				"Таких наборов нет в списке: "+strings.Join(unknown.Names, ", ")+
+					". Имена берутся из репозитория MetaCubeX/meta-rules-dat, ветка meta.")
+			return
+		}
+		// Сюда же попал бы rulesets.ErrNoCatalog, но попасть не может:
+		// новые имена без каталога отбиты шагом 4, а без новых имён этот
+		// сентинел не рождается.
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	want = rulesets.Resolve(want, cat, cur.Sets)
+
+	// 6. Чужие незакоммиченные правки в nikki.
+	//
+	// `uci commit` публикует ВЕСЬ стейджинг пакета — своего и чужого не
+	// различает. Закоммитив поверх чужого черновика, мы опубликовали бы
+	// чужую работу под своим именем и в момент, который её автор не
+	// выбирал (ADR-0011).
+	changes, err := s.ex.UCIChanges(r.Context(), "nikki")
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "uci_unavailable", err.Error())
+		return
+	}
+	if uci.HasStagedChanges(changes) {
+		writeErr(w, http.StatusConflict, "foreign_staged_changes",
+			"В /etc/config/nikki есть незакоммиченные правки — вероятно, открыт LuCI. "+
+				"Примените или отмените их, затем повторите.")
+		return
+	}
+
+	// 7. Группа «в туннель».
+	//
+	// Правила RULE-SET,…,BYPASS без неё не применятся, и mihomo не
+	// поднимется вовсе — то есть отказ обнаружился бы уже после записи
+	// файла и перезапуска, обрывом обхода. Молчание движка при этом
+	// пропускается: он имеет право лежать, и тогда проверить нечего, а
+	// запретить из-за этого запись значило бы поставить выбор наборов в
+	// зависимость от работающего mihomo. При profile группа не нужна
+	// вовсе — правил мы не пишем.
+	if want.Policy != rulesets.PolicyProfile && s.nikki != nil {
+		if all, err := s.nikki.Proxies(r.Context()); err == nil {
+			if _, ok := all[rulesets.TunnelGroup]; !ok {
+				writeErr(w, http.StatusServiceUnavailable, "group_missing",
+					"В профиле mihomo нет группы "+rulesets.TunnelGroup+
+						" — правила наборов применить не к чему. Поправьте профиль.")
+				return
+			}
+		}
+	}
+
+	// 8. Джоб. Arg пустой: применение наборов одно, уточнять в нём нечего.
+	j, err := s.jobs.Start("rulesets", "", "Применение наборов geosite", rulesetsETASec,
+		func(ctx context.Context) error { return s.applyRulesets(ctx, want) })
+	if errors.Is(err, job.ErrBusy) {
+		writeErr(w, http.StatusConflict, "job_busy",
+			"Уже идёт другая операция. Дождитесь её завершения.")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]any{"job": j})
+}
+
+// needsCatalog — есть ли среди присланных имён такие, которых нет ни в
+// каталоге, ни среди уже применённых.
+//
+// Отдельная функция, а не догадка по ошибке Validate: там «нечего сверять»
+// и «сверили, не нашли» уже слиты в один проход, а решение «идти ли в
+// GitHub» принимается ДО него.
+func needsCatalog(want []rulesets.Set, cat *geosite.Catalog, applied []rulesets.Set) bool {
+	known := make(map[string]bool, len(applied))
+	for _, set := range applied {
+		known[set.Name] = true
+	}
+	for _, set := range want {
+		if known[set.Name] {
+			continue
+		}
+		if cat != nil && cat.Has(set.Name) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// applyRulesets выполняет применение.
+//
+// Порядок шагов — от того, что переживает перезагрузку, к тому, что живёт
+// до неё: файл, флаг, перезапуск. Обратный порядок означал бы перезапуск
+// движка под старым файлом, то есть «Применено» в панели над правилами,
+// которых mihomo не видел.
+//
+// Отката нет ни на одном шаге (ADR-0006): вернуть прежний файл — это вторая
+// запись на флеш ради состояния, которого владелец не просил, а вернуть
+// прежний флаг после успешного коммита нечем. Единственная отмена здесь —
+// снятие СВОЕГО черновика UCI, который в систему ещё не уехал.
+//
+// Светодиод джоб не трогает: режим не меняется, и мигание «применяю» рядом
+// с работающим туннелем означало бы поломку связи, которой нет (ADR-0013).
+// Индикацию правит только разбор отказа netmode-apply (modeApplyFailed) —
+// там она часть разбора кодов скрипта, и заводить ради неё второй экземпляр
+// этого разбора было бы хуже.
+func (s *Server) applyRulesets(ctx context.Context, want rulesets.Config) error {
+	// a. Файл. Атомарно: читатель (nikki.init при склейке) не должен
+	//    увидеть половину записи, а обрыв питания — оставить пустой файл.
+	if err := atomicfile.Write(s.cfg.MixinPath, rulesets.Render(want), 0o644); err != nil {
+		return fmt.Errorf("наборы не записаны, ничего не изменено: %w", err)
+	}
+
+	// b. Флаг.
+	if err := s.switchMixinFlag(ctx, want.Policy); err != nil {
+		return err
+	}
+
+	// c. Режим. netmode-apply nikki поднял бы движок, который владелец
+	//    выключил намеренно. Выбор при этом уже на диске и вступит в силу
+	//    при включении Nikki — на то он и лежит в файле, который nikki
+	//    читает сам, без нашего участия.
+	mode, _ := s.ex.UCIGet(ctx, "netmode", "main", "mode")
+	if mode != "nikki" {
+		return nil
+	}
+
+	// d. Перезапуск. Своей таксономии отказов у наборов нет — берётся
+	//    разбор кодов netmode-apply целиком: причины и советы там те же,
+	//    а второй экземпляр этого разбора разошёлся бы с первым.
+	if err := s.ex.ApplyMode(ctx, "nikki"); err != nil {
+		return fmt.Errorf("наборы записаны, но Nikki не перезапустился: %w", s.modeApplyFailed("nikki", err))
+	}
+
+	// e. Сверять нечего: правил мы не писали.
+	if want.Policy == rulesets.PolicyProfile || len(want.Sets) == 0 {
+		return nil
+	}
+
+	// f. Движок после перезапуска отвечает не сразу.
+	live, ok := s.awaitRuleProviders(ctx)
+	if !ok {
+		return fmt.Errorf("наборы записаны и Nikki перезапущен, но Clash API не ответил за %s — "+
+			"загрузились ли наборы, неизвестно", rulesetsWait)
+	}
+
+	// g. Сверка с движком.
+	//
+	// «Ни один не скачался» — это отказ, а не успех: правила есть, файлов
+	// правил нет, и обход не работает. Часть — успех: mihomo докачает
+	// остальное сам по своему циклу, а какие наборы недокачаны, видно в
+	// GET полем loaded.
+	loaded, missing := rulesets.Verify(want.Sets, live)
+	if len(loaded) == 0 {
+		return fmt.Errorf("наборы записаны, но движок не скачал ни одного из %d (%s): "+
+			"проверьте, доступен ли с роутера raw.githubusercontent.com, "+
+			"подробности — в /var/log/nikki/core.log",
+			len(want.Sets), firstThree(setNames(missing)))
+	}
+	if len(missing) > 0 {
+		// Единственный след: наружу это уезжает состоянием done, и без
+		// строки в журнале «скачалось не всё» не отличить от «скачалось
+		// всё» нигде, кроме глаз владельца на вкладке.
+		s.logf("наборы geosite: скачались не все, недостаёт %d из %d: %s",
+			len(missing), len(want.Sets), firstThree(setNames(missing)))
+	}
+	return nil
+}
+
+// switchMixinFlag доводит nikki.mixin.mixin_file_content до нужного
+// значения — и только если оно отличается.
+//
+// Запись тем же значением стоила бы коммита пакета nikki на флеше и заодно
+// опубликовала бы всё, что накопил в стейджинге кто-то ещё.
+func (s *Server) switchMixinFlag(ctx context.Context, p rulesets.Policy) error {
+	want := "1"
+	if p == rulesets.PolicyProfile {
+		// Правила целиком из профиля: файл из одной шапки, и склеивать его
+		// не нужно вовсе.
+		want = "0"
+	}
+
+	// Опции нет (ErrNotFound) — nikki считает её выключенной, и мы считаем
+	// так же. Отдельной ветки на отказ uci нет намеренно: тогда мы просто
+	// попробуем записать, и настоящий отказ приедет ниже — с текстом.
+	cur, err := s.ex.UCIGet(ctx, "nikki", "mixin", mixinFlagOpt)
+	if err != nil {
+		cur = "0"
+	}
+	if cur == want {
+		return nil
+	}
+
+	err = s.ex.UCISet(ctx, "nikki", "mixin", mixinFlagOpt, want)
+	if err == nil {
+		err = s.ex.UCICommit(ctx, "nikki")
+	}
+	if err == nil {
+		return nil
+	}
+
+	// Своя правка снимается: незакоммиченный черновик уехал бы в систему
+	// при первом чужом `uci commit nikki`, то есть в момент, который никто
+	// не выбирал.
+	if rerr := s.ex.UCIRevert(ctx, "nikki", "mixin"); rerr != nil {
+		s.logf("наборы geosite: черновик nikki.mixin не снят: %v", rerr)
+	}
+
+	// Текст обязан сказать, действует ли записанный файл ПРЯМО СЕЙЧАС:
+	// от этого зависит, что владелец увидит в обходе до починки. Флаг
+	// стоял в 1 — движок читает новый файл (и при profile тоже: он читает
+	// файл из одной шапки, то есть правил не добавляет).
+	effect := "новый файл пока не действует — движок его не читает"
+	if cur == "1" {
+		effect = "новый файл уже действует — флаг и так стоял в 1"
+	}
+	return fmt.Errorf("наборы записаны в %s, но флаг %s не переключён (%s): %w",
+		s.cfg.MixinPath, mixinFlagOpt, effect, err)
+}
+
+// awaitRuleProviders ждёт, пока Clash API снова начнёт отвечать.
+//
+// Ждём ОТВЕТА движка, а не скачанных правил: скачивание идёт минутами и
+// повторяется само, а джоб столько держать нельзя — панель на всё это время
+// под замком. Что успело приехать к первому ответу, покажет сверка.
+func (s *Server) awaitRuleProviders(ctx context.Context) (map[string]nikki.RuleProvider, bool) {
+	if s.nikki == nil {
+		return nil, false
+	}
+	deadline := time.Now().Add(rulesetsWait)
+	for {
+		if live, err := s.nikki.RuleProviders(ctx); err == nil {
+			return live, true
+		}
+		if time.Now().After(deadline) || !sleepCtx(ctx, rulesetsPoll) {
+			return nil, false
+		}
+	}
+}
+
+// setNames — имена наборов в порядке выбора.
+func setNames(sets []rulesets.Set) []string {
+	out := make([]string, 0, len(sets))
+	for _, set := range sets {
+		out = append(out, set.Name)
+	}
+	return out
+}
+
+// firstThree — первые три имени через запятую.
+//
+// Три, а не все: в выборе их бывает три десятка, а строка ошибки читается
+// в панели одним абзацем. Полный перечень владелец и так видит на вкладке —
+// здесь имена нужны, чтобы узнать доклад, а не чтобы по нему работать.
+func firstThree(names []string) string {
+	if len(names) == 0 {
+		// Пустая строка в скобках выглядела бы как обрыв сообщения.
+		return "(пусто)"
+	}
+	if len(names) > 3 {
+		names = names[:3]
+	}
+	return strings.Join(names, ", ")
 }

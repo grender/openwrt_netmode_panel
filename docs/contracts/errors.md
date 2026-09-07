@@ -83,6 +83,7 @@
 |---|---|
 | `bad_request` | тело не разбирается, нет обязательного поля, значение вне допустимого набора, отсутствует `If-Match` на записи, в теле больше одного JSON-значения |
 | `unsupported_field` | в теле `POST /api/wifi/networks` поле, которого нет в схеме `NetworkWrite`; в теле `POST /api/upstream` поле помимо `id` |
+| `unknown_set` | в теле `PUT /api/nikki/rulesets` есть имена наборов, которых нет ни в каталоге geosite, ни среди уже применённых. Текст перечисляет именно эти имена |
 
 `bad_request` — про значения, `unsupported_field` — про форму. Разделены не
 ради дробности: незнакомое поле означает, что клиент и демон разошлись в
@@ -93,6 +94,12 @@
 создавалась на `wwan`. Принять его тоже нельзя: активную сеть выбирает
 `POST /api/upstream` переключением `disabled`, а не переносом секции в другую
 L3-сеть ([ADR-0026](../adr/0026-switch-from-ambiguous.md)).
+
+`unknown_set` — `400`, а не `409`: состояние системы тут ни при чём, чинится
+правкой запроса (владелец ошибся в имени или каталог опередил панель), а не
+перечитыванием. Отдельный код от `bad_request` потому, что панель подсвечивает
+именно названные чипы: «неверный запрос» не сказало бы, какое из тридцати имён
+написано с опечаткой.
 
 ### 401 / 403 — доступ
 
@@ -124,7 +131,7 @@ L3-сеть ([ADR-0026](../adr/0026-switch-from-ambiguous.md)).
 | `code` | Когда | `details` (не реализовано) | Что делать пользователю |
 |---|---|---|---|
 | `job_busy` | уже выполняется джоб; пришёл второй ([ADR-0013](../adr/0013-fast-vs-slow.md)) | `{"job": {…текущий джоб…}}` | дождаться завершения; очереди нет сознательно |
-| `foreign_staged_changes` | `uci changes wireless` непусто до нашей записи ([ADR-0011](../adr/0011-optimistic-concurrency.md)) | `{"changes": ["wireless.wifinet2.ssid='NEW'"]}` | завершить или отменить правку в LuCI |
+| `foreign_staged_changes` | `uci changes` пакета непусто до нашей записи: `wireless` на записи сетей, `nikki` на `PUT /api/nikki/rulesets` ([ADR-0011](../adr/0011-optimistic-concurrency.md)) | `{"pkg": "wireless", "changes": ["wireless.wifinet2.ssid='NEW'"]}` | завершить или отменить правку в LuCI |
 | `fingerprint_required` | на записи нет заголовка `If-Match` | `{}` | прочитать `GET /api/wifi/networks` и повторить с его `fingerprint` |
 | `fingerprint_mismatch` | `If-Match` не совпал с текущим отпечатком | `{"expected": "sha256:…", "got": "sha256:…"}` | обновить список и повторить |
 | `ambiguous_selection` | `Selection == Ambiguous`, запрошено **создание, правка или удаление** сети ([ADR-0026](../adr/0026-switch-from-ambiguous.md)) | `{"sections": ["wifinet0","wifinet2"], "reason": "multiple_enabled" \| "unparsable_disabled"}` | переключиться на нужную сеть кнопкой в панели — это снимет неоднозначность; либо оставить одну включённую секцию в LuCI |
@@ -134,6 +141,19 @@ L3-сеть ([ADR-0026](../adr/0026-switch-from-ambiguous.md)).
 | `group_not_selectable` | группа mihomo не принимает ручной выбор | `{"group": "PROXY"}` | поправить профиль mihomo |
 | `member_not_selectable` | выбран не узел: заголовок раздела, «Авто» или запись, которую конвертер не смог перевести ([ADR-0031](../adr/0031-subscription-in-daemon.md)) | `{"name": "⬇️ Обходы белых списков ⬇️", "kind": "separator"}` | выбрать узел; строки других видов панель и так не даёт нажать |
 | `subscription_not_configured` | `POST /api/subscription/update` при пустом `netmode.main.subscription_url` | `{}` | задать адрес подписки: `uci set netmode.main.subscription_url='…' && uci commit netmode` |
+| `stale_rulesets` | `If-Match` на `PUT /api/nikki/rulesets` не совпал с нынешним `fingerprint`: пока владелец выбирал, выбор изменила вторая вкладка или ssh | `{"expected": "sha256:…", "got": "sha256:…"}` | перечитать `GET /api/nikki/rulesets` и повторить с новым отпечатком |
+| `foreign_mixin` | `/etc/nikki/mixin.yaml` есть, но написан не нами (первая строка не начинается с `# netmoded:`) | `{"path": "/etc/nikki/mixin.yaml"}` | убрать или переименовать файл на роутере — перезаписать его демон не станет |
+
+`stale_rulesets` — свой код, а не `fingerprint_mismatch`, и это не дробность:
+сверяются разные источники правды (`/etc/nikki/mixin.yaml` против
+`/etc/config/wireless`), и панель на них реагирует в разных экранах. Отдельного
+`fingerprint_required` у наборов нет: отсутствующий `If-Match` с нынешним
+отпечатком не совпадает и приходит тем же `stale_rulesets` — лечится он тем же
+самым, перечитыванием `GET`.
+
+`foreign_mixin` — единственный отказ, который повтором не чинится вовсе: пока
+чужой файл лежит на месте, любая запись наборов молча уничтожила бы чужую
+работу. Выход отсюда только руками, по ssh.
 
 `fingerprint_required` — именно `409`, а не `400`: заголовка нет не потому, что
 запрос кривой, а потому, что клиент не доказал знание текущего состояния. Это
@@ -228,7 +248,7 @@ L3-сеть ([ADR-0026](../adr/0026-switch-from-ambiguous.md)).
 |---|---|---|
 | `b4_unavailable` | b4 (порт 7000) не ответил, ответил не `200`, либо клиент не настроен | `{"probe": "GET /api/version", "err": "connection refused"}` |
 | `nikki_unavailable` | Clash API не ответил либо клиент не настроен. **RQ-01 закрыт** — это условное состояние, а не постоянное | `{"probe": "GET /proxies"}` |
-| `group_missing` | Clash API ответил, но группы `PROXY` в профиле нет. Чинится правкой профиля, а не ожиданием | `{"group": "PROXY"}` |
+| `group_missing` | Clash API ответил, но нужной группы в профиле нет: `PROXY` на выборе узла и замере, `BYPASS` на `PUT /api/nikki/rulesets` (правила `RULE-SET,…,BYPASS` без неё не применятся, и mihomo не поднимется вовсе — отбить лучше до записи файла). Чинится правкой профиля, а не ожиданием | `{"group": "PROXY"}` |
 | `ubus_unavailable` | `ubus call network.wireless status` не ответил на пути скана | `{"object": "network.wireless"}` |
 | `uci_unavailable` | `uci changes` или `uci show wireless` не отработали на пути записи — включая путь `POST /api/upstream` | `{"pkg": "wireless"}` |
 | `scan_failed` | `ubus call iwinfo scan` вернул ошибку | `{"ifname": "phy0.0-sta0"}` |
@@ -237,6 +257,7 @@ L3-сеть ([ADR-0026](../adr/0026-switch-from-ambiguous.md)).
 | `unavailable` | планировщик подписки не настроен. В штатной сборке недостижимо: `NewServer` заводит его всегда | `{}` |
 | `host_unknown` | адрес роутера не выводится из заголовка `Host`: панель открыта через ssh-туннель или по петле. Только `GET /api/nikki/panel` | `{}` — угадывать нечем |
 | `nikki_unconfigured` | не задан `nikki.mixin.api_listen` (не выводится порт) либо пуст `nikki.mixin.api_secret`. Только `GET /api/nikki/panel` | `{}` — значения секрета в подробностях быть не может |
+| `catalog_unavailable` | список имён наборов geosite не загружен и загрузить его не удалось (нет аплинка, исчерпан лимит GitHub в 60 запросов в час, дерево пришло обрезанным). Отдаётся `GET /api/nikki/rulesets/catalog` всегда, а `PUT /api/nikki/rulesets` — только когда среди присланных имён есть новые: уже применённые проверяются по файлу и каталога не спрашивают | `{}` — причина в тексте |
 | `panel_missing` | Clash API настроен, но по `/ui/` нет статики дашборда: не скачана (`nikki.mixin.ui_url` тянет её с GitHub при первом запуске) либо движок не поднят. Только `GET /api/nikki/panel` | `{}` |
 
 Три кода `/api/nikki/panel` разделены не ради дробности: они чинятся в трёх
@@ -291,7 +312,8 @@ L3-сеть ([ADR-0026](../adr/0026-switch-from-ambiguous.md)).
 | `parse_failed` | вывод `uci show` или `network.wireless status` не разобрался. Это наша ошибка, а не внешняя: команда ответила |
 | `write_failed` | `uci set`, `uci add` или `uci delete` не отработали. Для опции `key` текст без значения (ADR-0012) |
 | `commit_failed` | `uci commit wireless` не отработал. Отдельный код от `write_failed`: стейджинг остался, и это видно в LuCI |
-| `read_failed` | журнал `/etc/nikki/updates.log` не прочитался |
+| `read_failed` | журнал `/etc/nikki/updates.log` не прочитался; либо не прочитался вовсе файл наборов `/etc/nikki/mixin.yaml` — права, каталог, ФС только для чтения. О содержимом в этом случае неизвестно ничего, поэтому код не `mixin_corrupt`: «примените заново» тут не поможет |
+| `mixin_corrupt` | `/etc/nikki/mixin.yaml` наш (шапка на месте), но его содержимому верить нельзя: число правил в теле не сходится с записанным состоянием, то есть файл правили руками или запись оборвалась. Только `GET /api/nikki/rulesets`: `PUT` этим не отбивается — он переписывает файл целиком, то есть чинит ровно эту поломку |
 
 Текст у всех — общий, без внутренних путей и без значений опций.
 

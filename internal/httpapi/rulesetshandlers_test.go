@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"netmoded/internal/executor"
 	"netmoded/internal/geosite"
+	"netmoded/internal/job"
 	"netmoded/internal/nikki"
 	"netmoded/internal/rulesets"
 )
@@ -572,4 +574,565 @@ func joinAny(v any) string {
 		out = append(out, fmt.Sprint(it))
 	}
 	return strings.Join(out, ",")
+}
+
+// --- PUT /api/nikki/rulesets ---
+
+// putRulesets — применение выбора с отпечатком в If-Match.
+func putRulesets(t *testing.T, s *Server, body, ifMatch string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("PUT", "/api/nikki/rulesets", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// rulesetsFP — отпечаток, который панель берёт из GET и кладёт в If-Match.
+//
+// Берётся именно из ответа, а не считается тестом по rulesets.Fingerprint:
+// иначе проверка сверяла бы отпечаток сам с собой, а разрыв «GET отдаёт одно,
+// PUT ждёт другое» остался бы невидимым — то есть панель не смогла бы
+// записать ничего никогда.
+func rulesetsFP(t *testing.T, s *Server) string {
+	t.Helper()
+	fp, _ := rulesetsGet(t, s)["fingerprint"].(string)
+	if fp == "" {
+		t.Fatal("GET не отдал отпечаток — сопроводить им PUT нечем")
+	}
+	return fp
+}
+
+// addBypass кладёт в подделку движка группу BYPASS.
+//
+// В newFakeNikkiClient её нет намеренно — так проверяется отказ
+// group_missing. Добавить её туда «для всех» значило бы остаться без этой
+// проверки, поэтому каждый тест, которому нужна работающая запись, просит
+// группу сам.
+func addBypass(t *testing.T, s *Server) {
+	t.Helper()
+	f := nikkiFake(t, s)
+	f.all[rulesets.TunnelGroup] = nikki.Proxy{
+		Name: rulesets.TunnelGroup, Type: "Selector", Alive: true,
+		Members: []string{"DIRECT", "PROXY"}, Now: "PROXY", Selectable: true,
+	}
+}
+
+// loadedProviders — движок, который скачал ВСЕ провайдеры перечисленных
+// наборов: у каждого ненулевое время, иначе rulesets.Verify считает набор
+// недокачанным.
+func loadedProviders(sets ...rulesets.Set) map[string]nikki.RuleProvider {
+	at := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	out := map[string]nikki.RuleProvider{}
+	for _, set := range sets {
+		for _, name := range rulesets.ProviderNames(set) {
+			out[name] = nikki.RuleProvider{Name: name, RuleCount: 100, UpdatedAt: at}
+		}
+	}
+	return out
+}
+
+// jobOutcome ждёт конца джоба и отдаёт исход с текстом ошибки.
+func jobOutcome(t *testing.T, s *Server) (job.State, string) {
+	t.Helper()
+	if !s.jobs.Wait(3 * time.Second) {
+		t.Fatal("джоб не завершился за 3 с")
+	}
+	j := s.jobs.Current()
+	if j == nil {
+		t.Fatal("джоба нет вовсе — операция не запускалась")
+	}
+	msg := ""
+	if j.Error != nil {
+		msg = *j.Error
+	}
+	return j.State, msg
+}
+
+// mixinBytes — содержимое файла наборов; ok=false, если файла нет вовсе.
+func mixinBytes(t *testing.T, s *Server) ([]byte, bool) {
+	t.Helper()
+	b, err := os.ReadFile(s.cfg.MixinPath)
+	if os.IsNotExist(err) {
+		return nil, false
+	}
+	if err != nil {
+		t.Fatalf("чтение %s: %v", s.cfg.MixinPath, err)
+	}
+	return b, true
+}
+
+// callCount — сколько раз вызов встретился в журнале.
+//
+// Рядом с готовым callIndex, а не вместо него: «ровно один раз» — отдельное
+// утверждение от «был и стоял вот здесь», и второй перезапуск движка тот
+// нашёл бы, а этот нет.
+func callCount(calls []string, want string) int {
+	n := 0
+	for _, c := range calls {
+		if c == want {
+			n++
+		}
+	}
+	return n
+}
+
+// TestRulesetsPutAppliesFileFlagAndRestart — успешный путь целиком.
+//
+// Три шага и их ПОРЯДОК: файл на флеш, флаг в UCI, перезапуск движка.
+// Обратный порядок означал бы перезапуск под старым файлом — то есть
+// «Применено» в панели над правилами, которых mihomo не видел.
+//
+// Признак подсетей у telegram проставляет ДЕМОН из каталога: панель шлёт
+// одни имена. Пришли бы они от клиента — вкладка, открытая до обновления
+// каталога, молча теряла бы половину набора.
+func TestRulesetsPutAppliesFileFlagAndRestart(t *testing.T) {
+	s, f := newServer(t)
+	addBypass(t, s)
+	want := rulesets.Config{
+		Policy: rulesets.PolicyOnly, Download: rulesets.DownloadDirect,
+		Sets: []rulesets.Set{{Name: "youtube"}, {Name: "telegram", IP: true}},
+	}
+	nikkiFake(t, s).ruleProviders = loadedProviders(want.Sets...)
+
+	// download не прислан: умолчание direct — часть контракта.
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube","telegram"]}`, rulesetsFP(t, s))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+	}
+	if state, msg := jobOutcome(t, s); state != job.Done {
+		t.Fatalf("джоб %s: %s", state, msg)
+	}
+
+	got, ok := mixinBytes(t, s)
+	if !ok {
+		t.Fatal("файл наборов не создан")
+	}
+	if string(got) != string(rulesets.Render(want)) {
+		t.Errorf("файл не совпал с Render:\n--- на диске ---\n%s\n--- ожидалось ---\n%s",
+			got, rulesets.Render(want))
+	}
+
+	iSet, iCommit, iApply := callIndex(f.Calls, "set nikki.mixin.mixin_file_content=1"),
+		callIndex(f.Calls, "commit nikki"), callIndex(f.Calls, "apply-mode nikki")
+	nSet, nCommit, nApply := callCount(f.Calls, "set nikki.mixin.mixin_file_content=1"),
+		callCount(f.Calls, "commit nikki"), callCount(f.Calls, "apply-mode nikki")
+	if nSet != 1 || nCommit != 1 || nApply != 1 {
+		t.Fatalf("вызовы не по разу: set=%d commit=%d apply=%d\n%v", nSet, nCommit, nApply, f.Calls)
+	}
+	if !(iSet < iCommit && iCommit < iApply) {
+		t.Errorf("порядок нарушен: set=%d commit=%d apply=%d\n%v", iSet, iCommit, iApply, f.Calls)
+	}
+
+	// Записанное обязано читаться обратно: файл — единственное хранилище
+	// выбора, и разойдись запись с чтением, панель показывала бы не то,
+	// что применено.
+	body := rulesetsGet(t, s)
+	if body["policy"] != string(rulesets.PolicyOnly) || body["download"] != string(rulesets.DownloadDirect) {
+		t.Errorf("GET после записи: policy %v, download %v", body["policy"], body["download"])
+	}
+	if tg := setByName(t, body, "telegram"); tg["ip"] != true {
+		t.Errorf("telegram ip %v: признак подсетей ставит демон по каталогу", tg["ip"])
+	}
+	if body["foreign"] != false {
+		t.Errorf("foreign %v: файл только что написали мы сами", body["foreign"])
+	}
+}
+
+// TestRulesetsPutInOtherModeSkipsRestart — режим не nikki: пишем, но не
+// перезапускаем.
+//
+// netmode-apply nikki поднял бы движок, который владелец выключил
+// намеренно. Выбор при этом сохраняется и вступит в силу при включении
+// Nikki — на то он и лежит в файле, который nikki читает сам.
+func TestRulesetsPutInOtherModeSkipsRestart(t *testing.T) {
+	s, f := newServer(t)
+	addBypass(t, s)
+	f.UCIValues["netmode.main.mode"] = "b4"
+
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesetsFP(t, s))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+	}
+	if state, msg := jobOutcome(t, s); state != job.Done {
+		t.Fatalf("джоб %s: %s", state, msg)
+	}
+
+	if _, ok := mixinBytes(t, s); !ok {
+		t.Error("файл наборов не записан: выбор потерян до включения Nikki")
+	}
+	if callCount(f.Calls, "set nikki.mixin.mixin_file_content=1") != 1 {
+		t.Errorf("флаг не переключён: %v", f.Calls)
+	}
+	if got := f.CallsContaining("apply-mode"); len(got) != 0 {
+		t.Errorf("движок перезапущен в чужом режиме: %v", got)
+	}
+}
+
+// TestRulesetsPutKeepsFlagAlreadyOn — флаг уже 1: ни set, ни commit.
+//
+// Запись ради того же значения стоила бы коммита пакета nikki на флеше, а
+// заодно опубликовала бы всё, что в стейджинге накопил кто-то ещё.
+func TestRulesetsPutKeepsFlagAlreadyOn(t *testing.T) {
+	s, f := newServer(t)
+	addBypass(t, s)
+	f.UCIValues["nikki.mixin.mixin_file_content"] = "1"
+	nikkiFake(t, s).ruleProviders = loadedProviders(rulesets.Set{Name: "youtube"})
+
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesetsFP(t, s))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+	}
+	if state, msg := jobOutcome(t, s); state != job.Done {
+		t.Fatalf("джоб %s: %s", state, msg)
+	}
+
+	if got := f.CallsContaining("mixin_file_content"); len(got) != 0 {
+		t.Errorf("флаг переписан тем же значением: %v", got)
+	}
+	if got := f.CallsContaining("commit nikki"); len(got) != 0 {
+		t.Errorf("коммит пакета nikki без своей правки: %v", got)
+	}
+	if callCount(f.Calls, "apply-mode nikki") != 1 {
+		t.Errorf("движок не перезапущен: %v", f.Calls)
+	}
+}
+
+// TestRulesetsPutRefusesBeforeAnyWrite — все отказы наступают ДО записи.
+//
+// Это главное свойство обработчика: отката нет (ADR-0006), и после
+// uci commit отказаться уже нечем. Поэтому каждая строка таблицы проверяет
+// не только код ответа, но и то, что файл на флеше не тронут, а журнал
+// исполнителя пуст.
+func TestRulesetsPutRefusesBeforeAnyWrite(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, s *Server, f *executor.Fake)
+		body    string
+		ifMatch string // пусто → отпечаток из GET
+		status  int
+		code    string
+		text    []string
+	}{{
+		name:   "неизвестная политика",
+		body:   `{"policy":"турбо","sets":[]}`,
+		status: http.StatusBadRequest,
+		code:   "bad_request",
+	}, {
+		name:   "имени нет в каталоге",
+		body:   `{"policy":"only","sets":["нетакогонабора"]}`,
+		status: http.StatusBadRequest,
+		code:   "unknown_set",
+		// Имя в тексте: панель подсвечивает именно эти чипы, и «неверный
+		// запрос» не сказало бы, какое из тридцати имён написано с опечаткой.
+		text: []string{"нетакогонабора"},
+	}, {
+		name:   "profile с наборами",
+		body:   `{"policy":"profile","sets":["youtube"]}`,
+		status: http.StatusBadRequest,
+		code:   "bad_request",
+	}, {
+		name: "чужой стейджинг nikki",
+		setup: func(t *testing.T, s *Server, f *executor.Fake) {
+			f.Staged["nikki"] = "nikki.mixin.mixin_file_content='0'\n"
+		},
+		body:   `{"policy":"only","sets":["youtube"]}`,
+		status: http.StatusConflict,
+		code:   "foreign_staged_changes",
+	}, {
+		name:    "отпечаток разошёлся",
+		body:    `{"policy":"only","sets":["youtube"]}`,
+		ifMatch: "sha256:0000000000000000",
+		status:  http.StatusConflict,
+		code:    "stale_rulesets",
+	}, {
+		name: "чужой mixin.yaml",
+		setup: func(t *testing.T, s *Server, f *executor.Fake) {
+			writeMixin(t, s, []byte("dns:\n  enable: true\n"))
+		},
+		body:   `{"policy":"only","sets":["youtube"]}`,
+		status: http.StatusConflict,
+		code:   "foreign_mixin",
+	}, {
+		name: "каталог не загружен, имя новое",
+		setup: func(t *testing.T, s *Server, f *executor.Fake) {
+			s.catalog = &geosite.Client{BaseURL: newCatalogStand(t, http.StatusInternalServerError).URL, Logf: s.logf}
+		},
+		body:   `{"policy":"only","sets":["openai"]}`,
+		status: http.StatusServiceUnavailable,
+		code:   "catalog_unavailable",
+	}, {
+		name: "в профиле нет группы BYPASS",
+		setup: func(t *testing.T, s *Server, f *executor.Fake) {
+			delete(nikkiFake(t, s).all, rulesets.TunnelGroup)
+		},
+		body:   `{"policy":"only","sets":["youtube"]}`,
+		status: http.StatusServiceUnavailable,
+		code:   "group_missing",
+		text:   []string{rulesets.TunnelGroup},
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, f := newServer(t)
+			// Группа есть у всех строк: иначе отказ приезжал бы от неё, а
+			// не от проверяемой причины, и таблица доказывала бы одно и
+			// то же восемь раз.
+			addBypass(t, s)
+			if tc.setup != nil {
+				tc.setup(t, s, f)
+			}
+			before, existed := mixinBytes(t, s)
+
+			ifMatch := tc.ifMatch
+			if ifMatch == "" {
+				ifMatch = rulesetsFP(t, s)
+			}
+			f.Calls = nil
+			rec := putRulesets(t, s, tc.body, ifMatch)
+
+			if rec.Code != tc.status {
+				t.Fatalf("код %d, ожидался %d; тело %s", rec.Code, tc.status, rec.Body.String())
+			}
+			var e apiError
+			if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil {
+				t.Fatalf("тело ошибки не разбирается: %s", rec.Body.String())
+			}
+			if e.Code != tc.code {
+				t.Errorf("код ошибки %q, ожидался %q (текст %q)", e.Code, tc.code, e.Error)
+			}
+			for _, sub := range tc.text {
+				if !strings.Contains(e.Error, sub) {
+					t.Errorf("в тексте %q нет %q", e.Error, sub)
+				}
+			}
+
+			after, exists := mixinBytes(t, s)
+			if exists != existed || string(after) != string(before) {
+				t.Errorf("файл наборов тронут при отказе: было %q (%v), стало %q (%v)",
+					before, existed, after, exists)
+			}
+			if len(f.Calls) != 0 {
+				t.Errorf("отказ дошёл до записи в систему: %v", f.Calls)
+			}
+		})
+	}
+}
+
+// TestRulesetsPutAcceptsAppliedNameWithoutCatalog — применённое имя валидно и
+// без каталога.
+//
+// Иначе повторное применение без интернета — скажем, одна лишь смена
+// политики — отбивалось бы на именах, которые сам же демон и записал.
+// Признак подсетей при этом берётся из файла: потеряй мы его, у набора
+// молча исчезла бы половина.
+func TestRulesetsPutAcceptsAppliedNameWithoutCatalog(t *testing.T) {
+	s, _ := newServer(t)
+	addBypass(t, s)
+	applied := rulesets.Set{Name: "telegram", IP: true}
+	writeMixin(t, s, rulesets.Render(rulesets.Config{
+		Policy: rulesets.PolicyOnly, Download: rulesets.DownloadDirect,
+		Sets: []rulesets.Set{applied},
+	}))
+	s.catalog = &geosite.Client{BaseURL: newCatalogStand(t, http.StatusInternalServerError).URL, Logf: s.logf}
+	nikkiFake(t, s).ruleProviders = loadedProviders(applied)
+
+	rec := putRulesets(t, s, `{"policy":"except","sets":["telegram"]}`, rulesetsFP(t, s))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+	}
+	if state, msg := jobOutcome(t, s); state != job.Done {
+		t.Fatalf("джоб %s: %s", state, msg)
+	}
+
+	want := rulesets.Render(rulesets.Config{
+		Policy: rulesets.PolicyExcept, Download: rulesets.DownloadDirect,
+		Sets: []rulesets.Set{applied},
+	})
+	got, _ := mixinBytes(t, s)
+	if string(got) != string(want) {
+		t.Errorf("файл:\n%s\nожидался:\n%s", got, want)
+	}
+}
+
+// TestRulesetsPutKeepsFileWhenRestartFails — движок не поднялся: файл
+// остаётся, отката нет.
+//
+// ADR-0006: возвращать прежний файл значило бы делать вторую запись на
+// флеш поверх первой, чтобы прийти к состоянию, которого владелец не
+// просил. Повтор возможен, и netmode-apply при загрузке доведёт дело сам.
+func TestRulesetsPutKeepsFileWhenRestartFails(t *testing.T) {
+	s, f := newServer(t)
+	addBypass(t, s)
+	f.ApplyExitCodes["nikki"] = 5
+
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesetsFP(t, s))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+	}
+	state, msg := jobOutcome(t, s)
+	if state != job.Failed {
+		t.Fatalf("джоб %s, ожидался failed", state)
+	}
+	// Текст обязан сказать, что наборы записаны: иначе владелец пойдёт
+	// применять их заново вместо того, чтобы разбираться с движком.
+	if !strings.Contains(msg, "записаны") {
+		t.Errorf("текст %q не говорит, что файл уже записан", msg)
+	}
+	if _, ok := mixinBytes(t, s); !ok {
+		t.Error("файл убран после неудачного перезапуска — это откат, которого нет")
+	}
+	if got := f.CallsContaining("revert"); len(got) != 0 {
+		t.Errorf("откат после коммита: %v", got)
+	}
+}
+
+// TestRulesetsPutRevertsFlagWhenCommitFails — коммит флага не прошёл.
+//
+// Черновик в стейджинге пакета nikki уехал бы в систему при первом чужом
+// uci commit nikki — то есть в момент, который никто не выбирал. Поэтому
+// своя правка снимается revert-ом, а текст называет файл: он-то записан, и
+// владелец должен знать, действует он сейчас или нет.
+func TestRulesetsPutRevertsFlagWhenCommitFails(t *testing.T) {
+	s, f := newServer(t)
+	addBypass(t, s)
+	f.Errors["commit nikki"] = errors.New("uci: I/O error")
+
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesetsFP(t, s))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+	}
+	state, msg := jobOutcome(t, s)
+	if state != job.Failed {
+		t.Fatalf("джоб %s, ожидался failed", state)
+	}
+	if !strings.Contains(msg, s.cfg.MixinPath) {
+		t.Errorf("в тексте %q нет пути к записанному файлу", msg)
+	}
+	if callCount(f.Calls, "revert nikki.mixin") != 1 {
+		t.Errorf("черновик флага не снят: %v", f.Calls)
+	}
+	if got := f.CallsContaining("apply-mode"); len(got) != 0 {
+		t.Errorf("движок перезапущен после провала флага: %v", got)
+	}
+}
+
+// TestRulesetsPutFailsWhenNothingLoaded — движок не скачал ни одного набора.
+//
+// «Применено» здесь было бы прямой ложью: правила есть, файлов правил нет,
+// и обход не работает. Текст называет имена и два места, где ищут причину.
+func TestRulesetsPutFailsWhenNothingLoaded(t *testing.T) {
+	s, _ := newServer(t)
+	addBypass(t, s)
+	// ruleProviders не заданы: движок отвечает, но провайдеров у него нет.
+
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesetsFP(t, s))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+	}
+	state, msg := jobOutcome(t, s)
+	if state != job.Failed {
+		t.Fatalf("джоб %s, ожидался failed; текст %q", state, msg)
+	}
+	for _, sub := range []string{"youtube", "raw.githubusercontent.com", "/var/log/nikki/core.log"} {
+		if !strings.Contains(msg, sub) {
+			t.Errorf("в тексте %q нет %q", msg, sub)
+		}
+	}
+}
+
+// TestRulesetsPutDoneWhenPartlyLoaded — скачалась часть: это done.
+//
+// mihomo докачает остальное сам по своему циклу, а какие наборы не
+// загрузились, видно в GET по полю loaded. Отдать здесь failed значило бы
+// назвать неудачей применение, которое работает.
+func TestRulesetsPutDoneWhenPartlyLoaded(t *testing.T) {
+	s, _ := newServer(t)
+	addBypass(t, s)
+	nikkiFake(t, s).ruleProviders = loadedProviders(rulesets.Set{Name: "youtube"})
+
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube","openai"]}`, rulesetsFP(t, s))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+	}
+	if state, msg := jobOutcome(t, s); state != job.Done {
+		t.Fatalf("джоб %s: %s", state, msg)
+	}
+	if oa := setByName(t, rulesetsGet(t, s), "openai"); oa["loaded"] != false {
+		t.Errorf("openai loaded %v: движок его не скачал", oa["loaded"])
+	}
+}
+
+// TestRulesetsPutProfileWritesHeaderOnly — «вернуть профилю».
+//
+// Файл из одной шапки, флаг 0, перезапуск. Правила снова целиком из
+// профиля nikki: оставь мы в файле хоть одно правило, склейка добавила бы
+// его к профильным.
+func TestRulesetsPutProfileWritesHeaderOnly(t *testing.T) {
+	s, f := newServer(t)
+	addBypass(t, s)
+	writeMixin(t, s, onlyMixin())
+	// Флаг стоял включённым — иначе выключать было бы нечего.
+	f.UCIValues["nikki.mixin.mixin_file_content"] = "1"
+
+	rec := putRulesets(t, s, `{"policy":"profile","sets":[]}`, rulesetsFP(t, s))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+	}
+	if state, msg := jobOutcome(t, s); state != job.Done {
+		t.Fatalf("джоб %s: %s", state, msg)
+	}
+
+	got, _ := mixinBytes(t, s)
+	want := rulesets.Render(rulesets.Config{Policy: rulesets.PolicyProfile, Download: rulesets.DownloadDirect})
+	if string(got) != string(want) {
+		t.Errorf("файл:\n%s\nожидался из одной шапки:\n%s", got, want)
+	}
+	if strings.Contains(string(got), "RULE-SET") {
+		t.Error("в файле остались правила: склейка добавит их к правилам профиля")
+	}
+	if callCount(f.Calls, "set nikki.mixin.mixin_file_content=0") != 1 {
+		t.Errorf("флаг не выключен: %v", f.Calls)
+	}
+	if callCount(f.Calls, "apply-mode nikki") != 1 {
+		t.Errorf("движок не перезапущен: %v", f.Calls)
+	}
+}
+
+// TestRulesetsPutJobBusy — джоб один на демона: второй отбивается, а не
+// встаёт в очередь (SPEC §6).
+func TestRulesetsPutJobBusy(t *testing.T) {
+	s, f := newServer(t)
+	addBypass(t, s)
+	fp := rulesetsFP(t, s)
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	if _, err := s.jobs.Start("mode", "nikki", "тест", 1, func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, fp)
+	close(release)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("код %d, ожидался 409; тело %s", rec.Code, rec.Body.String())
+	}
+	if got := errCode(t, rec); got != "job_busy" {
+		t.Errorf("код ошибки %q, ожидался job_busy", got)
+	}
+	if _, ok := mixinBytes(t, s); ok {
+		t.Error("отбитый запрос успел записать файл")
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("отбитый запрос дошёл до системы: %v", f.Calls)
+	}
 }
