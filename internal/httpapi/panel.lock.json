@@ -17,11 +17,11 @@
     "web/panel/src/state/lock.ts": "c398892da92eb8b6d7370fe04308b3bf93a114ce",
     "web/panel/src/state/poll.ts": "592cc7a9f4e4a97f10b33c6a6d2f1df7f9f59b23",
     "web/panel/src/state/side.ts": "044b8ee342359dc2f5504edbd31ec43ca62cdff3",
-    "web/panel/src/styles.css": "1823f516d63c61fc770383aa3444f5de1a092191",
-    "web/panel/src/ui/App.tsx": "cde5e52535e1be66b30ee208205dfd1cfe855400",
+    "web/panel/src/styles.css": "21d1d52661d95052555c410fdd4c1a00dac77792",
+    "web/panel/src/ui/App.tsx": "ed8627eb65cd82a3036adb1cdb717e53e9c8e519",
     "web/panel/src/ui/Bridge.tsx": "c14eadc452782b1c6f8a62f965e6e501ea0c056d",
-    "web/panel/src/ui/Engine.tsx": "302a8d8dda75ba459c6c9cdab1c0789286192b62",
-    "web/panel/src/ui/Rulesets.tsx": "a985b5ecd7bbe5c290f3ef099261981d8ec886dd",
+    "web/panel/src/ui/Engine.tsx": "224b8de5953fc530f9ddb3d2cbb4a1a7743bf209",
+    "web/panel/src/ui/Rulesets.tsx": "68c47211fc2752ebe52a0795bf8123454ec61411",
     "web/panel/src/ui/Sheets.tsx": "58b2afa0edf9d20fbc5e4c81604ccca1d33fdaa4",
     "web/panel/src/ui/Subscription.tsx": "6edf95b8e7d29df2e57349afb1a653d9dc1b8196",
     "web/panel/src/ui/Uplink.tsx": "4dbf4f581fbe968f12c766802b2c0ee6f3f7c86c",
@@ -29,16 +29,16 @@
     "web/panel/tsconfig.json": "2ee4ff881e2dbfd1abfe8024273340d7c8e94a94",
     "web/panel/vite.config.ts": "229d4555da50f27791ae3765994f04ce40371edd"
   },
-  "inputs_digest": "200cc96eddd4a02d816e1a39371f2bc510ddde610dab60d6c9238d52b9c4641a",
+  "inputs_digest": "4115465afc607fa93f54075dfe4c0265fd51adc34027e37f2ec688efabe9973a",
   "artifact": {
-    "assets/app.js": "6e4eff51c80f49d443142c889da6f427a72f93b34128961043558954591b6d4d",
-    "assets/style.css": "53c84bb29ba4ecfc1f6d10952fc0613e59e76879868089124b399997d0f56f03",
-    "index.html": "45fc229d814945e79b066addd239b6e2fa472ed74b4d3b61c973fb939c15b6c1"
+    "assets/app.js": "0dfc09d8b05a9865a4c762ac00a0d87eadb74fcd801242608f796a6af8ea34bc",
+    "assets/style.css": "f520dd6ffed543b5d795164e38f43631f3998f3001ea5a07889c4f8a12b50143",
+    "index.html": "37695c24ec32edacc619d10ee2ae185489028b64cd51197adc5800442841bc28"
   },
   "sizes_gzip": {
-    "assets/app.js": 40789,
-    "assets/style.css": 4069,
+    "assets/app.js": 40988,
+    "assets/style.css": 4086,
     "index.html": 579,
-    "total": 45437
+    "total": 45653
   }
 }

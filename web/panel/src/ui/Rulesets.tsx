@@ -1,6 +1,6 @@
 import { useState } from 'preact/hooks';
 import type { RulesDraft, RulesetsCatalog, RulesetsResponse } from '../api/types';
-import type { Key, T } from '../i18n';
+import type { Key, Lang, T } from '../i18n';
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
 import { Confirm, Skel, Spin } from './bits';
@@ -19,6 +19,8 @@ export interface RulesetsProps {
 	/** null означает «совпадает с применённым», а не «пусто». */
 	draft: RulesDraft | null;
 	setDraft(d: RulesDraft | null): void;
+	/** Нужен ЧИСЛИТЕЛЬНОМУ: у русского три формы, у английского две. */
+	lang: Lang;
 	lock: Lock;
 	locked: boolean;
 	t: T;
@@ -63,13 +65,17 @@ export function dirtyCount(a: Side<RulesetsResponse>, d: RulesDraft | null): num
 }
 
 /**
- * «3 набора» по-русски.
+ * «3 набора» по-русски, «3 sets» по-английски.
  *
  * Числительное собирается выбором ключа, а не окончанием: общего правила
  * множественного числа в словаре нет намеренно (i18n/index.ts), и одно
  * исключение ради одной строки завело бы второй механизм подстановки.
+ *
+ * Язык обязателен: русское правило, применённое к английскому, дало бы
+ * «21 set» рядом с «5 sets» — форма второго ключа там просто другая.
  */
-export function countSets(n: number, t: T): string {
+export function countSets(n: number, t: T, lang: Lang): string {
+	if (lang !== 'ru') return t(n === 1 ? 'rules.count.one' : 'rules.count.many', { n });
 	const ten = n % 10;
 	const hundred = n % 100;
 	if (ten === 1 && hundred !== 11) return t('rules.count.one', { n });
@@ -78,9 +84,9 @@ export function countSets(n: number, t: T): string {
 }
 
 /** Подпись «В туннель · 3 набора» — она же уходит в сводку свёрнутого раздела. */
-export function onLabel(d: RulesDraft, t: T): string {
+export function onLabel(d: RulesDraft, t: T, lang: Lang): string {
 	return t(d.policy === 'except' ? 'rules.on.except' : 'rules.on.only', {
-		n: countSets(d.sets.length, t),
+		n: countSets(d.sets.length, t, lang),
 	});
 }
 
@@ -211,7 +217,7 @@ export function Rulesets(p: RulesetsProps) {
 			    весь трафик, просто не по нашим правилам. */}
 			{eff.policy === 'profile' ? null : (
 				<>
-					<div class="label">{onLabel(eff, t)}</div>
+					<div class="label">{onLabel(eff, t, p.lang)}</div>
 					{eff.sets.length === 0 ? (
 						<div class="empty">
 							{t(eff.policy === 'except' ? 'rules.none.except' : 'rules.none.only')}
@@ -250,9 +256,12 @@ export function Rulesets(p: RulesetsProps) {
 								disabled={off}
 								onClick={() => togglePack(k.sets)}
 							>
-								{/* Незнакомый пак покажется своим id: демон и панель
-								    обновляются порознь, и новый пак приедет раньше
-								    перевода. */}
+								{/* Незнакомый пак покажет ключ «pack.<id>» — так по всей
+								    панели поступает пропущенный ключ (i18n/index.ts):
+								    пустое место выглядит задуманным и живёт годами,
+								    а ключ на кнопке чинится при первом же взгляде.
+								    Демон и панель обновляются порознь, и новый пак
+								    вполне может приехать раньше перевода. */}
 								{t(`pack.${k.id}` as Key)}
 							</button>
 						))}
@@ -361,7 +370,7 @@ export function Rulesets(p: RulesetsProps) {
 					<button
 						type="button"
 						class="linkbtn"
-						disabled={p.locked}
+						disabled={off}
 						aria-expanded={ask}
 						onClick={() => setAsk(!ask)}
 					>

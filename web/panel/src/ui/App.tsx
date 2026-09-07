@@ -759,7 +759,7 @@ export function App() {
 						</div>
 					) : null}
 
-					<Section id="engine" title={engineTitle(mode, t)} summary={engineSummary(mode, status, nikki.value, sets.value, t, engineTab, rulesets.value, rulesDraft)} wide={wide} open={isOpen('engine')} onToggle={() => toggle('engine')} t={t}>
+					<Section id="engine" title={engineTitle(mode, t)} summary={engineSummary(mode, status, nikki.value, sets.value, t, engineTab, rulesets.value, rulesDraft, lang)} wide={wide} open={isOpen('engine')} onToggle={() => toggle('engine')} t={t}>
 						<Engine
 							mode={mode}
 							nikki={nikki.value}
@@ -770,6 +770,7 @@ export function App() {
 							lock={lock}
 							locked={locked}
 							t={t}
+							lang={lang}
 							onPickProxy={onPickProxy}
 							onToggleSet={onToggleSet}
 							onTest={onTest}

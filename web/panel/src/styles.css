@@ -419,10 +419,17 @@ button.row { cursor: pointer; }
 	flex: 1; min-height: 46px; border: 0; border-radius: 9px;
 	font: 600 13.5px var(--sans); background: transparent; color: var(--muted);
 }
-.seg button[aria-pressed="true"] { background: #22282e; color: var(--fg); }
-.seg button[aria-pressed="true"].accent { background: var(--nikki); color: #fff; }
+/* Два атрибута, одно оформление. Сегмент выражает выбор то как кнопку
+   (aria-pressed), то как вкладку (aria-selected): роли tab aria-pressed не
+   положен, и вместе они звучат как «выбрана и нажата». Правило ловит оба,
+   поэтому разметка вольна называть состояние своим именем. */
+.seg button[aria-pressed="true"],
+.seg button[aria-selected="true"] { background: #22282e; color: var(--fg); }
+.seg button[aria-pressed="true"].accent,
+.seg button[aria-selected="true"].accent { background: var(--nikki); color: #fff; }
 .seg button:disabled { opacity: .45; }
-.seg button[aria-pressed="true"]:disabled { opacity: 1; cursor: default; }
+.seg button[aria-pressed="true"]:disabled,
+.seg button[aria-selected="true"]:disabled { opacity: 1; cursor: default; }
 
 /* ─────────── наборы geosite ─────────── */
 

@@ -1,3 +1,4 @@
+import { useRef } from 'preact/hooks';
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
 import type { SvcState } from '../state/job';
@@ -11,7 +12,7 @@ import type {
 	SetsResponse,
 	Status,
 } from '../api/types';
-import type { T } from '../i18n';
+import type { Lang, T } from '../i18n';
 import { Meter, Skel, Spin } from './bits';
 import { dirtyCount, onLabel, Rulesets } from './Rulesets';
 
@@ -25,6 +26,8 @@ export interface EngineProps {
 	lock: Lock;
 	locked: boolean;
 	t: T;
+	/** Нужен числительному наборов: у русского три формы, у английского две. */
+	lang: Lang;
 	onPickProxy(name: string): void;
 	onToggleSet(id: string, enabled: boolean): void;
 	onTest(): void;
@@ -53,6 +56,8 @@ export function Engine(p: EngineProps) {
 	return <NikkiCard {...p} />;
 }
 
+const TABS: EngineTab[] = ['nodes', 'rules'];
+
 /**
  * Две вкладки Nikki: узлы и наборы.
  *
@@ -63,21 +68,49 @@ export function Engine(p: EngineProps) {
  */
 function NikkiCard(p: EngineProps) {
 	const rules = p.tab === 'rules';
+	// Ссылки на сами кнопки: роль tablist обещает стрелки, а перевести по
+	// ним фокус можно только на настоящий узел. Искать его в документе по
+	// id значило бы завести второй источник правды о том, где вкладки.
+	const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
+	// Обещание роли выполняется целиком: скринридер объявляет «вкладка 1 из
+	// 2», и стрелки обязаны работать. Фокус БЛУЖДАЮЩИЙ (tabIndex -1 у
+	// невыбранной) — иначе Tab останавливался бы на каждой вкладке, а по
+	// ARIA APG табсписок занимает одну остановку.
+	const onKey = (e: KeyboardEvent) => {
+		const i = TABS.indexOf(p.tab);
+		let next = -1;
+		if (e.key === 'ArrowRight') next = (i + 1) % TABS.length;
+		else if (e.key === 'ArrowLeft') next = (i - 1 + TABS.length) % TABS.length;
+		else if (e.key === 'Home') next = 0;
+		else if (e.key === 'End') next = TABS.length - 1;
+		if (next < 0) return;
+		const to = TABS[next];
+		if (!to) return;
+		e.preventDefault();
+		p.onTab(to);
+		tabRefs.current[to]?.focus();
+	};
+
 	return (
 		<>
 			<div class="seg" role="tablist">
-				{(['nodes', 'rules'] as const).map((k) => (
+				{TABS.map((k) => (
 					<button
 						key={k}
 						type="button"
 						role="tab"
 						id={`tab-${k}`}
+						ref={(el) => {
+							tabRefs.current[k] = el as HTMLButtonElement | null;
+						}}
 						aria-controls="engine-tabpanel"
+						// Только aria-selected: aria-pressed роли tab не
+						// положен, и вместе они звучат как «выбрана и нажата».
+						// Оформление нажатого сегмента .seg ловит оба атрибута.
 						aria-selected={p.tab === k}
-						// aria-pressed рядом с aria-selected намеренно: оформление
-						// нажатого сегмента в .seg стоит на нём, и без него
-						// выбранная вкладка ничем бы не отличалась.
-						aria-pressed={p.tab === k}
+						tabIndex={p.tab === k ? 0 : -1}
+						onKeyDown={onKey}
 						onClick={() => p.onTab(k)}
 					>
 						{p.t(`rules.tab.${k}` as never)}
@@ -91,6 +124,7 @@ function NikkiCard(p: EngineProps) {
 						catalog={p.catalog}
 						draft={p.draft}
 						setDraft={p.setDraft}
+						lang={p.lang}
 						lock={p.lock}
 						locked={p.locked}
 						t={p.t}
@@ -121,6 +155,7 @@ export function engineSummary(
 	tab: EngineTab,
 	rulesets: Side<RulesetsResponse>,
 	draft: RulesDraft | null,
+	lang: Lang,
 ): string {
 	if (mode === 'b4') {
 		const n = sets?.enabled_count ?? status.b4.enabled_count;
@@ -138,7 +173,7 @@ export function engineSummary(
 			sets: (rulesets?.sets ?? []).map((s) => s.name),
 		};
 		if (eff.policy === 'profile') return t('rules.sum.profile');
-		const base = onLabel(eff, t);
+		const base = onLabel(eff, t, lang);
 		return dirtyCount(rulesets, draft) > 0 ? `${base} · ${t('rules.sum.dirty')}` : base;
 	}
 	if (mode === 'nikki') {
