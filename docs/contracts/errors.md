@@ -81,7 +81,7 @@
 
 | `error` | Когда |
 |---|---|
-| `bad_request` | тело не разбирается, нет обязательного поля, значение вне допустимого набора, отсутствует `If-Match` на записи, в теле больше одного JSON-значения |
+| `bad_request` | тело не разбирается, нет обязательного поля, значение вне допустимого набора, отсутствует `If-Match` на записи (кроме `PUT /api/nikki/rulesets` — там это `409 stale_rulesets`), в теле больше одного JSON-значения |
 | `unsupported_field` | в теле `POST /api/wifi/networks` поле, которого нет в схеме `NetworkWrite`; в теле `POST /api/upstream` поле помимо `id` |
 | `unknown_set` | в теле `PUT /api/nikki/rulesets` есть имена наборов, которых нет ни в каталоге geosite, ни среди уже применённых. Текст перечисляет именно эти имена |
 
@@ -141,7 +141,7 @@ L3-сеть ([ADR-0026](../adr/0026-switch-from-ambiguous.md)).
 | `group_not_selectable` | группа mihomo не принимает ручной выбор | `{"group": "PROXY"}` | поправить профиль mihomo |
 | `member_not_selectable` | выбран не узел: заголовок раздела, «Авто» или запись, которую конвертер не смог перевести ([ADR-0031](../adr/0031-subscription-in-daemon.md)) | `{"name": "⬇️ Обходы белых списков ⬇️", "kind": "separator"}` | выбрать узел; строки других видов панель и так не даёт нажать |
 | `subscription_not_configured` | `POST /api/subscription/update` при пустом `netmode.main.subscription_url` | `{}` | задать адрес подписки: `uci set netmode.main.subscription_url='…' && uci commit netmode` |
-| `stale_rulesets` | `If-Match` на `PUT /api/nikki/rulesets` не совпал с нынешним `fingerprint`: пока владелец выбирал, выбор изменила вторая вкладка или ssh | `{"expected": "sha256:…", "got": "sha256:…"}` | перечитать `GET /api/nikki/rulesets` и повторить с новым отпечатком |
+| `stale_rulesets` | `If-Match` на `PUT /api/nikki/rulesets` не совпал с нынешним `fingerprint` (пока владелец выбирал, выбор изменила вторая вкладка или ssh) либо не прислан вовсе — тексты у этих двух случаев разные, код один | `{"expected": "sha256:…", "got": "sha256:…"}` | перечитать `GET /api/nikki/rulesets` и повторить с новым отпечатком |
 | `foreign_mixin` | `/etc/nikki/mixin.yaml` есть, но написан не нами (первая строка не начинается с `# netmoded:`) | `{"path": "/etc/nikki/mixin.yaml"}` | убрать или переименовать файл на роутере — перезаписать его демон не станет |
 
 `stale_rulesets` — свой код, а не `fingerprint_mismatch`, и это не дробность:

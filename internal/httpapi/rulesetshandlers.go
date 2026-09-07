@@ -296,12 +296,20 @@ func packsIn(cat *geosite.Catalog) []geosite.Pack {
 
 const (
 	// rulesetsETASec — сколько примерно занимает применение: запись файла,
-	// коммит флага, netmode-apply и первый ответ Clash API укладываются в
-	// те же 15 с, что и смена режима (SPEC §5).
+	// коммит флага и netmode-apply укладываются в те же 15 с, что и смена
+	// режима (SPEC §5).
+	//
+	// Это ОЦЕНКА для полосы в панели, а не потолок: ожидание докачки
+	// наборов (rulesetsWait) может добавить сверху до двадцати секунд, и
+	// джоб на медленном канале честно идёт дольше своего eta_sec. Врать в
+	// другую сторону — ставить сюда 35 — хуже: обычное применение, когда
+	// правила уже лежат в /etc/nikki/run/rules, укладывается в первые
+	// секунды, и полоска ползла бы вхолостую при каждом нажатии.
 	rulesetsETASec = 15
-	// rulesetsWait — сколько ждать движок после перезапуска. Двадцати
-	// секунд хватает mihomo, чтобы поднять Clash API; скачивание правил
-	// сюда не входит — его результат проверяется тем, что успело приехать.
+	// rulesetsWait — сколько ждать докачки наборов после перезапуска.
+	// Двадцати секунд хватает mihomo, чтобы поднять Clash API и забрать
+	// несколько .mrs с GitHub; что не успело — досчитается само по
+	// суточному циклу провайдеров.
 	rulesetsWait = 20 * time.Second
 	// rulesetsPoll — шаг опроса.
 	rulesetsPoll = time.Second
@@ -381,11 +389,29 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 	// У испорченного файла его не спрашиваем — сверять было бы не с чем, а
 	// применённых наборов у него нет (cur пуст), и в проверке имён ниже он
 	// участвует как свежая установка.
-	if !corrupt && r.Header.Get("If-Match") != rulesets.Fingerprint(cur) {
-		writeErr(w, http.StatusConflict, "stale_rulesets",
-			"Выбор наборов изменился, пока вы его правили: перечитайте "+
-				"GET /api/nikki/rulesets и повторите с новым отпечатком.")
-		return
+	//
+	// Пробелы по краям срезаются: заголовок приезжает и из curl по ssh, где
+	// хвостовой перевод строки — свойство копирования, а не ошибка (так же
+	// поступают записи в wireless и в мост).
+	if !corrupt {
+		// Отсутствие заголовка и несовпадение — ОДИН код (лечится и то и
+		// другое перечитыванием GET), но разные тексты: сказать про
+		// «изменился, пока вы правили» тому, кто отпечатка не прислал
+		// вовсе, значило бы отправить его искать вторую вкладку, которой
+		// не было.
+		got := strings.TrimSpace(r.Header.Get("If-Match"))
+		switch {
+		case got == "":
+			writeErr(w, http.StatusConflict, "stale_rulesets",
+				"Нужен заголовок If-Match с отпечатком из GET /api/nikki/rulesets: "+
+					"без него запись не докажет, что видела нынешний выбор.")
+			return
+		case got != rulesets.Fingerprint(cur):
+			writeErr(w, http.StatusConflict, "stale_rulesets",
+				"Выбор наборов изменился, пока вы его правили: перечитайте "+
+					"GET /api/nikki/rulesets и повторите с новым отпечатком.")
+			return
+		}
 	}
 
 	// 4. Каталог — только если он действительно нужен.
@@ -428,7 +454,12 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 		// Сюда же попал бы rulesets.ErrNoCatalog, но попасть не может:
 		// новые имена без каталога отбиты шагом 4, а без новых имён этот
 		// сентинел не рождается.
-		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		//
+		// Приставка пакета срезается: «rulesets:» — метка для журнала и
+		// греп, а владельцу она сообщает только то, что у нас есть файл с
+		// таким именем.
+		writeErr(w, http.StatusBadRequest, "bad_request",
+			"Выбор наборов не принят: "+strings.TrimPrefix(err.Error(), "rulesets: "))
 		return
 	}
 	want = rulesets.Resolve(want, cat, cur.Sets)
@@ -560,20 +591,33 @@ func (s *Server) applyRulesets(ctx context.Context, want rulesets.Config) error 
 		return nil
 	}
 
-	// f. Движок после перезапуска отвечает не сразу.
-	live, ok := s.awaitRuleProviders(ctx)
-	if !ok {
-		return fmt.Errorf("наборы записаны и Nikki перезапущен, но Clash API не ответил за %s — "+
-			"загрузились ли наборы, неизвестно", rulesetsWait)
+	// f. Движок после перезапуска отвечает не сразу, а ответив — качает.
+	wait := s.awaitRuleProviders(ctx, want.Sets)
+	if !wait.answered {
+		// Сверять нечего вовсе. Три разных «нечего», и путать их нельзя:
+		// чинятся они в трёх разных местах.
+		switch {
+		case errors.Is(wait.err, errNoNikkiClient):
+			return fmt.Errorf("наборы записаны и Nikki перезапущен, но проверить их некому: %w", wait.err)
+		case wait.stopped:
+			return fmt.Errorf("наборы записаны и Nikki перезапущен, но ожидание движка прервано "+
+				"(срок джоба или остановка демона) — загрузились ли наборы, неизвестно: %w", wait.err)
+		default:
+			// Причина последнего отказа уезжает целиком: 401 на неверном
+			// секрете Clash API и connection refused чинятся в разных
+			// местах, а «не ответил» одинаково подходит обоим.
+			return fmt.Errorf("наборы записаны и Nikki перезапущен, но Clash API не ответил за %s — "+
+				"загрузились ли наборы, неизвестно: %w", s.rulesetsWait, wait.err)
+		}
 	}
 
-	// g. Сверка с движком.
+	// g. Сверка с движком — по ПОСЛЕДНЕМУ снимку ожидания.
 	//
 	// «Ни один не скачался» — это отказ, а не успех: правила есть, файлов
 	// правил нет, и обход не работает. Часть — успех: mihomo докачает
 	// остальное сам по своему циклу, а какие наборы недокачаны, видно в
 	// GET полем loaded.
-	loaded, missing := rulesets.Verify(want.Sets, live)
+	loaded, missing := rulesets.Verify(want.Sets, wait.live)
 	if len(loaded) == 0 {
 		return fmt.Errorf("наборы записаны, но движок не скачал ни одного из %d (%s): "+
 			"проверьте, доступен ли с роутера raw.githubusercontent.com, "+
@@ -641,22 +685,73 @@ func (s *Server) switchMixinFlag(ctx context.Context, p rulesets.Policy) error {
 		s.cfg.MixinPath, mixinFlagOpt, effect, err)
 }
 
-// awaitRuleProviders ждёт, пока Clash API снова начнёт отвечать.
+// errNoNikkiClient — клиента Clash API нет вовсе.
 //
-// Ждём ОТВЕТА движка, а не скачанных правил: скачивание идёт минутами и
-// повторяется само, а джоб столько держать нельзя — панель на всё это время
-// под замком. Что успело приехать к первому ответу, покажет сверка.
-func (s *Server) awaitRuleProviders(ctx context.Context) (map[string]nikki.RuleProvider, bool) {
+// В штатной сборке недостижимо (NewServer заводит его всегда), но исход
+// свой: «спросить некому» и «спросили, не ответил» чинятся в разных местах,
+// и один текст на оба отправил бы владельца поднимать исправный mihomo.
+var errNoNikkiClient = errors.New("клиент Clash API не настроен")
+
+// ruleProvidersWait — чем кончилось ожидание движка.
+//
+// Структура, а не bool: сверке нужен снимок, докладу об отказе — причина, а
+// разбору текста — знание, кончилось ли окно само или ожидание оборвали.
+// Три разных ответа в одном флаге не помещаются.
+type ruleProvidersWait struct {
+	// live — ПОСЛЕДНИЙ удачный снимок провайдеров. Последний, а не первый:
+	// пока идёт докачка, каждый следующий полнее предыдущего.
+	live map[string]nikki.RuleProvider
+	// answered — отвечал ли Clash API хоть раз. Без этого «движок молчит»
+	// неотличимо от «движок ответил, что не скачал ничего», а это разные
+	// доклады владельцу.
+	answered bool
+	// err — последний отказ движка, целиком.
+	err error
+	// stopped — ожидание оборвал контекст джоба, а не наше окно.
+	stopped bool
+}
+
+// awaitRuleProviders ждёт, пока движок докачает выбранные наборы.
+//
+// Ждать ОТВЕТА Clash API было бы рано: mihomo поднимает API до того, как
+// заканчивает initial-загрузку провайдеров, и сверка по первому же ответу
+// докладывала бы «не скачалось ни одного» про наборы, которые приезжают
+// секундой позже. Поэтому опрос идёт до тех пор, пока не загрузятся ВСЕ
+// запрошенные наборы либо не выйдет окно.
+//
+// Дольше окна не ждём и после него не считаем случившееся отказом: суточный
+// цикл провайдеров докачает остальное сам, а панель всё это время под
+// замком джоба. Поэтому по истечении окна сверка идёт по последнему снимку —
+// часть наборов это «применено», ноль наборов это отказ.
+func (s *Server) awaitRuleProviders(ctx context.Context, want []rulesets.Set) ruleProvidersWait {
 	if s.nikki == nil {
-		return nil, false
+		return ruleProvidersWait{err: errNoNikkiClient}
 	}
-	deadline := time.Now().Add(rulesetsWait)
+
+	out := ruleProvidersWait{}
+	deadline := time.Now().Add(s.rulesetsWait)
 	for {
-		if live, err := s.nikki.RuleProviders(ctx); err == nil {
-			return live, true
+		live, err := s.nikki.RuleProviders(ctx)
+		if err != nil {
+			out.err = err
+		} else {
+			out.live, out.answered, out.err = live, true, nil
+			// Всё на месте — ждать больше нечего.
+			if loaded, _ := rulesets.Verify(want, live); len(loaded) == len(want) {
+				return out
+			}
 		}
-		if time.Now().After(deadline) || !sleepCtx(ctx, rulesetsPoll) {
-			return nil, false
+		if time.Now().After(deadline) {
+			return out
+		}
+		if !sleepCtx(ctx, s.rulesetsPoll) {
+			// Контекст джоба мёртв: досиживать окно в нём значило бы
+			// докладывать о сроке, которого никто не выдерживал.
+			out.stopped = true
+			if out.err == nil {
+				out.err = ctx.Err()
+			}
+			return out
 		}
 	}
 }

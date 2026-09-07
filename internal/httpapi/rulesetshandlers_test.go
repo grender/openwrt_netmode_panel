@@ -561,6 +561,14 @@ func TestNewServerWiresCatalogAndMixinPath(t *testing.T) {
 	if def.catalog.BaseURL != "" {
 		t.Errorf("BaseURL каталога %q, ожидался пустой — это боевой api.github.com", def.catalog.BaseURL)
 	}
+	// Окно ожидания докачки: помощник newServer ужимает его до
+	// миллисекунд, и без этой проверки боевое значение мог бы забыть
+	// проставить кто угодно — джоб докладывал бы «не скачалось ни одного»
+	// мгновенно, ни разу никого не дождавшись.
+	if def.rulesetsWait != rulesetsWait || def.rulesetsPoll != rulesetsPoll {
+		t.Errorf("ожидание наборов %s/%s, ожидались боевые %s/%s",
+			def.rulesetsWait, def.rulesetsPoll, rulesetsWait, rulesetsPoll)
+	}
 }
 
 // joinAny склеивает массив строк из разобранного JSON.
@@ -1134,5 +1142,210 @@ func TestRulesetsPutJobBusy(t *testing.T) {
 	}
 	if len(f.Calls) != 0 {
 		t.Errorf("отбитый запрос дошёл до системы: %v", f.Calls)
+	}
+}
+
+// corruptMixin — наш файл, состоянию которого верить нельзя: шапка на
+// месте, состояние обещает два набора, правил в теле ни одного.
+//
+// Второе имя намеренно отсутствует в каталоге стенда: по нему видно, берёт
+// ли обработчик «применённое» из испорченного состояния. Брать его оттуда
+// нельзя — состоянию мы как раз и не верим.
+func corruptMixin() []byte {
+	return []byte(
+		"# netmoded: файл пишет панель.\n" +
+			"# Не правьте руками.\n" +
+			"# netmoded-rulesets: policy=only download=direct sets=youtube,вымышленный\n")
+}
+
+// TestRulesetsPutRewritesCorruptFile — испорченный файл записи не мешает.
+//
+// GET на нём отвечает 500, и соблазн отбить тем же PUT велик. Но PUT
+// переписывает файл ЦЕЛИКОМ, то есть чинит ровно эту поломку: отбить его
+// значило бы запереть владельца — применить нельзя, потому что применённое
+// нечитаемо. Отпечаток при этом не спрашивается: у нечитаемого файла он
+// ничего не значит.
+func TestRulesetsPutRewritesCorruptFile(t *testing.T) {
+	t.Run("пишется без If-Match", func(t *testing.T) {
+		s, _ := newServer(t)
+		addBypass(t, s)
+		writeMixin(t, s, corruptMixin())
+		want := rulesets.Config{
+			Policy: rulesets.PolicyOnly, Download: rulesets.DownloadDirect,
+			Sets: []rulesets.Set{{Name: "youtube"}},
+		}
+		nikkiFake(t, s).ruleProviders = loadedProviders(want.Sets...)
+
+		rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, "")
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+		}
+		if state, msg := jobOutcome(t, s); state != job.Done {
+			t.Fatalf("джоб %s: %s", state, msg)
+		}
+		got, _ := mixinBytes(t, s)
+		if string(got) != string(rulesets.Render(want)) {
+			t.Errorf("файл:\n%s\nожидался:\n%s", got, rulesets.Render(want))
+		}
+	})
+
+	t.Run("применённым считается пустой список", func(t *testing.T) {
+		s, f := newServer(t)
+		addBypass(t, s)
+		writeMixin(t, s, corruptMixin())
+
+		// Имя стоит в строке состояния испорченного файла. Считай мы его
+		// применённым — оно проехало бы мимо каталога, и в mixin.yaml
+		// уехал бы набор, которого в репозитории нет: провайдер с битой
+		// ссылкой и вечное «не загрузился» в панели.
+		rec := putRulesets(t, s, `{"policy":"only","sets":["вымышленный"]}`, "")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("код %d, ожидался 400; тело %s", rec.Code, rec.Body.String())
+		}
+		if got := errCode(t, rec); got != "unknown_set" {
+			t.Errorf("код ошибки %q, ожидался unknown_set", got)
+		}
+		if len(f.Calls) != 0 {
+			t.Errorf("отказ дошёл до системы: %v", f.Calls)
+		}
+	})
+}
+
+// TestRulesetsPutOnUnreadableFile — файл не прочитан вовсе: 500 read_failed.
+//
+// В отличие от испорченного, здесь неизвестно НИЧЕГО: ни что в файле, ни
+// удастся ли в него записать. Переписать его «на всякий случай» значило бы
+// затереть неизвестно что там, где сама запись, скорее всего, тоже
+// откажет, — а чинится это правами и каталогом, не повтором.
+func TestRulesetsPutOnUnreadableFile(t *testing.T) {
+	s, f := newServer(t)
+	addBypass(t, s)
+	// Каталог вместо файла: os.ReadFile отказывает, и прав root для этого
+	// не нужно — тест обязан идти не от суперпользователя.
+	if err := os.Mkdir(s.cfg.MixinPath, 0o755); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, "sha256:0000000000000000")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("код %d, ожидался 500; тело %s", rec.Code, rec.Body.String())
+	}
+	if got := errCode(t, rec); got != "read_failed" {
+		t.Errorf("код ошибки %q, ожидался read_failed", got)
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("отказ дошёл до системы: %v", f.Calls)
+	}
+}
+
+// TestRulesetsPutWithoutFingerprint — целый файл, а заголовка нет.
+//
+// Код тот же, что у разошедшегося отпечатка: лечится и то и другое
+// перечитыванием GET. А вот текст обязан быть другим — сказать «выбор
+// изменился, пока вы правили» тому, кто отпечатка не прислал вовсе, значит
+// отправить его искать вторую вкладку, которой не было.
+func TestRulesetsPutWithoutFingerprint(t *testing.T) {
+	s, f := newServer(t)
+	addBypass(t, s)
+	writeMixin(t, s, onlyMixin())
+	before, _ := mixinBytes(t, s)
+
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("код %d, ожидался 409; тело %s", rec.Code, rec.Body.String())
+	}
+	var e apiError
+	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil {
+		t.Fatalf("тело ошибки не разбирается: %s", rec.Body.String())
+	}
+	if e.Code != "stale_rulesets" {
+		t.Errorf("код ошибки %q, ожидался stale_rulesets", e.Code)
+	}
+	if !strings.Contains(e.Error, "If-Match") {
+		t.Errorf("текст %q не называет недостающий заголовок", e.Error)
+	}
+	after, _ := mixinBytes(t, s)
+	if string(after) != string(before) {
+		t.Error("файл переписан отбитым запросом")
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("отказ дошёл до системы: %v", f.Calls)
+	}
+}
+
+// TestRulesetsPutWaitsForDownloads — джоб ждёт докачки, а не первого ответа
+// движка.
+//
+// mihomo поднимает Clash API раньше, чем заканчивает initial-загрузку
+// провайдеров. Сверка по первому же ответу докладывала бы «не скачалось ни
+// одного» про наборы, которые приезжают секундой позже, — то есть красный
+// джоб над работающим обходом.
+func TestRulesetsPutWaitsForDownloads(t *testing.T) {
+	s, _ := newServer(t)
+	addBypass(t, s)
+	fp := rulesetsFP(t, s)
+
+	f := nikkiFake(t, s)
+	// Счётчик обнуляется ПОСЛЕ отпечатка: GET тоже спрашивает движок, и
+	// без обнуления «дождался» и «повезло с первого раза» опять слились бы
+	// в одно число.
+	f.ruleProvidersCalls = 0
+	// Первый ответ пустой: API уже отвечает, .mrs ещё качаются.
+	f.onRuleProviders = func(n int) {
+		if n >= 2 {
+			f.ruleProviders = loadedProviders(rulesets.Set{Name: "youtube"})
+		}
+	}
+
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, fp)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+	}
+	state, msg := jobOutcome(t, s)
+	// Число снимается ДО следующего GET: тот добавил бы движку вызов и
+	// сделал бы проверку зелёной сам по себе.
+	calls := f.ruleProviderCalls()
+	if state != job.Done {
+		t.Fatalf("джоб %s: %s — по первому пустому ответу движка докладывать рано", state, msg)
+	}
+	if calls < 2 {
+		t.Errorf("движок спрошен %d раз: джоб доложил, не дождавшись докачки", calls)
+	}
+	if yt := setByName(t, rulesetsGet(t, s), "youtube"); yt["loaded"] != true {
+		t.Errorf("youtube loaded %v, ожидалось true", yt["loaded"])
+	}
+}
+
+// TestRulesetsPutNamesWhyEngineIsSilent — движок не ответил ни разу: причина
+// уезжает целиком.
+//
+// «Clash API не ответил» одинаково подходит и неверному секрету, и мёртвому
+// порту, а чинятся они в разных местах: один — правкой
+// `nikki.mixin.api_secret`, другой — запуском движка. Без причины в тексте
+// владелец перебирает оба наугад.
+func TestRulesetsPutNamesWhyEngineIsSilent(t *testing.T) {
+	s, _ := newServer(t)
+	addBypass(t, s)
+	fp := rulesetsFP(t, s)
+	nikkiFake(t, s).ruleProvidersErr = errors.New("401 Unauthorized")
+
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, fp)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+	}
+	state, msg := jobOutcome(t, s)
+	if state != job.Failed {
+		t.Fatalf("джоб %s, ожидался failed", state)
+	}
+	if !strings.Contains(msg, "401 Unauthorized") {
+		t.Errorf("в тексте %q нет причины молчания движка", msg)
+	}
+	// Файл при этом записан, и текст обязан это сказать: наборы применены,
+	// неизвестно лишь, скачались ли они.
+	if !strings.Contains(msg, "записаны") {
+		t.Errorf("текст %q не говорит, что файл записан", msg)
+	}
+	if _, ok := mixinBytes(t, s); !ok {
+		t.Error("файл убран — это откат, которого нет")
 	}
 }

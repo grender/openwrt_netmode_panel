@@ -1049,7 +1049,21 @@ paths:
         "400": { $ref: "#/components/responses/RulesetsBadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409": { $ref: "#/components/responses/RulesetsConflict" }
-        "500": { $ref: "#/components/responses/RulesetsFileError" }
+        "500":
+          description: |
+            `read_failed` — `/etc/nikki/mixin.yaml` не прочитан вовсе (права,
+            каталог, ФС только для чтения). О содержимом неизвестно ничего,
+            поэтому переписывать его «на всякий случай» демон не станет.
+
+            `internal` — джоб не завёлся. Не путать с отказом самого
+            применения: тот приезжает `202`-ом и живёт в `job.error`.
+
+            `mixin_corrupt` здесь **не отдаётся**, в отличие от `GET`: этот
+            запрос переписывает файл целиком, то есть чинит ровно ту поломку,
+            о которой `GET` докладывает `500`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "503": { $ref: "#/components/responses/RulesetsUnavailable" }
 
   /api/nikki/rulesets/catalog:

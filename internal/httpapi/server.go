@@ -90,16 +90,24 @@ type Config struct {
 
 // Server отдаёт API и панель.
 type Server struct {
-	cfg    Config
-	ex     executor.Executor
-	b4     b4.Client
-	nikki  nikki.Client
-	jobs   *job.Manager
-	logs   *logs.Log
-	sched  *sched.Scheduler
-	led    *led.Controller
-	logf   func(string, ...any)
-	status *StatusReader
+	cfg   Config
+	ex    executor.Executor
+	b4    b4.Client
+	nikki nikki.Client
+	jobs  *job.Manager
+
+	// rulesetsWait и rulesetsPoll — окно и шаг ожидания движка после
+	// применения наборов. Поля, а не константы в теле джоба, по той же
+	// причине, что и timeout у job.Manager: проверить, что джоб ДОЖДАЛСЯ
+	// докачки, иначе значило бы держать тест двадцать секунд, то есть не
+	// проверять этого вовсе. В бою заполняются константами.
+	rulesetsWait time.Duration
+	rulesetsPoll time.Duration
+	logs         *logs.Log
+	sched        *sched.Scheduler
+	led          *led.Controller
+	logf         func(string, ...any)
+	status       *StatusReader
 	// fails — последняя неудачная смена внешней сети. Один слот в памяти,
 	// перезапуск не переживает (ADR-0025).
 	fails *failStore
@@ -247,6 +255,7 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 	// Каталог наборов. Нулевой Client рабочий: боевой адрес, HTTP-клиент и
 	// TTL он подставляет сам, а BaseURL здесь непуст только на стенде.
 	s.catalog = &geosite.Client{BaseURL: cfg.CatalogBaseURL, Logf: logf}
+	s.rulesetsWait, s.rulesetsPoll = rulesetsWait, rulesetsPoll
 	s.subURL = &subURLStore{v: cfg.SubscriptionURL}
 	up := &subs.Updater{
 		URL:          s.subURL.get,

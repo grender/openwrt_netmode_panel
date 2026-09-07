@@ -107,6 +107,12 @@ func newServer(t *testing.T) (*Server, *executor.Fake) {
 	}
 	s.SetB4Client(newFakeB4Client())
 	s.SetNikkiClient(newFakeNikkiClient())
+	// Ожидание докачки наборов ужимается до миллисекунд. Боевые двадцать
+	// секунд означали бы, что любой тест, где движок скачал не всё,
+	// висит всё окно целиком, — то есть проверка «джоб дождался» стоила бы
+	// дороже, чем всё остальное в пакете. Что в бою стоят константы,
+	// проверяет TestNewServerWiresCatalogAndMixinPath.
+	s.rulesetsWait, s.rulesetsPoll = 300*time.Millisecond, 5*time.Millisecond
 	// Боевое обновление подписки подменяется целиком: оно ходит в сеть и
 	// пишет в /etc/nikki и /etc/netmoded, которых на машине разработчика
 	// нет. Само оно проверяется в internal/subs; здесь проверяется то, что

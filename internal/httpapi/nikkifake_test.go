@@ -40,6 +40,15 @@ type fakeNikkiClient struct {
 	// сделает с конкретно заданным набором (нулевой UpdatedAt и прочее).
 	ruleProviders    map[string]nikki.RuleProvider
 	ruleProvidersErr error
+	// ruleProvidersCalls — сколько раз движок спрашивали. Ожидание докачки
+	// иначе непроверяемо: «дождались второго ответа» и «повезло с первого»
+	// по одному результату неразличимы.
+	ruleProvidersCalls int
+	// onRuleProviders — крючок, который зовётся ПОД замком перед ответом, с
+	// номером вызова (с единицы). Им тест изображает mihomo, который поднял
+	// Clash API раньше, чем докачал .mrs: правка ruleProviders прямо
+	// отсюда безопасна и видна следующему ответу.
+	onRuleProviders func(n int)
 }
 
 func newFakeNikkiClient() *fakeNikkiClient {
@@ -152,6 +161,10 @@ func (f *fakeNikkiClient) ProviderProxies(context.Context, string) ([]string, er
 func (f *fakeNikkiClient) RuleProviders(context.Context) (map[string]nikki.RuleProvider, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.ruleProvidersCalls++
+	if f.onRuleProviders != nil {
+		f.onRuleProviders(f.ruleProvidersCalls)
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -163,6 +176,14 @@ func (f *fakeNikkiClient) RuleProviders(context.Context) (map[string]nikki.RuleP
 		out[name] = p
 	}
 	return out, nil
+}
+
+// ruleProviderCalls — счётчик под замком: читать поле напрямую значило бы
+// гоняться с горутиной джоба.
+func (f *fakeNikkiClient) ruleProviderCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ruleProvidersCalls
 }
 
 func (f *fakeNikkiClient) ReloadProvider(_ context.Context, name string) error {
