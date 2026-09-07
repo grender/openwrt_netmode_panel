@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"netmoded/internal/atomicfile"
 	"netmoded/internal/happ"
 )
 
@@ -153,7 +154,7 @@ func (u *Updater) Update(ctx context.Context) (happ.Summary, error) {
 	// нет: Order пометил бы их KindUnsupported с причиной «mihomo его не
 	// показывает», и половина списка стала бы непригодной на вид, будучи
 	// исправной на деле.
-	if err := writeAtomic(u.ProviderPath, happ.Render(entries)); err != nil {
+	if err := atomicfile.Write(u.ProviderPath, happ.Render(entries), filePerm); err != nil {
 		return sum, fmt.Errorf("subs: файл провайдера: %w", err)
 	}
 
@@ -162,7 +163,7 @@ func (u *Updater) Update(ctx context.Context) (happ.Summary, error) {
 		// Недостижимо: Entry состоит из строк, а Proxy помечен json:"-".
 		return sum, fmt.Errorf("subs: манифест не сериализуется: %w", err)
 	}
-	if err := writeAtomic(u.ManifestPath, append(manifest, '\n')); err != nil {
+	if err := atomicfile.Write(u.ManifestPath, append(manifest, '\n'), filePerm); err != nil {
 		return sum, fmt.Errorf("subs: манифест: %w", err)
 	}
 
@@ -255,66 +256,6 @@ func firstThree(names []string) string {
 // ослабить до 0640/0644 с группой nikki; проверяется одним обновлением на
 // живом роутере (ADR-0031, «Чего не снимало железо»).
 const filePerm = 0o600
-
-// writeAtomic пишет файл через временный, fsync и rename.
-//
-// Два разных обещания, и оба здесь выполняются, а не подразумеваются.
-//
-// Атомарность ВИДИМОСТИ даёт rename: по рабочему имени в любой момент
-// лежит либо старый файл целиком, либо новый целиком, половины не бывает.
-// ДОЛГОВЕЧНОСТЬ даёт Sync перед rename: без него данные могли остаться в
-// кэше страниц, а переименование — уже дойти до флеша, и после обрыва
-// питания по рабочему имени оказался бы файл нулевой длины. Файл лежит во
-// флеше роутера, который питается от розетки без ИБП, — это не
-// теоретический риск. Каталог не синхронизируется: без этого после обрыва
-// возможен откат к СТАРОМУ файлу, а не к пустому, и это приемлемо —
-// потерянное обновление повторит расписание.
-//
-// Временный файл открывается с O_EXCL, а не через os.WriteFile. Тот
-// открывает с O_TRUNC, идёт по символической ссылке и оставляет права
-// существующего файла: подложенная в чужой каталог ссылка sub.yaml.tmp
-// увела бы секрет по чужому пути, а .tmp от прерванной записи с чужими
-// правами был бы перезаписан и переименован на место как есть. O_EXCL
-// отвергает и то и другое; залежавшийся .tmp снимается перед открытием.
-// Права задаются при создании, отдельный Chmod не нужен.
-//
-// Каталог НЕ создаётся намеренно: отсутствие /etc/nikki/run/providers
-// означает, что nikki на роутере не разворачивался, и молча заводить ему
-// каталог значит чинить не свою поломку в обход её владельца. Ошибка с
-// путём внятнее.
-func writeAtomic(path string, data []byte) (err error) {
-	tmp := path + ".tmp"
-	// Остаток прерванной записи; отсутствие — норма, ошибку не смотрим.
-	os.Remove(tmp)
-
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, filePerm)
-	if err != nil {
-		return fmt.Errorf("временный файл: %w", err)
-	}
-	// Любой отказ ниже — мусор во флеше убираем, ровно там, где места
-	// могло не хватить.
-	defer func() {
-		if err != nil {
-			os.Remove(tmp)
-		}
-	}()
-
-	if _, err = f.Write(data); err != nil {
-		f.Close()
-		return fmt.Errorf("запись временного файла: %w", err)
-	}
-	if err = f.Sync(); err != nil {
-		f.Close()
-		return fmt.Errorf("fsync временного файла: %w", err)
-	}
-	if err = f.Close(); err != nil {
-		return fmt.Errorf("закрытие временного файла: %w", err)
-	}
-	if err = os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("замена файла: %w", err)
-	}
-	return nil
-}
 
 // LoadManifest читает порядок и виды записей подписки.
 //
