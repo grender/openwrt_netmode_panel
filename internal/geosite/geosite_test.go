@@ -633,3 +633,85 @@ func TestStaleWithoutCatalog(t *testing.T) {
 		t.Error("Current() на пустом клиенте обязан быть nil")
 	}
 }
+
+// TestFailedRefreshHoldsOffNextAttempt — упавшее обновление выдерживает
+// паузу, а не долбится в GitHub на каждое открытие панели.
+//
+// Без паузы просроченный кэш при лежащем GitHub означает по запросу на
+// КАЖДЫЙ Get: панель опрашивает вкладку, каждый опрос стоит запроса, и
+// шестьдесят запросов в час выбираются за минуту — после чего GitHub
+// отвечает 403 уже всем, включая честную загрузку, когда сеть вернётся.
+// То есть отсутствие паузы превращает временный отказ в наведённый на себя
+// самого бан.
+func TestFailedRefreshHoldsOffNextAttempt(t *testing.T) {
+	s := newStand(t)
+	j := &journal{}
+	c, done := newClient(t, s, time.Millisecond, j)
+	c.retryHold = 100 * time.Millisecond
+
+	if _, err := c.Get(context.Background()); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond) // ждём только истечения TTL
+	s.set(func(s *stand) { s.status = http.StatusInternalServerError })
+
+	if _, err := c.Get(context.Background()); err != nil {
+		t.Fatalf("Get при лежащем GitHub: %v", err)
+	}
+	waitRefresh(t, done)
+	afterFail, _ := s.counts()
+	if afterFail != 5 {
+		t.Fatalf("запросов %d, ожидалось 5 (холодная загрузка плюс один неудачный корень)", afterFail)
+	}
+
+	// Внутри паузы обновление не начинается вовсе — ни одного запроса,
+	// сколько бы раз панель ни спросила.
+	for i := 0; i < 5; i++ {
+		if _, err := c.Get(context.Background()); err != nil {
+			t.Fatalf("Get #%d: %v", i, err)
+		}
+	}
+	// Ждём хук, а не считаем запросы сразу: обновление уходит в фон, и
+	// счётчик через миллисекунду после Get одинаков и у клиента с паузой,
+	// и у клиента без неё — такая проверка была бы зелёной всегда. Ожидание
+	// заодно перекрывает саму паузу, поэтому спать перед последней
+	// попыткой уже не нужно.
+	select {
+	case <-done:
+		t.Fatal("внутри паузы началось обновление — пауза не держит")
+	case <-time.After(150 * time.Millisecond):
+	}
+	if hits, _ := s.counts(); hits != afterFail {
+		t.Errorf("внутри паузы ушло %d лишних запросов", hits-afterFail)
+	}
+
+	// А после паузы — ровно одна новая попытка.
+	if _, err := c.Get(context.Background()); err != nil {
+		t.Fatalf("Get после паузы: %v", err)
+	}
+	waitRefresh(t, done)
+	if hits, _ := s.counts(); hits != afterFail+1 {
+		t.Errorf("после паузы запросов %d, ожидалось %d: попытка обязана возобновиться ровно одна",
+			hits, afterFail+1)
+	}
+}
+
+// TestCatalogNamesAreSortedOnBuild — сортировка в newCatalog не украшение.
+//
+// Has ищет двоичным поиском, а тот на несортированном списке не жалуется —
+// он просто не находит имя. Сломай сортировку, и половина имён каталога
+// станет «несуществующей»: панель отобьёт при сохранении набор, который
+// сама же показала в списке. Остальные тесты этого не увидят, потому что
+// фикстуры деревьев отсортированы сами.
+func TestCatalogNamesAreSortedOnBuild(t *testing.T) {
+	cat := NewForTest([]string{"youtube", "telegram", "anthropic"}, nil)
+
+	if strings.Join(cat.Names, ",") != "anthropic,telegram,youtube" {
+		t.Fatalf("имена %v не отсортированы", cat.Names)
+	}
+	// anthropic лежит в конце несортированного списка, и двоичный поиск
+	// прошёл бы мимо него — на нём и держится проверка.
+	if !cat.Has("anthropic") {
+		t.Error("Has не нашёл имя, поданное вне порядка: список не отсортирован")
+	}
+}
