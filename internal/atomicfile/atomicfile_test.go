@@ -115,7 +115,9 @@ func TestWriteLeftoverTempIsReplaced(t *testing.T) {
 // символическая ссылка path.tmp не должна увести секрет по чужому пути:
 // os.WriteFile пошёл бы по ней и дописал чужой файл чужими правами.
 // Write снимает .tmp (не следуя по ссылке — Remove её не разыменовывает) и
-// создаёт на его месте настоящий файл через O_EXCL.
+// создаёт на его месте настоящий файл через O_EXCL. Это тест УСПЕШНОГО
+// пути: Write не отказывает и не должен — ссылка обезврежена снятием, а не
+// отказом открытия, и запись доходит до рабочего файла как обычно.
 func TestWriteDoesNotFollowSymlinkTemp(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub.yaml")
 	elsewhere := filepath.Join(t.TempDir(), "чужой-файл")
@@ -143,14 +145,15 @@ func TestWriteDoesNotFollowSymlinkTemp(t *testing.T) {
 	}
 }
 
-// TestWriteLeavesNoTempOnWriteFailure — отказ самой записи данных (не
-// открытия, не переименования) тоже убирает .tmp: мусор во флеше не должен
-// пережить отказ ровно тогда, когда места и так не хватает.
-func TestWriteLeavesNoTempOnWriteFailure(t *testing.T) {
+// TestWriteLeavesNoTempOnOpenFailure — отказ OpenFile (temp-путь занят
+// непустым каталогом, O_CREATE|O_EXCL не может создать на его месте файл)
+// не оставляет рабочий файл записанным. defer здесь ещё не зарегистрирован
+// (Write возвращает раньше) — очищать нечего, каталог .tmp как лежал, так
+// и остаётся; проверяем только то, что путь назначения не тронут.
+func TestWriteLeavesNoTempOnOpenFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub.yaml")
 	// Каталог на месте .tmp: OpenFile с O_CREATE|O_EXCL на непустом
-	// каталоге отказывает на этапе открытия, а не записи, — этого
-	// достаточно, чтобы проверить симметрию defer'а по всем веткам отказа.
+	// каталоге отказывает на этапе открытия, до Write/Sync/Close/Rename.
 	if err := os.Mkdir(path+".tmp", 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -162,5 +165,38 @@ func TestWriteLeavesNoTempOnWriteFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("ожидался отказ открытия временного файла")
 	}
-	mustNotExist(t, path, "после отказа записи")
+	mustNotExist(t, path, "после отказа открытия")
+}
+
+// TestWriteLeavesNoTempOnRenameFailure — отказ ПОСЛЕ успешного открытия:
+// OpenFile, Write, Sync и Close временного файла проходят, а Rename
+// отказывает, потому что рабочий путь занят непустым каталогом (замена
+// файлом невозможна). Это единственная ветка, где defer из Write реально
+// снимает временный файл, а не просто ничего не создаёт, — предыдущий тест
+// её не проверяет, поскольку там отказывает само открытие. Каталог
+// назначения и его содержимое должны остаться нетронутыми: Write обязан
+// была отступить, не тронув то, что не смог заменить целиком.
+func TestWriteLeavesNoTempOnRenameFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub.yaml")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "чужой"), []byte("не трогать"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Write(path, []byte("данные"), 0o600)
+	if err == nil {
+		t.Fatal("ожидался отказ переименования — рабочий путь занят непустым каталогом")
+	}
+	mustNotExist(t, path+".tmp", "после отказа переименования")
+
+	fi, statErr := os.Stat(path)
+	if statErr != nil || !fi.IsDir() {
+		t.Fatalf("рабочий путь должен остаться каталогом: %v, %v", fi, statErr)
+	}
+	got, err := os.ReadFile(filepath.Join(path, "чужой"))
+	if err != nil || string(got) != "не трогать" {
+		t.Errorf("содержимое каталога назначения задето отказавшим переименованием: %q, %v", got, err)
+	}
 }
