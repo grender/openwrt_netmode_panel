@@ -157,6 +157,14 @@ const SCENARIOS = {
 	// Три кнопки в ряду у сети с длинным именем: статус обычный, длина живёт
 	// в списке (LISTS ниже), а не в статусе.
 	'upstream-long-list': 'status-single.json',
+	// Наборы geosite (GET/PUT /api/nikki/rulesets, GET .../catalog). Статус
+	// у всех пяти общий — status-single.json, режим nikki: ломается не
+	// роутер, а то, что на вкладке наборов, а исход решает RULESETS ниже.
+	'rulesets-profile': 'status-single.json',
+	'rulesets-only': 'status-single.json',
+	'rulesets-foreign': 'status-single.json',
+	'rulesets-down': 'status-single.json',
+	'rulesets-nocatalog': 'status-single.json',
 };
 
 // Какой файл списка сетей отдаётся в сценарии. Умолчание — wifi-networks.json.
@@ -177,6 +185,24 @@ const LISTS = {
 	// которой она и заведена. Заодно совпадёт fingerprint: у длинной фикстуры
 	// он sha256:5c2ea8d417b60f93, как в wifi-networks-long.json.
 	'single-long': 'wifi-networks-long.json',
+};
+
+// Какой пример GET /api/nikki/rulesets отдаётся в сценарии. Умолчание —
+// rulesets-profile: mixin.yaml на диске нет, и это ровно то, что демон
+// отдаёт на свежей установке (internal/httpapi/rulesetshandlers.go,
+// readMixin, случай os.ErrNotExist).
+//
+// rulesets-down и rulesets-nocatalog берут ту же фикстуру, что и
+// rulesets-only, — намеренно: первый показывает движок, переставший
+// отвечать про уже применённый выбор (обработчик роута гасит поля до
+// null), второй — тот же выбор с недоступным каталогом. Разные файлы
+// потребовались бы, если бы менялся сам выбор, а не то, что о нём известно.
+const RULESETS = {
+	'rulesets-profile': 'nikki-rulesets-profile.json',
+	'rulesets-only': 'nikki-rulesets-only.json',
+	'rulesets-foreign': 'nikki-rulesets-foreign.json',
+	'rulesets-down': 'nikki-rulesets-only.json',
+	'rulesets-nocatalog': 'nikki-rulesets-only.json',
 };
 
 // SLOW_START_SEC — сколько секунд служба режима не слушает свой порт ПОСЛЕ
@@ -530,9 +556,14 @@ const linksFor = (req) => {
 	};
 };
 
-const send = (res, code, body, type = MIME['.json']) => {
+// cache по умолчанию no-store: почти весь API читается раз в секунду или по
+// клику, и кэшировать его нечем. Каталог наборов geosite — единственное
+// исключение (см. /api/nikki/rulesets/catalog): 60 КБ, меняются раз в
+// несколько часов, и повторное открытие вкладки обязано стоить дешевле, чем
+// весь список заново.
+const send = (res, code, body, type = MIME['.json'], cache = 'no-store') => {
 	const b = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body, null, 2);
-	res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+	res.writeHead(code, { 'Content-Type': type, 'Cache-Control': cache });
 	res.end(b);
 };
 
@@ -1161,6 +1192,88 @@ async function handleAPI(req, res, u) {
 		});
 	}
 
+	// --- наборы geosite (internal/httpapi/rulesetshandlers.go) ---
+	//
+	// Список имён — с GitHub, а не с роутера, и потому у него своё отдельное
+	// состояние отказа (503 catalog_unavailable), которого у остального API
+	// нет: применённый выбор при этом продолжает читаться как ни в чём не
+	// бывало — он лежит в файле и каталога не спрашивает.
+	if (p === '/api/nikki/rulesets/catalog' && method === 'GET') {
+		if (state.scenario === 'rulesets-nocatalog') {
+			return fail(res, 503, 'catalog_unavailable',
+				'Список наборов geosite не загружен: api.github.com не ответил за отведённое время');
+		}
+		return send(res, 200, await readJSON('nikki-rulesets-catalog.json'),
+			MIME['.json'], 'private, max-age=3600');
+	}
+
+	if (p === '/api/nikki/rulesets' && method === 'GET') {
+		const base = await readJSON(RULESETS[state.scenario] || RULESETS['rulesets-profile']);
+		const body = { ...base, ...state.overlay.rulesets };
+		// live:false и null в полях — либо явный сценарий отказа, либо тот же
+		// расчёт, что у остального API: движок молчит, а выбор на диске мы
+		// всё равно показываем (rulesetsBody, haveLive:false).
+		if (state.scenario === 'rulesets-down' || !(await engineUp('nikki'))) {
+			body.live = false;
+			body.sets = body.sets.map((s) => ({ ...s, loaded: null, rules: null, updated_at: null }));
+		}
+		return send(res, 200, body);
+	}
+	if (p === '/api/nikki/rulesets' && method === 'PUT') {
+		const body = await readBody(req);
+		if (!['profile', 'only', 'except'].includes(body.policy)) {
+			return fail(res, 400, 'bad_request', 'Неизвестная политика наборов geosite');
+		}
+		const names = Array.isArray(body.sets) ? body.sets : [];
+		const cat = await readJSON('nikki-rulesets-catalog.json');
+		const catNames = new Set(cat.names);
+		const unknown = names.filter((n) => !catNames.has(n));
+		if (unknown.length) {
+			return fail(res, 400, 'unknown_set', 'Таких наборов нет в списке: ' + unknown.join(', '));
+		}
+		// Отпечаток берётся из overlay, если применение уже случалось на этом
+		// сценарии, иначе — из фикстуры: та же пара источников, что и у
+		// самого GET чуть выше.
+		const cur = await readJSON(RULESETS[state.scenario] || RULESETS['rulesets-profile']);
+		const fp = (state.overlay.rulesets && state.overlay.rulesets.fingerprint) || cur.fingerprint;
+		const ifMatch = req.headers['if-match'];
+		if (ifMatch && ifMatch !== fp) {
+			return fail(res, 409, 'stale_rulesets',
+				'Выбор наборов изменился, пока вы его правили: перечитайте GET /api/nikki/rulesets и повторите с новым отпечатком.');
+		}
+		if (busyJob()) return fail(res, 409, 'job_busy', 'Уже идёт другая операция. Дождитесь её завершения.');
+
+		const ip = new Set(cat.ip);
+		startJob('rulesets', '', 'Применение наборов geosite', 6, () => {
+			// Последний набор нарочно не загружается — только когда наборов
+			// хотя бы два: панели есть на чём показать тег «не загрузился»
+			// рядом с загруженными, а не гадать по единственной строке,
+			// нормально это или нет.
+			const forceMiss = names.length >= 2;
+			const sets = names.map((name, i) => {
+				const missed = forceMiss && i === names.length - 1;
+				return {
+					name,
+					ip: ip.has(name),
+					loaded: !missed,
+					rules: missed ? 0 : 100 + i,
+					updated_at: missed ? null : nowISO(),
+				};
+			});
+			state.overlay.rulesets = {
+				fingerprint: nextFingerprint(),
+				policy: body.policy,
+				download: body.policy === 'profile' ? 'direct' : (body.download || 'direct'),
+				tunnel_group: 'BYPASS',
+				sets: body.policy === 'profile' ? [] : sets,
+				live: true,
+				foreign: false,
+			};
+			state.job.state = 'done';
+		});
+		return send(res, 202, { job: state.job });
+	}
+
 	// --- b4 ---
 	// Сеты не эксклюзивны (ADR-0033): наложение хранит МНОЖЕСТВО включённых
 	// id, а не один выбранный. Прежнее `b4SetId` умело выражать только
@@ -1280,6 +1393,10 @@ const server = http.createServer(async (req, res) => {
 		const name = u.searchParams.get('name');
 		if (name && SCENARIOS[name]) {
 			state.scenario = name;
+			// Обнуляет и state.overlay.rulesets: применённый на прошлом
+			// сценарии выбор наборов — часть overlay, а не отдельное поле,
+			// и без сброса rulesets-profile после PUT на rulesets-only
+			// показывал бы чужое применение вместо своей фикстуры.
 			state.overlay = {};
 			// Сбрасываются вместе с наложением: сценарий sub-unset обязан
 			// давать «адрес не задан» и после того, как в прошлом сценарии
