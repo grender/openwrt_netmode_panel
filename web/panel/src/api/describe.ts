@@ -47,6 +47,17 @@ const ERR_KEY: Record<string, Key> = {
 	host_unknown: 'links.why.host',
 	nikki_unconfigured: 'links.why.unconfigured',
 	panel_missing: 'links.why.nopanel',
+
+	// Наборы geosite. Текст демона про unknown_set перечисляет имена, но
+	// сюда он не доезжает: словарь заменяет сообщение целиком. Поэтому
+	// текст ключа ОБЩИЙ и отправляет обновить список, а не называет имя,
+	// которого у панели нет.
+	unknown_set: 'err.unknown_set',
+	stale_rulesets: 'err.stale_rulesets',
+	foreign_mixin: 'err.foreign_mixin',
+	catalog_unavailable: 'err.catalog_unavailable',
+	group_missing: 'err.group_missing',
+	mixin_corrupt: 'err.mixin_corrupt',
 };
 
 /**
@@ -118,6 +129,7 @@ export function jobText(job: Job, t: T): string {
 	}
 	if (job.kind === 'subscription') return t('job.subscription');
 	if (job.kind === 'bridge') return t('job.bridge');
+	if (job.kind === 'rulesets') return t('job.rulesets');
 	// У upstream arg — ssid целевой сети, и подставляется он как ДАННЫЕ, а не
 	// как часть ключа: набор ssid открыт, ключа под каждый не заведёшь.
 	if (job.kind === 'upstream' && job.arg) return t('job.upstream', { ssid: job.arg });
@@ -129,6 +141,7 @@ export function failText(job: Job, t: T): string {
 	if (job.kind === 'mode') return t('job.fail.mode', { mode: job.arg });
 	if (job.kind === 'subscription') return t('job.fail.subscription');
 	if (job.kind === 'bridge') return t('job.fail.bridge');
+	if (job.kind === 'rulesets') return t('job.fail.rulesets');
 	if (job.kind === 'upstream') return t('job.fail.upstream');
 	return t('job.fail');
 }

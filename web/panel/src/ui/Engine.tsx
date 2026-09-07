@@ -1,9 +1,19 @@
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
 import type { SvcState } from '../state/job';
-import type { Mode, ProxiesResponse, SetsResponse, Status } from '../api/types';
+import type {
+	EngineTab,
+	Mode,
+	ProxiesResponse,
+	RulesDraft,
+	RulesetsCatalog,
+	RulesetsResponse,
+	SetsResponse,
+	Status,
+} from '../api/types';
 import type { T } from '../i18n';
 import { Meter, Skel, Spin } from './bits';
+import { dirtyCount, onLabel, Rulesets } from './Rulesets';
 
 export interface EngineProps {
 	mode: Mode | 'unknown';
@@ -19,6 +29,14 @@ export interface EngineProps {
 	onToggleSet(id: string, enabled: boolean): void;
 	onTest(): void;
 	onMode(m: Mode): void;
+	tab: EngineTab;
+	onTab(v: EngineTab): void;
+	rulesets: Side<RulesetsResponse>;
+	catalog: Side<RulesetsCatalog>;
+	draft: RulesDraft | null;
+	setDraft(d: RulesDraft | null): void;
+	onApplyRules(d: RulesDraft): void;
+	onLoadCatalog(): void;
 }
 
 /**
@@ -32,7 +50,59 @@ export interface EngineProps {
 export function Engine(p: EngineProps) {
 	if (p.mode === 'b4') return <B4 {...p} />;
 	if (p.mode === 'off' || p.mode === 'unknown') return <Off {...p} />;
-	return <Nikki {...p} />;
+	return <NikkiCard {...p} />;
+}
+
+/**
+ * Две вкладки Nikki: узлы и наборы.
+ *
+ * Переключатель рисуется ДО проверок starting/down: выбор наборов читается
+ * из файла и правится при лежащем движке — там он как раз и нужен, когда
+ * туннель не поднялся из-за правил. Спрятать вкладку за живым Clash API
+ * значило бы запереть лечение внутри болезни.
+ */
+function NikkiCard(p: EngineProps) {
+	const rules = p.tab === 'rules';
+	return (
+		<>
+			<div class="seg" role="tablist">
+				{(['nodes', 'rules'] as const).map((k) => (
+					<button
+						key={k}
+						type="button"
+						role="tab"
+						id={`tab-${k}`}
+						aria-controls="engine-tabpanel"
+						aria-selected={p.tab === k}
+						// aria-pressed рядом с aria-selected намеренно: оформление
+						// нажатого сегмента в .seg стоит на нём, и без него
+						// выбранная вкладка ничем бы не отличалась.
+						aria-pressed={p.tab === k}
+						onClick={() => p.onTab(k)}
+					>
+						{p.t(`rules.tab.${k}` as never)}
+					</button>
+				))}
+			</div>
+			<div id="engine-tabpanel" class="tabpanel" role="tabpanel" aria-labelledby={rules ? 'tab-rules' : 'tab-nodes'}>
+				{rules ? (
+					<Rulesets
+						applied={p.rulesets}
+						catalog={p.catalog}
+						draft={p.draft}
+						setDraft={p.setDraft}
+						lock={p.lock}
+						locked={p.locked}
+						t={p.t}
+						onApply={p.onApplyRules}
+						onLoadCatalog={p.onLoadCatalog}
+					/>
+				) : (
+					<Nikki {...p} />
+				)}
+			</div>
+		</>
+	);
 }
 
 /** Заголовок раздела зависит от режима — его считает App, чтобы показать в свёрнутом виде. */
@@ -48,12 +118,28 @@ export function engineSummary(
 	nikki: Side<ProxiesResponse>,
 	sets: Side<SetsResponse>,
 	t: T,
+	tab: EngineTab,
+	rulesets: Side<RulesetsResponse>,
+	draft: RulesDraft | null,
 ): string {
 	if (mode === 'b4') {
 		const n = sets?.enabled_count ?? status.b4.enabled_count;
 		if (n === 1) return t('sets.sum.one', { set: sets?.selected || status.b4.set });
 		if (n === 0) return t('sets.sum.none');
 		return t('sets.sum.many', { n });
+	}
+	// Сводка свёрнутого раздела обязана описывать ТО, ЧТО В НЁМ ОТКРЫТО:
+	// иначе владелец, оставивший вкладку наборов, читает в заголовке про
+	// узлы и разворачивает раздел, чтобы узнать про непринятые правки.
+	if (mode === 'nikki' && tab === 'rules') {
+		const eff = draft ?? {
+			policy: rulesets?.policy ?? 'profile',
+			download: rulesets?.download ?? 'direct',
+			sets: (rulesets?.sets ?? []).map((s) => s.name),
+		};
+		if (eff.policy === 'profile') return t('rules.sum.profile');
+		const base = onLabel(eff, t);
+		return dirtyCount(rulesets, draft) > 0 ? `${base} · ${t('rules.sum.dirty')}` : base;
 	}
 	if (mode === 'nikki') {
 		const pinned = nikki?.pinned ?? status.nikki.pinned ?? false;

@@ -3,11 +3,15 @@ import { api, ApiError, T as BUDGET } from '../api/client';
 import { describe, errCode, failText, jobText, STALE_CODES, BRIDGE_STALE_CODES, WHY_CODES } from '../api/describe';
 import type {
 	BridgeState,
+	EngineTab,
 	JobAccepted,
 	LogsResponse,
 	Mode,
 	NetworksResponse,
 	ProxiesResponse,
+	RulesDraft,
+	RulesetsCatalog,
+	RulesetsResponse,
 	SavedNetwork,
 	ScanResponse,
 	SetsResponse,
@@ -48,8 +52,16 @@ export function App() {
 	const logs = useSide<LogsResponse>('logs');
 	const bridge = useSide<BridgeState>('bridge');
 	const sub = useSide<SubscriptionURL>('subscription');
+	const rulesets = useSide<RulesetsResponse>('nikkiRulesets');
+	const catalog = useSide<RulesetsCatalog>('nikkiRulesetsCatalog');
 
 	const [netForm, setNetForm] = useState<NetSeed | null>(null);
+	const [engineTab, setEngineTab] = useState<EngineTab>('nodes');
+	// Черновик наборов живёт в памяти вкладки и теряется при F5 — осознанно:
+	// сохранённый черновик пережил бы и смену режима, и правку по ssh, то
+	// есть однажды применил бы выбор поверх файла, которого владелец уже
+	// не помнит.
+	const [rulesDraft, setRulesDraft] = useState<RulesDraft | null>(null);
 	const [bridgeForm, setBridgeForm] = useState(false);
 	// Скрытые провалы помнятся ПО СОБЫТИЮ, а не флагом «больше не показывать»:
 	// крестик значит «я прочитал это», а не «отключить сообщения».
@@ -110,14 +122,37 @@ export function App() {
 		if (status && bridge.value === undefined) void bridge.load();
 	}, [status, bridge]);
 
+	// Наборы — исключение из правила «список движка ждёт живого движка»:
+	// выбор лежит в файле, и демон отдаёт его с live:false, когда Nikki
+	// молчит. Ждать здесь svcNikki значило бы прятать вкладку ровно в том
+	// случае, ради которого её и открывают.
+	useEffect(() => {
+		if (status && mode === 'nikki' && rulesets.value === undefined) void rulesets.load();
+	}, [status, mode, rulesets]);
+
+	// Уход из режима nikki уносит и вкладку, и черновик: раздел принадлежит
+	// режиму, и вернувшийся владелец не должен обнаружить непринятые правки
+	// для движка, который всё это время был выключен.
+	useEffect(() => {
+		if (mode === 'nikki') return;
+		setEngineTab('nodes');
+		setRulesDraft(null);
+	}, [mode]);
+
 	// Список движка перечитывается, когда движок только что поднялся: до
 	// этого момента его ответом был отказ, и без перечитывания панель
 	// осталась бы с «не отвечает» до F5.
 	const wasUp = useRef({ nikki: false, b4: false });
 	useEffect(() => {
-		if (svcNikki === 'up' && !wasUp.current.nikki) void nikki.load();
+		if (svcNikki === 'up' && !wasUp.current.nikki) {
+			void nikki.load();
+			// Наборы перечитываются вместе с узлами: до подъёма движка ответ
+			// нёс live:false и null вместо загрузки, и без перечитывания
+			// панель до F5 утверждала бы «неизвестно» про уже загруженное.
+			void rulesets.load();
+		}
 		wasUp.current.nikki = svcNikki === 'up';
-	}, [svcNikki, nikki]);
+	}, [svcNikki, nikki, rulesets]);
 	useEffect(() => {
 		if (svcB4 === 'up' && !wasUp.current.b4) void sets.load();
 		wasUp.current.b4 = svcB4 === 'up';
@@ -136,6 +171,35 @@ export function App() {
 		if (!j || j.state !== 'done') return;
 		if (seenDone.current === j.id) return;
 		seenDone.current = j.id;
+		// У наборов свой тост: после применения важно не «готово», а какие
+		// наборы не загрузились. Общее «готово» это скрыло бы, и владелец
+		// узнал бы о неработающем правиле только по неработающему сайту.
+		if (j.kind === 'rulesets') {
+			void (async () => {
+				try {
+					const r = await api<RulesetsResponse>('nikkiRulesets', { timeoutMs: BUDGET.SIDE });
+					rulesets.put(r);
+					const bad = r.sets.filter((x) => x.loaded === false);
+					if (bad.length === 0) {
+						lock.flash(t('rules.done', { n: r.sets.length }), 'ok');
+						return;
+					}
+					lock.flash(
+						t('rules.done.partial', {
+							bad: bad.length,
+							n: r.sets.length,
+							names: bad.map((x) => x.name).join(', '),
+						}),
+						'warn',
+					);
+				} catch {
+					// Перечитать не вышло — сказать про завершение всё равно
+					// надо: молчание после нажатия читается как зависание.
+					lock.flash(t('job.done', { what: jobText(j, t) }), 'ok');
+				}
+			})();
+			return;
+		}
 		const secs =
 			j.finished_at && j.started_at
 				? (new Date(j.finished_at).getTime() - new Date(j.started_at).getTime()) / 1000
@@ -146,7 +210,7 @@ export function App() {
 				: t('job.done', { what: jobText(j, t) }),
 			'ok',
 		);
-	}, [status?.job, lock, t]);
+	}, [status?.job, lock, t, rulesets]);
 
 	// ─── действия ───
 
@@ -351,6 +415,39 @@ export function App() {
 				await nikki.load();
 			},
 		);
+
+	const onApplyRules = (d: RulesDraft) =>
+		void lock.act(
+			'rulesets',
+			async () => {
+				try {
+					poll.sow(
+						await api<JobAccepted>('nikkiRulesets', {
+							method: 'PUT',
+							body: JSON.stringify(d),
+							headers: { 'If-Match': rulesets.value?.fingerprint ?? '' },
+							timeoutMs: BUDGET.MODE,
+						}),
+					);
+				} catch (e) {
+					// Устаревший отпечаток лечится перечитыванием, а не
+					// повтором: файл наборов изменился, и повтор затёр бы
+					// чужую правку тем же черновиком.
+					if (errCode(e) === 'stale_rulesets') await rulesets.load();
+					throw e;
+				}
+				setRulesDraft(null);
+			},
+			async () => {},
+		);
+
+	// Каталог тянется лениво и ровно один раз: 60 КБ имён ради вкладки, куда
+	// заходят редко. «Повторить» проходит сюда же — после отказа значение
+	// null, а не объект, и запрет на повтор его бы и заблокировал.
+	const onLoadCatalog = useCallback(() => {
+		if (catalog.value) return;
+		void catalog.load();
+	}, [catalog]);
 
 	const onSaveURL = (url: string) =>
 		void lock.act(
@@ -662,7 +759,7 @@ export function App() {
 						</div>
 					) : null}
 
-					<Section id="engine" title={engineTitle(mode, t)} summary={engineSummary(mode, status, nikki.value, sets.value, t)} wide={wide} open={isOpen('engine')} onToggle={() => toggle('engine')} t={t}>
+					<Section id="engine" title={engineTitle(mode, t)} summary={engineSummary(mode, status, nikki.value, sets.value, t, engineTab, rulesets.value, rulesDraft)} wide={wide} open={isOpen('engine')} onToggle={() => toggle('engine')} t={t}>
 						<Engine
 							mode={mode}
 							nikki={nikki.value}
@@ -677,6 +774,17 @@ export function App() {
 							onToggleSet={onToggleSet}
 							onTest={onTest}
 							onMode={onMode}
+							tab={engineTab}
+							onTab={(v) => {
+								setEngineTab(v);
+								if (v === 'rules') onLoadCatalog();
+							}}
+							rulesets={rulesets.value}
+							catalog={catalog.value}
+							draft={rulesDraft}
+							setDraft={setRulesDraft}
+							onApplyRules={onApplyRules}
+							onLoadCatalog={onLoadCatalog}
 						/>
 					</Section>
 

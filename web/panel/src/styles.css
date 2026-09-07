@@ -424,6 +424,54 @@ button.row { cursor: pointer; }
 .seg button:disabled { opacity: .45; }
 .seg button[aria-pressed="true"]:disabled { opacity: 1; cursor: default; }
 
+/* ─────────── наборы geosite ─────────── */
+
+/* Панель вкладки. Коробка нужна настоящая: aria-controls обязан указывать
+   на узел, у которого есть размеры (та же ловушка, что была у .acc-panel),
+   а раскладку карточки она обязана повторить — иначе содержимое вкладки
+   слипается там, где на соседней вкладке оно разложено с отступами. */
+.tabpanel { display: flex; flex-direction: column; gap: 9px; }
+
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip {
+	display: inline-flex; align-items: center; gap: 6px;
+	padding: 5px 5px 5px 11px; border-radius: 99px;
+	background: var(--row); border: 1px solid var(--line-2);
+	font: 12.5px var(--mono); color: var(--fg);
+}
+/* Красная рамка — про ФАКТ с движка: набор в файле есть, а mihomo его не
+   загрузил. Не про черновик и не про запрет, поэтому цвет тот же, что у
+   мёртвого узла, и никакого нового не заводится. */
+.chip.chip-bad { border-color: var(--bad); color: var(--bad-fg); }
+.chip .ip { font: 10px var(--mono); font-style: normal; color: var(--muted-2); }
+.chip button {
+	width: 22px; height: 22px; flex: none; padding: 0;
+	border: 0; border-radius: 50%; line-height: 1;
+	background: rgba(255, 255, 255, .07); color: var(--muted); font-size: 11px;
+}
+.chip button:hover, .chip button:focus-visible { background: rgba(255, 255, 255, .16); color: var(--fg); }
+.chip button:disabled { opacity: .45; }
+
+/* Пак — не состояние, а действие: пунктир отличает его от пилюль b4, где
+   нажатое положение означает включённый сет. */
+.pills.dashed button { background: none; border: 1px dashed #2a3036; color: var(--fg-2); }
+.pills.dashed button[aria-pressed="true"] { background: var(--sel-bg); border-style: solid; border-color: var(--nikki); color: var(--fg); }
+
+.search {
+	width: 100%; padding: 11px 13px; border-radius: var(--r);
+	background: var(--row); border: 1px solid var(--line-2); color: var(--fg);
+	/* 16px обязателен: меньше — и iOS зумит страницу при фокусе. */
+	font: 16px var(--sans);
+}
+.search::placeholder { color: var(--muted-3); }
+.search:focus { border-color: var(--link); outline: none; }
+.search:disabled { opacity: .5; }
+
+/* Имя файла в репозитории — хвост строки: по нему набор ищут глазами в
+   репозитории, но читают строку по имени слева. */
+.row .id { flex: none; margin-left: auto; font: 10.5px var(--mono); color: var(--muted-3); }
+.row .tag-bad { color: var(--bad); }
+
 /* ─────────── встроенное подтверждение ─────────── */
 
 /* Вместо браузерного confirm(). Тот блокирует поток, не переводится, не

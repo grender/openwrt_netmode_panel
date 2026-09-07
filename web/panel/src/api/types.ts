@@ -241,3 +241,53 @@ export interface LogsResponse {
 export interface JobAccepted {
 	job: Job;
 }
+
+// ─────────── наборы geosite ───────────
+
+export type RulesetPolicy = 'profile' | 'only' | 'except';
+export type RulesetDownload = 'direct' | 'tunnel';
+
+export interface RulesetSet {
+	name: string;
+	ip: boolean;
+	/**
+	 * Три значения, и они РАЗНЫЕ: true — набор загружен, false — движок
+	 * говорит «не загружен», null — движок не ответил вовсе. Слить null с
+	 * false значит показать «не загрузился» там, где панель не знает
+	 * ничего, и отправить владельца чинить исправное.
+	 */
+	loaded: boolean | null;
+	rules: number | null;
+	updated_at: string | null;
+}
+
+export interface RulesetsResponse {
+	fingerprint: string;
+	policy: RulesetPolicy;
+	download: RulesetDownload;
+	tunnel_group: string;
+	sets: RulesetSet[];
+	/** Отвечал ли движок: при false про загрузку наборов не известно ничего. */
+	live: boolean;
+	/** Файл mixin.yaml написан не панелью — применять отсюда нельзя. */
+	foreign: boolean;
+}
+
+export interface RulesetsCatalog {
+	commit: string;
+	fetched_at: string;
+	/** Список из памяти демона старее суток: имена показываются, но с датой. */
+	stale: boolean;
+	names: string[];
+	ip: string[];
+	packs: { id: string; sets: string[] }[];
+}
+
+/** Черновик вкладки. null означает «совпадает с применённым». */
+export interface RulesDraft {
+	policy: RulesetPolicy;
+	download: RulesetDownload;
+	sets: string[];
+}
+
+export type EngineTab = 'nodes' | 'rules';
