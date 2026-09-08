@@ -767,14 +767,15 @@ func TestRulesetsPutWritesCustomRules(t *testing.T) {
 		Policy: rulesets.PolicyOnly, Download: rulesets.DownloadDirect,
 		Sets: []rulesets.Set{{Name: "youtube"}},
 		Rules: []rulesets.Rule{
-			{Kind: rulesets.RuleSuffix, Value: "worldsimseries.com", Action: rulesets.ActionTunnel},
+			{Kind: rulesets.RuleSuffix, Value: "worldsimseries.com", Action: rulesets.ActionTunnel, Comment: "лига WSS"},
 			{Kind: rulesets.RuleCIDR, Value: "100.64.0.0/10", Action: rulesets.ActionDirect},
 		},
 	}
 	nikkiFake(t, s).ruleProviders = loadedProviders(want.Sets...)
 
+	// У второго правила поля comment нет вовсе — клиент прежней версии.
 	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"],"rules":[`+
-		`{"kind":"suffix","value":"worldsimseries.com","action":"tunnel"},`+
+		`{"kind":"suffix","value":"worldsimseries.com","action":"tunnel","comment":"лига WSS"},`+
 		`{"kind":"cidr","value":"100.64.0.0/10","action":"direct"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
@@ -798,9 +799,20 @@ func TestRulesetsPutWritesCustomRules(t *testing.T) {
 	if first["kind"] != "suffix" || first["value"] != "worldsimseries.com" || first["action"] != "tunnel" {
 		t.Errorf("первое правило %v, ожидалось suffix worldsimseries.com tunnel", first)
 	}
+	if first["comment"] != "лига WSS" {
+		t.Errorf("комментарий первого правила %v, ожидался «лига WSS»", first["comment"])
+	}
 	second, _ := rules[1].(map[string]any)
 	if second["kind"] != "cidr" || second["value"] != "100.64.0.0/10" || second["action"] != "direct" {
 		t.Errorf("второе правило %v, ожидалось cidr 100.64.0.0/10 direct", second)
+	}
+	// Ключ есть всегда, пусть и пустой: панель читает поле без проверки.
+	if c, ok := second["comment"]; !ok || c != "" {
+		t.Errorf("комментарий второго правила %#v, ожидалась пустая строка", second["comment"])
+	}
+	got, _ = mixinBytes(t, s)
+	if !strings.Contains(string(got), "  # лига WSS\n  - 'DOMAIN-SUFFIX,worldsimseries.com,BYPASS'\n") {
+		t.Errorf("в файле нет строки комментария над правилом:\n%s", got)
 	}
 }
 
@@ -1048,6 +1060,13 @@ func TestRulesetsPutRefusesBeforeAnyWrite(t *testing.T) {
 		body:   `{"policy":"profile","sets":[],"rules":[{"kind":"suffix","value":"x.com","action":"tunnel"}]}`,
 		status: http.StatusBadRequest,
 		code:   "bad_rule",
+	}, {
+		name: "комментарий длиннее 80",
+		body: `{"policy":"only","sets":[],"rules":[{"kind":"suffix","value":"x.com","action":"tunnel"},` +
+			`{"kind":"cidr","value":"10.0.0.0/8","action":"direct","comment":"` + strings.Repeat("ё", 81) + `"}]}`,
+		status: http.StatusBadRequest,
+		code:   "bad_rule",
+		text:   []string{"2", "80"},
 	}, {
 		// Опечатка в правиле отбивается раньше похода за каталогом: иначе
 		// без интернета владелец получал бы «каталог недоступен» вместо

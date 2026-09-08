@@ -41,7 +41,9 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"netmoded/internal/geosite"
 	"netmoded/internal/nikki"
@@ -113,11 +115,22 @@ type Rule struct {
 	Kind   RuleKind   `json:"kind"`
 	Value  string     `json:"value"`
 	Action RuleAction `json:"action"`
+	// Comment — пояснение для человека: «серверы WSS, Hetzner». Хранится
+	// в строке состояния (url.QueryEscape, хвост «|…» токена) и пишется
+	// в тело строкой «# …» над правилом — читать mixin.yaml по ssh иначе
+	// нельзя: голый 157.90.0.0/16 через месяц ничего не значит. Обратно
+	// из тела не читается, как и всё тело. Пустой — хвоста нет, и токен
+	// байт-в-байт прежний: отпечатки правил без комментария не меняются.
+	Comment string `json:"comment"`
 }
 
 // MaxRules — потолок своих правил. Не техническое ограничение, а защита от
 // того, чтобы вкладка превратилась в текстовый редактор профиля.
 const MaxRules = 64
+
+// MaxCommentRunes — потолок комментария. Одна строка над правилом, а не
+// абзац: длиннее — уже не пометка, а документ, которому место не здесь.
+const MaxCommentRunes = 80
 
 // Config — весь выбор целиком. Порядок Sets и Rules значим: он же порядок
 // правил в файле, а у mihomo побеждает первое совпадение.
@@ -286,8 +299,13 @@ func Render(c Config) []byte {
 	}
 
 	b.WriteString("nikki-rules:\n")
-	// Свои правила — первыми: см. документацию пакета.
+	// Свои правила — первыми: см. документацию пакета. Комментарий —
+	// строкой над правилом, как есть: это YAML-комментарий для человека,
+	// yq его не трогает, а Parse не считает (не начинается с «  - '»).
 	for _, r := range c.Rules {
+		if r.Comment != "" {
+			b.WriteString("  # " + r.Comment + "\n")
+		}
 		b.WriteString(ruleLine(r) + "\n")
 	}
 	for _, s := range c.Sets {
@@ -362,12 +380,20 @@ func setToken(s Set) string {
 	return s.Name
 }
 
-// ruleToken — правило в строке состояния: «вид:значение>действие».
+// ruleToken — правило в строке состояния: «вид:значение>действие», при
+// непустом комментарии — «…|комментарий», закодированный url.QueryEscape.
 //
 // Двоеточие и «>» в значении не встречаются, кроме двоеточий IPv6 — поэтому
-// вид отрезается по первому двоеточию, а действие по последнему «>».
+// вид отрезается по первому двоеточию, а действие по последнему «>» в части
+// до «|». QueryEscape экранирует пробел, «;», «>», «|», «#», «%» и всё
+// не-ASCII, так что комментарий не может порвать ни поля состояния (через
+// пробел), ни список правил (через «;»), ни сам токен.
 func ruleToken(r Rule) string {
-	return string(r.Kind) + ":" + r.Value + ">" + string(r.Action)
+	tok := string(r.Kind) + ":" + r.Value + ">" + string(r.Action)
+	if r.Comment != "" {
+		tok += "|" + url.QueryEscape(r.Comment)
+	}
+	return tok
 }
 
 // Parse читает состояние из файла.
@@ -525,11 +551,22 @@ func parseRules(val string) ([]Rule, error) {
 		if !ok {
 			return nil, fmt.Errorf("%w: правило %q без вида", ErrCorrupt, tok)
 		}
+		// Комментарий отрезается раньше действия: закодированный хвост
+		// «>» не содержит, но искать действие по последнему «>» надёжнее
+		// в части, где комментария заведомо нет.
+		rest, encoded, hasComment := strings.Cut(rest, "|")
 		i := strings.LastIndex(rest, ">")
 		if i < 0 {
 			return nil, fmt.Errorf("%w: правило %q без действия", ErrCorrupt, tok)
 		}
 		r := Rule{Kind: RuleKind(kind), Value: rest[:i], Action: RuleAction(rest[i+1:])}
+		if hasComment {
+			c, err := url.QueryUnescape(encoded)
+			if err != nil {
+				return nil, fmt.Errorf("%w: комментарий правила %q не раскодируется: %v", ErrCorrupt, tok, err)
+			}
+			r.Comment = c
+		}
 		if reason := ruleProblem(r); reason != "" {
 			return nil, fmt.Errorf("%w: правило %q: %s", ErrCorrupt, tok, reason)
 		}
@@ -561,10 +598,41 @@ func ruleProblem(r Rule) string {
 	if r.Value == "" {
 		return "пустое значение"
 	}
+	if reason := commentProblem(r.Comment); reason != "" {
+		return reason
+	}
 	if r.Kind == RuleCIDR {
 		return cidrProblem(r.Value)
 	}
 	return domainProblem(r.Value)
+}
+
+// commentProblem — комментарий: одна строка печатного текста до 80 рун.
+//
+// Перевод строки порвал бы и строку состояния, и YAML-комментарий (вторая
+// половина стала бы правилом или мусором для yq); управляющие символы в
+// файле, который читают по ssh, — тоже мусор. Пробелы по краям не срезаются,
+// а отбиваются: панель обрезает их при вводе, на глазах, как и регистр у
+// домена.
+func commentProblem(c string) string {
+	if c == "" {
+		return ""
+	}
+	if !utf8.ValidString(c) {
+		return "комментарий — не UTF-8"
+	}
+	if utf8.RuneCountInString(c) > MaxCommentRunes {
+		return fmt.Sprintf("комментарий длиннее %d знаков", MaxCommentRunes)
+	}
+	for _, ch := range c {
+		if ch < 0x20 || ch == 0x7f {
+			return "в комментарии перевод строки или управляющий символ"
+		}
+	}
+	if strings.TrimSpace(c) != c {
+		return "пробелы по краям комментария"
+	}
+	return ""
 }
 
 // cidrProblem — подсеть обязана быть канонической: ровно той строкой, какую

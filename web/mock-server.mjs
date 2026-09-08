@@ -224,6 +224,10 @@ function badRule(rules) {
 		if (!['suffix', 'domain', 'cidr'].includes(r.kind)) return at + `неизвестный вид "${r.kind}" — бывают suffix, domain, cidr`;
 		if (!['tunnel', 'direct'].includes(r.action)) return at + `неизвестное действие "${r.action}" — бывают tunnel, direct`;
 		if (typeof r.value !== 'string' || r.value === '') return at + 'пустое значение';
+		const c = r.comment === undefined ? '' : r.comment;
+		if (typeof c !== 'string' || [...c].length > 80) return at + 'комментарий длиннее 80 знаков';
+		if (/[\x00-\x1f\x7f]/.test(c)) return at + 'в комментарии перевод строки или управляющий символ';
+		if (c.trim() !== c) return at + 'пробелы по краям комментария';
 		if (r.kind === 'cidr' && !r.value.includes('/')) return at + 'подсеть записывается с маской, например 10.0.0.0/8 или 10.0.0.1/32';
 		if (r.kind !== 'cidr' && !/^[a-z0-9.-]+$/.test(r.value)) return at + 'не похоже на имя хоста: бывают латиница, цифры, дефис и точка';
 		const key = r.kind + ':' + r.value;
@@ -1316,7 +1320,7 @@ async function handleAPI(req, res, u) {
 				sets: body.policy === 'profile' ? [] : sets,
 				// Как прислали, в том же порядке: демон отдаёт правила из
 				// файла, а файл пишется из тела.
-				rules: body.policy === 'profile' ? [] : rules.map((r) => ({ kind: r.kind, value: r.value, action: r.action })),
+				rules: body.policy === 'profile' ? [] : rules.map((r) => ({ kind: r.kind, value: r.value, action: r.action, comment: r.comment || '' })),
 				live: true,
 				foreign: false,
 			};

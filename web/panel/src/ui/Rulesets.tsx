@@ -13,6 +13,8 @@ const ROWS = 8;
 
 /** Потолок своих правил — тот же, что у демона (rulesets.MaxRules). */
 export const MAX_RULES = 64;
+/** Потолок комментария в знаках — как у демона (rulesets.MaxCommentRunes). */
+export const MAX_COMMENT = 80;
 
 const KINDS: RuleKind[] = ['suffix', 'domain', 'cidr'];
 const ACTIONS: RuleAction[] = ['tunnel', 'direct'];
@@ -52,8 +54,9 @@ export function draftOf(a: Side<RulesetsResponse>): RulesDraft {
 	};
 }
 
-/** Правило одной строкой — для сверки черновика с применённым. */
-const ruleTok = (r: CustomRule) => `${r.kind}:${r.value}>${r.action}`;
+/** Правило одной строкой — для сверки черновика с применённым. Комментарий
+ *  тоже в счёт: сменился текст — файл переписывается. */
+const ruleTok = (r: CustomRule) => `${r.kind}:${r.value}>${r.action}|${r.comment}`;
 
 /**
  * Сколько правок ждёт применения. Ноль значит «применять нечего» — и это
@@ -102,6 +105,11 @@ export function ruleProblem(r: CustomRule, all: CustomRule[], i: number): Key | 
 	if (i >= MAX_RULES) return 'rules.custom.max';
 	const v = r.value;
 	if (v === '') return 'rules.custom.err.empty';
+	// Поле держит 80 знаков само (maxLength), но черновик мог прийти из
+	// применённого или из вставки: проверка та же, что у демона.
+	if ([...r.comment].length > MAX_COMMENT || /[\x00-\x1f\x7f]/.test(r.comment)) {
+		return 'rules.custom.err.comment';
+	}
 	for (let j = 0; j < i; j++) {
 		const prev = all[j];
 		if (prev && prev.kind === r.kind && prev.value === v) return 'rules.custom.err.dup';
@@ -393,6 +401,24 @@ export function Rulesets(p: RulesetsProps) {
 									patchRule(i, { value: (e.target as HTMLInputElement).value.trim().toLowerCase() })
 								}
 							/>
+							<input
+								class="note"
+								value={r.comment}
+								placeholder={t('rules.custom.ph.comment')}
+								maxLength={MAX_COMMENT}
+								autocomplete="off"
+								disabled={off}
+								// Края обрезаются при потере фокуса, а не на каждом
+								// вводе: иначе не набрать пробел между словами.
+								// Перевод строки из вставки убирается сразу.
+								onInput={(e) =>
+									patchRule(i, { comment: (e.target as HTMLInputElement).value.replace(/[\r\n]+/g, ' ') })
+								}
+								onBlur={(e) => {
+									const v = (e.target as HTMLInputElement).value.trim();
+									if (v !== r.comment) patchRule(i, { comment: v });
+								}}
+							/>
 							<div class="seg">
 								{ACTIONS.map((a) => (
 									<button
@@ -419,7 +445,9 @@ export function Rulesets(p: RulesetsProps) {
 					type="button"
 					class="linkbtn"
 					disabled={off}
-					onClick={() => applyRules([...eff.rules, { kind: 'suffix', value: '', action: 'tunnel' }])}
+					onClick={() =>
+						applyRules([...eff.rules, { kind: 'suffix', value: '', action: 'tunnel', comment: '' }])
+					}
 				>
 					+ {t('rules.custom.add')}
 				</button>

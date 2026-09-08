@@ -273,6 +273,8 @@ export interface CustomRule {
 	kind: RuleKind;
 	value: string;
 	action: RuleAction;
+	/** Пометка для человека, до 80 знаков; в файле — строка «#» над правилом. */
+	comment: string;
 }
 
 export interface RulesetsResponse {

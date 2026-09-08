@@ -7,21 +7,21 @@
     "web/panel/src/api/describe.ts": "b77487d84a612bd76c99410cd2476873acb5b645",
     "web/panel/src/api/reasons.gen.ts": "0034a00188b5e0fdcfb68214e0358426a8e507c6",
     "web/panel/src/api/routes.gen.ts": "3e559f56c2cb1028302b125447ffa90312852cee",
-    "web/panel/src/api/types.ts": "204f9193323fb8efb49603a0c36904f6cfd75bae",
-    "web/panel/src/i18n/en.json": "4e42ca9b1d0a5fea38f459829b94c4c88ff11f95",
+    "web/panel/src/api/types.ts": "79f1f607f983d74748fa193293b8a45b6fcfbff5",
+    "web/panel/src/i18n/en.json": "bc8ff0f9307d15b99e5047e960947089bce97a67",
     "web/panel/src/i18n/index.ts": "f496c11836c903af7d62bb0109f49dcdc6a37be5",
-    "web/panel/src/i18n/ru.json": "db782c7e6323d587ccc12a31ad3a7d74d66c0792",
+    "web/panel/src/i18n/ru.json": "3d0515381f83c2102267d1a68e878ab200fdcb04",
     "web/panel/src/main.tsx": "d849dd510cfdbf4c607f7a20e3d7a2d9d91d0712",
     "web/panel/src/state/consts.ts": "1243ae77582ef79923d5ecf6feb066387806d34c",
     "web/panel/src/state/job.ts": "35e2639a874b773ee5dfc081f7511e8ac86e3614",
     "web/panel/src/state/lock.ts": "c398892da92eb8b6d7370fe04308b3bf93a114ce",
     "web/panel/src/state/poll.ts": "592cc7a9f4e4a97f10b33c6a6d2f1df7f9f59b23",
     "web/panel/src/state/side.ts": "044b8ee342359dc2f5504edbd31ec43ca62cdff3",
-    "web/panel/src/styles.css": "d380df28c57b9177bc13676c11dbfd26d198c425",
+    "web/panel/src/styles.css": "403a772717ce89cf5912161c6a4414546782a0cb",
     "web/panel/src/ui/App.tsx": "ed8627eb65cd82a3036adb1cdb717e53e9c8e519",
     "web/panel/src/ui/Bridge.tsx": "c14eadc452782b1c6f8a62f965e6e501ea0c056d",
     "web/panel/src/ui/Engine.tsx": "46ec196b148e26a1640bce74a3c5daac1e67d27b",
-    "web/panel/src/ui/Rulesets.tsx": "805ba781321c4d84f4005c4125c35438643944f0",
+    "web/panel/src/ui/Rulesets.tsx": "96076b050d9161cd01c05d0eb4440c2583671c3a",
     "web/panel/src/ui/Sheets.tsx": "58b2afa0edf9d20fbc5e4c81604ccca1d33fdaa4",
     "web/panel/src/ui/Subscription.tsx": "6edf95b8e7d29df2e57349afb1a653d9dc1b8196",
     "web/panel/src/ui/Uplink.tsx": "4dbf4f581fbe968f12c766802b2c0ee6f3f7c86c",
@@ -29,16 +29,16 @@
     "web/panel/tsconfig.json": "2ee4ff881e2dbfd1abfe8024273340d7c8e94a94",
     "web/panel/vite.config.ts": "229d4555da50f27791ae3765994f04ce40371edd"
   },
-  "inputs_digest": "3227b81e309213fb2f64e8c27f1069c9b7b2726dfb1657a77028d42565688cc0",
+  "inputs_digest": "f42e2e00d2ccb4b444c3501023f0cfabce2d9a99ebbb08354249ffeae2bff442",
   "artifact": {
-    "assets/app.js": "bf62965846578fcae8713bca1cd6605cd4a11f66749322cd9d1f5d91f6ac8937",
-    "assets/style.css": "c330b416466315885da528d74e19ebe7091d05856b3fe2fef92eff8fc7f66dcd",
-    "index.html": "8ef2e60e95a537cbdca9c682e193d9dea3c53f38c080b6353968abcb1bc068e6"
+    "assets/app.js": "895a4699395f2ec722ecdf20a43893d4bbb65b38877db553b479958d782bfa06",
+    "assets/style.css": "e2fa497ba7488daaf25c27abcab2f5a0394753da63a229e0f1fc7c6db919597e",
+    "index.html": "9be6b3acdd1b4c037845f62f488105de6e8bd63eac19f3bb5daf9b9124918643"
   },
   "sizes_gzip": {
-    "assets/app.js": 43541,
-    "assets/style.css": 4203,
+    "assets/app.js": 43861,
+    "assets/style.css": 4213,
     "index.html": 579,
-    "total": 48323
+    "total": 48653
   }
 }

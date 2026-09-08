@@ -479,6 +479,8 @@ button.row { cursor: pointer; }
 .rule input { grid-column: 1 / -1; width: 100%; min-width: 0; }
 .rule input:focus, .rule select:focus { border-color: var(--link); outline: none; }
 .rule input[aria-invalid="true"] { border-color: var(--bad); }
+/* Комментарий — текст для человека, а не адрес: обычный шрифт, не моно. */
+.rule input.note { font: 15px var(--sans); }
 .rule .seg, .rule .hint { grid-column: 1 / -1; }
 .rule .hint.bad { color: var(--bad-fg); }
 .rule .mini.danger { height: 44px; }

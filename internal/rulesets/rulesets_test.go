@@ -143,10 +143,39 @@ func TestRenderEmptySetsHasNoProviders(t *testing.T) {
 // testRules — по одному правилу каждого вида, включая IPv6.
 func testRules() []Rule {
 	return []Rule{
-		{Kind: RuleSuffix, Value: "worldsimseries.com", Action: ActionTunnel},
+		{Kind: RuleSuffix, Value: "worldsimseries.com", Action: ActionTunnel, Comment: "Лига WSS: паддок"},
 		{Kind: RuleDomain, Value: "api.netbird.io", Action: ActionDirect},
-		{Kind: RuleCIDR, Value: "100.64.0.0/10", Action: ActionDirect},
+		{Kind: RuleCIDR, Value: "100.64.0.0/10", Action: ActionDirect, Comment: "CGNAT netbird"},
 		{Kind: RuleCIDR, Value: "fd00::/8", Action: ActionDirect},
+	}
+}
+
+// TestRenderCommentLine — комментарий стоит строкой «  # …» ровно над своим
+// правилом, и Parse его правилом не считает.
+//
+// Комментарий — для человека, читающего файл по ssh; правда о нём живёт в
+// строке состояния. Строка с решёткой не должна ни сбивать счёт правил, ни
+// попадать в другое место файла: над чужим правилом она врала бы.
+func TestRenderCommentLine(t *testing.T) {
+	cfg := Config{Policy: PolicyOnly, Download: DownloadDirect, Rules: []Rule{
+		{Kind: RuleSuffix, Value: "a.com", Action: ActionTunnel},
+		{Kind: RuleCIDR, Value: "10.0.0.0/8", Action: ActionDirect, Comment: "домашняя сеть; см. wiki > vpn"},
+		{Kind: RuleDomain, Value: "b.com", Action: ActionDirect},
+	}}
+	out := string(Render(cfg))
+	want := "  # домашняя сеть; см. wiki > vpn\n  - 'IP-CIDR,10.0.0.0/8,DIRECT,no-resolve'\n"
+	if !strings.Contains(out, want) {
+		t.Errorf("комментарий не над своим правилом:\n%s", out)
+	}
+	if strings.Count(out, "  # ") != 1 {
+		t.Errorf("строк комментария %d, ожидалась одна:\n%s", strings.Count(out, "  # "), out)
+	}
+	got, _, err := Parse([]byte(out))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !reflect.DeepEqual(got, cfg) {
+		t.Errorf("прочитано %+v, записано %+v", got, cfg)
 	}
 }
 
@@ -212,6 +241,12 @@ func TestParseRoundTrip(t *testing.T) {
 			Sets: []Set{{Name: "youtube"}, {Name: "telegram", IP: true}}, Rules: testRules()}},
 		{"своё правило без наборов", Config{Policy: PolicyExcept, Download: DownloadTunnel,
 			Rules: []Rule{{Kind: RuleSuffix, Value: "netbird.io", Action: ActionDirect}}}},
+		// Комментарий со всеми знаками, которые что-то значат в строке
+		// состояния: пробел (разделитель полей), ; (правил), > (действия),
+		// | (комментария), # (комментарий YAML), плюс и процент (кодирование).
+		{"комментарий с опасными знаками", Config{Policy: PolicyOnly, Download: DownloadDirect,
+			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel,
+				Comment: "a;b>c#d|e f+g%h — кириллица"}}}},
 	}
 
 	for _, tc := range cases {
@@ -321,6 +356,14 @@ func TestParseCorrupt(t *testing.T) {
 		// применённым.
 		{"строка в теле есть, правила в состоянии нет", []byte(head + stateMark + " policy=only download=direct sets=\n" +
 			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,BYPASS'\n  - 'GEOIP,PRIVATE,DIRECT,no-resolve'\n  - 'MATCH,DIRECT'\n")},
+		// Комментарий в состоянии: битое кодирование, перевод строки,
+		// длиннее потолка — всё это файл, правленный руками.
+		{"комментарий с битым процент-кодированием", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:x.com>tunnel|%ZZ\n" +
+			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,BYPASS'\n")},
+		{"комментарий с переводом строки", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:x.com>tunnel|a%0Ab\n" +
+			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,BYPASS'\n")},
+		{"комментарий длиннее 80", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:x.com>tunnel|" + strings.Repeat("a", 81) + "\n" +
+			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,BYPASS'\n")},
 	}
 
 	for _, tc := range cases {
@@ -434,6 +477,27 @@ func TestFingerprintSensitive(t *testing.T) {
 	}
 	if Fingerprint(withRule) == Fingerprint(swapped) {
 		t.Error("перестановка правил не изменила отпечаток")
+	}
+
+	// Комментарий — тоже часть выбора: сменился текст, файл надо переписать.
+	// А правило БЕЗ комментария даёт тот же токен, что до появления поля:
+	// литерал посчитан до него, и отпечатки правил на роутере не меняются.
+	commented := Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: base.Sets, Rules: []Rule{
+		{Kind: RuleSuffix, Value: "worldsimseries.com", Action: ActionTunnel, Comment: "лига"}, withRule.Rules[1],
+	}}
+	if Fingerprint(withRule) == Fingerprint(commented) {
+		t.Error("смена комментария не изменила отпечаток")
+	}
+	noComments := Config{Policy: PolicyOnly, Download: DownloadDirect,
+		Sets: []Set{{Name: "youtube"}, {Name: "telegram", IP: true}},
+		Rules: []Rule{
+			{Kind: RuleSuffix, Value: "worldsimseries.com", Action: ActionTunnel},
+			{Kind: RuleDomain, Value: "api.netbird.io", Action: ActionDirect},
+			{Kind: RuleCIDR, Value: "100.64.0.0/10", Action: ActionDirect},
+			{Kind: RuleCIDR, Value: "fd00::/8", Action: ActionDirect},
+		}}
+	if got := Fingerprint(noComments); got != "sha256:0e5545a52d1a0040" {
+		t.Errorf("отпечаток правил без комментариев %s, до поля был sha256:0e5545a52d1a0040", got)
 	}
 }
 
@@ -558,6 +622,10 @@ func TestValidateRules(t *testing.T) {
 		{"правила при политике «кроме» без наборов", Config{Policy: PolicyExcept, Download: DownloadTunnel,
 			Rules: []Rule{{Kind: RuleSuffix, Value: "netbird.io", Action: ActionDirect}}}},
 		{"правила без каталога", ok(RuleSuffix, "example.com", ActionTunnel)},
+		{"комментарий в 80 рун кириллицей", Config{Policy: PolicyOnly, Download: DownloadDirect,
+			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel, Comment: strings.Repeat("ё", 80)}}}},
+		{"комментарий с пробелами внутри и знаками", Config{Policy: PolicyOnly, Download: DownloadDirect,
+			Rules: []Rule{{Kind: RuleCIDR, Value: "157.90.0.0/16", Action: ActionTunnel, Comment: "серверы WSS; Hetzner (выделенные) > туннель #1"}}}},
 	}
 	for _, tc := range accept {
 		t.Run("принято: "+tc.name, func(t *testing.T) {
@@ -612,6 +680,16 @@ func TestValidateRules(t *testing.T) {
 		{"IPv6 в верхнем регистре", ok(RuleCIDR, "FD00::/8", ActionDirect), 1, nil},
 		{"IPv4 внутри IPv6", ok(RuleCIDR, "::ffff:1.2.3.0/120", ActionDirect), 1, nil},
 		{"домен под видом подсети", ok(RuleCIDR, "x.com", ActionDirect), 1, []string{"x.com"}},
+		{"комментарий в 81 руну", Config{Policy: PolicyOnly, Download: DownloadDirect,
+			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel, Comment: strings.Repeat("ё", 81)}}}, 1, []string{"80"}},
+		{"комментарий с переводом строки", Config{Policy: PolicyOnly, Download: DownloadDirect,
+			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel, Comment: "a\nb"}}}, 1, nil},
+		{"комментарий с управляющим символом", Config{Policy: PolicyOnly, Download: DownloadDirect,
+			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel, Comment: "a\x01b"}}}, 1, nil},
+		{"комментарий с пробелом по краю", Config{Policy: PolicyOnly, Download: DownloadDirect,
+			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel, Comment: " лига"}}}, 1, nil},
+		{"комментарий не UTF-8", Config{Policy: PolicyOnly, Download: DownloadDirect,
+			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel, Comment: "a\xffb"}}}, 1, nil},
 	}
 	for _, tc := range reject {
 		t.Run("отбито: "+tc.name, func(t *testing.T) {

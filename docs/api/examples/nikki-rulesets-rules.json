@@ -1,17 +1,19 @@
 {
   "download": "direct",
-  "fingerprint": "sha256:583be2effee43290",
+  "fingerprint": "sha256:12ea3ff496c5eb47",
   "foreign": false,
   "live": true,
   "policy": "only",
   "rules": [
     {
       "action": "tunnel",
+      "comment": "Лига WSS: паддок",
       "kind": "suffix",
       "value": "worldsimseries.com"
     },
     {
       "action": "direct",
+      "comment": "CGNAT netbird",
       "kind": "cidr",
       "value": "100.64.0.0/10"
     }

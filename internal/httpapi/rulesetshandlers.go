@@ -369,9 +369,10 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 		// Свои правила владельца. Необязательны: клиент прежней версии их
 		// не шлёт, и его запись значит «правил нет», а не «поле забыто».
 		Rules []struct {
-			Kind   string `json:"kind"`
-			Value  string `json:"value"`
-			Action string `json:"action"`
+			Kind    string `json:"kind"`
+			Value   string `json:"value"`
+			Action  string `json:"action"`
+			Comment string `json:"comment"` // необязателен: пусто = без пометки
 		} `json:"rules"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -397,6 +398,7 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 	for _, rule := range in.Rules {
 		want.Rules = append(want.Rules, rulesets.Rule{
 			Kind: rulesets.RuleKind(rule.Kind), Value: rule.Value, Action: rulesets.RuleAction(rule.Action),
+			Comment: rule.Comment,
 		})
 	}
 
