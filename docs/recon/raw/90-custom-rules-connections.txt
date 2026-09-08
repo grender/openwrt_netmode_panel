@@ -1,0 +1,45 @@
+# 2026-09-08, grenderRouter. Свои правила владельца применены через
+# PUT /api/nikki/rulesets (демон 0.2.0-phase2-20260908), затем наблюдение.
+# Секреты в вывод не попадают.
+
+## sed -n 3p /etc/nikki/mixin.yaml   (после применения)
+# netmoded-rulesets: policy=only download=direct sets=anthropic,facebook+ip,youtube,whatsapp,instagram,nintendo,telegram+ip,twitter+ip,medium,rutracker rules=suffix:worldsimseries.com>tunnel;suffix:netbird.io>direct;suffix:vpn.e-kama.com>direct;cidr:100.64.0.0/10>direct
+
+## grep -n "DOMAIN\|IP-CIDR" /etc/nikki/mixin.yaml
+97:  - 'DOMAIN-SUFFIX,worldsimseries.com,BYPASS'
+98:  - 'DOMAIN-SUFFIX,netbird.io,DIRECT'
+99:  - 'DOMAIN-SUFFIX,vpn.e-kama.com,DIRECT'
+100:  - 'IP-CIDR,100.64.0.0/10,DIRECT,no-resolve'
+
+## grep -n "DOMAIN-SUFFIX\|IP-CIDR\|RULE-SET,nm-geosite-anthropic\|GEOIP,PRIVATE\|MATCH" /etc/nikki/run/config.yaml
+## (склейка nikki.init: наш блок перед правилами профиля, свои правила первыми)
+46:  - 'DOMAIN-SUFFIX,worldsimseries.com,BYPASS'
+47:  - 'DOMAIN-SUFFIX,netbird.io,DIRECT'
+48:  - 'DOMAIN-SUFFIX,vpn.e-kama.com,DIRECT'
+49:  - 'IP-CIDR,100.64.0.0/10,DIRECT,no-resolve'
+50:  - 'RULE-SET,nm-geosite-anthropic,BYPASS'
+63:  - 'GEOIP,PRIVATE,DIRECT,no-resolve'
+64:  - 'MATCH,DIRECT'
+65:  - DOMAIN-SUFFIX,vpn.e-kama.com,DIRECT
+66:  - DOMAIN-SUFFIX,netbird.io,DIRECT
+67:  - IP-CIDR,100.64.0.0/10,DIRECT,no-resolve
+70:  - DOMAIN-SUFFIX,worldsimseries.com,BYPASS
+
+## pidof mihomo
+16020
+
+## GET /rules Clash API, первые пять записей (до обращения к сайту)
+{"index":0,"type":"DomainSuffix","payload":"worldsimseries.com","proxy":"BYPASS","size":-1,"extra":{"disabled":false,"hitCount":0,"hitAt":"1970-01-01T00:00:00Z","missCount":934,"missAt":"2026-09-08T20:05:31.007979543Z"}}
+{"index":1,"type":"DomainSuffix","payload":"netbird.io","proxy":"DIRECT","size":-1,"extra":{"disabled":false,"hitCount":0,"hitAt":"1970-01-01T00:00:00Z","missCount":934,"missAt":"2026-09-08T20:05:31.007980697Z"}}
+{"index":2,"type":"DomainSuffix","payload":"vpn.e-kama.com","proxy":"DIRECT","size":-1,"extra":{"disabled":false,"hitCount":0,"hitAt":"1970-01-01T00:00:00Z","missCount":934,"missAt":"2026-09-08T20:05:31.007981927Z"}}
+{"index":3,"type":"IPCIDR","payload":"100.64.0.0/10","proxy":"DIRECT","size":-1,"extra":{"disabled":false,"hitCount":0,"hitAt":"1970-01-01T00:00:00Z","missCount":934,"missAt":"2026-09-08T20:05:31.007982927Z"}}
+{"index":4,"type":"RuleSet","payload":"nm-geosite-anthropic","proxy":"BYPASS","size":-1,"extra":{"disabled":false,"hitCount":63,"hitAt":"2026-09-08T20:05:23.38705594Z","missCount":871,"missAt":"2026-09-08T20:05:31.00799462Z"}}
+
+## curl -s -o /dev/null -m 15 -w "..." https://paddock.worldsimseries.com/   (с роутера)
+curl: http=302 ip=198.18.49.254 t=0.381321s
+
+## GET /rules, запись 0 после обращения
+payload=worldsimseries.com proxy=BYPASS hitCount=1
+
+## До применения (raw/89 и разбор в plan): соединения к paddock.worldsimseries.com
+## с ПК и телефона шли DIRECT по правилу Match, ответа не было.
