@@ -23,6 +23,16 @@
 // строка пишется ВСЕГДА, при обеих политиках: при «только эти» она ничего не
 // меняет, а при «кроме» спасает LAN. Отдельного выключателя для неё нет
 // намеренно — это не настройка, а условие работоспособности.
+//
+// Почему свои правила владельца живут здесь же, а не в профиле. Профиль
+// main.yml склеивается ПОСЛЕ нашего блока, а наш блок кончается MATCH, — до
+// правил профиля очередь не доходит никогда. Домен, который владелец вписал
+// в профиль руками, молча идёт по нашему хвосту; так и не открывался
+// paddock.worldsimseries.com (ADR-0040). Поэтому свои домены и подсети
+// хранятся в том же файле и стоят ПЕРВЫМИ в рубрике: воля владельца
+// побеждает набор, в котором тот же домен есть. Группа у правила берётся из
+// его действия, а не из политики — «этот домен напрямую» значит одно и то же
+// при обеих политиках.
 package rulesets
 
 import (
@@ -30,6 +40,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 
 	"netmoded/internal/geosite"
@@ -70,11 +81,51 @@ type Set struct {
 	IP   bool   `json:"ip"`
 }
 
-// Config — весь выбор целиком. Порядок Sets значим: он же порядок правил.
+// RuleKind — вид своего правила: по чему сопоставлять.
+type RuleKind string
+
+const (
+	// RuleSuffix — домен и все его поддомены (DOMAIN-SUFFIX).
+	RuleSuffix RuleKind = "suffix"
+	// RuleDomain — ровно этот хост (DOMAIN).
+	RuleDomain RuleKind = "domain"
+	// RuleCIDR — подсеть (IP-CIDR / IP-CIDR6), всегда с no-resolve: правило
+	// про адреса не должно заставлять mihomo резолвить каждый домен.
+	RuleCIDR RuleKind = "cidr"
+)
+
+// RuleAction — куда отправить совпавшее.
+type RuleAction string
+
+const (
+	// ActionTunnel — в туннель, группа TunnelGroup.
+	ActionTunnel RuleAction = "tunnel"
+	// ActionDirect — напрямую, мимо туннеля.
+	ActionDirect RuleAction = "direct"
+)
+
+// Rule — одно своё правило владельца.
+//
+// Значение после проверки состоит только из [a-z0-9.:/-]: так ему безопасно
+// и в одинарных кавычках YAML, и в строке состояния, где списки разделяются
+// запятой и точкой с запятой, а поля — пробелом.
+type Rule struct {
+	Kind   RuleKind   `json:"kind"`
+	Value  string     `json:"value"`
+	Action RuleAction `json:"action"`
+}
+
+// MaxRules — потолок своих правил. Не техническое ограничение, а защита от
+// того, чтобы вкладка превратилась в текстовый редактор профиля.
+const MaxRules = 64
+
+// Config — весь выбор целиком. Порядок Sets и Rules значим: он же порядок
+// правил в файле, а у mihomo побеждает первое совпадение.
 type Config struct {
 	Policy   Policy
 	Download Download
 	Sets     []Set
+	Rules    []Rule
 }
 
 const (
@@ -110,7 +161,30 @@ const (
 	// ruleSiteLinePrefix — начало строки правила доменного набора. По нему
 	// Parse считает правила, сверяя их число с состоянием.
 	ruleSiteLinePrefix = "  - 'RULE-SET," + ProviderSitePrefix
+
+	// Начала строк своих правил — по ним Parse считает их так же, как
+	// наборы. Запятая в конце обязательна: без неё DOMAIN совпал бы и с
+	// DOMAIN-SUFFIX.
+	customSuffixPrefix = "  - 'DOMAIN-SUFFIX,"
+	customDomainPrefix = "  - 'DOMAIN,"
+	customCIDRPrefix   = "  - 'IP-CIDR,"
+	customCIDR6Prefix  = "  - 'IP-CIDR6,"
 )
+
+// RuleError — своё правило не принято.
+//
+// Тип, а не текст, по той же причине, что и UnknownSetsError: панели нужен
+// номер строки, чтобы подсветить её, а не искать значение в сообщении.
+// Index — с единицы: он уходит в текст для владельца, а не в код.
+type RuleError struct {
+	Index  int
+	Rule   Rule
+	Reason string
+}
+
+func (e *RuleError) Error() string {
+	return fmt.Sprintf("rulesets: правило %d (%s %s): %s", e.Index, e.Rule.Kind, e.Rule.Value, e.Reason)
+}
 
 // ErrCorrupt — файл наш (шапка на месте), но его содержимому верить нельзя.
 var ErrCorrupt = errors.New("rulesets: mixin.yaml повреждён — примените наборы заново")
@@ -154,6 +228,33 @@ func groups(p Policy) (set, tail string) {
 	return TunnelGroup, directGroup
 }
 
+// groupFor — группа своего правила. Из действия, не из политики.
+func groupFor(a RuleAction) string {
+	if a == ActionTunnel {
+		return TunnelGroup
+	}
+	return directGroup
+}
+
+// ruleLine — строка своего правила в рубрике nikki-rules.
+//
+// Значение считается проверенным (Validate или parseRules): Render, как и с
+// именами наборов, не проверяет вход второй раз.
+func ruleLine(r Rule) string {
+	switch r.Kind {
+	case RuleSuffix:
+		return fmt.Sprintf("%s%s,%s'", customSuffixPrefix, r.Value, groupFor(r.Action))
+	case RuleDomain:
+		return fmt.Sprintf("%s%s,%s'", customDomainPrefix, r.Value, groupFor(r.Action))
+	default:
+		prefix := customCIDRPrefix
+		if p, err := netip.ParsePrefix(r.Value); err == nil && p.Addr().Is6() {
+			prefix = customCIDR6Prefix
+		}
+		return fmt.Sprintf("%s%s,%s,no-resolve'", prefix, r.Value, groupFor(r.Action))
+	}
+}
+
 // Render собирает файл целиком. Детерминирован: одинаковый Config даёт
 // одинаковые байты — на этом держится и golden-тест, и отпечаток.
 func Render(c Config) []byte {
@@ -185,6 +286,10 @@ func Render(c Config) []byte {
 	}
 
 	b.WriteString("nikki-rules:\n")
+	// Свои правила — первыми: см. документацию пакета.
+	for _, r := range c.Rules {
+		b.WriteString(ruleLine(r) + "\n")
+	}
 	for _, s := range c.Sets {
 		// Порядок внутри набора: сначала домены, потом подсети. Правило по
 		// подсетям идёт с no-resolve — иначе mihomo резолвил бы каждый
@@ -232,8 +337,21 @@ func stateLine(c Config) string {
 	// Поле sets пишется даже пустым: его отсутствие значило бы «строка
 	// оборвалась», а пустое значение — «выбрано ноль наборов», и это
 	// разные вещи.
-	return fmt.Sprintf("%s policy=%s download=%s sets=%s",
+	line := fmt.Sprintf("%s policy=%s download=%s sets=%s",
 		stateMark, c.Policy, c.Download, strings.Join(names, ","))
+	// А поле rules — наоборот, только при наличии правил. Демон прежней
+	// версии незнакомое поле считает порчей (parseState) — и это желаемое
+	// поведение для файла С правилами: громкий отказ вместо молчаливой
+	// потери. Но файл БЕЗ правил он обязан читать как раньше, иначе
+	// обновление демона ломало бы всем выбор, где своих правил и не было.
+	if len(c.Rules) > 0 {
+		tokens := make([]string, 0, len(c.Rules))
+		for _, r := range c.Rules {
+			tokens = append(tokens, ruleToken(r))
+		}
+		line += " rules=" + strings.Join(tokens, ";")
+	}
+	return line
 }
 
 // setToken — набор в строке состояния: «имя» или «имя+ip».
@@ -242,6 +360,14 @@ func setToken(s Set) string {
 		return s.Name + "+ip"
 	}
 	return s.Name
+}
+
+// ruleToken — правило в строке состояния: «вид:значение>действие».
+//
+// Двоеточие и «>» в значении не встречаются, кроме двоеточий IPv6 — поэтому
+// вид отрезается по первому двоеточию, а действие по последнему «>».
+func ruleToken(r Rule) string {
+	return string(r.Kind) + ":" + r.Value + ">" + string(r.Action)
 }
 
 // Parse читает состояние из файла.
@@ -261,13 +387,16 @@ func Parse(b []byte) (Config, bool, error) {
 	}
 
 	state := ""
-	rules := 0
+	rules, custom := 0, 0
 	for _, ln := range lines[1:] {
 		switch {
 		case state == "" && strings.HasPrefix(ln, stateMark):
 			state = strings.TrimSpace(strings.TrimPrefix(ln, stateMark))
 		case strings.HasPrefix(ln, ruleSiteLinePrefix):
 			rules++
+		case strings.HasPrefix(ln, customSuffixPrefix), strings.HasPrefix(ln, customDomainPrefix),
+			strings.HasPrefix(ln, customCIDRPrefix), strings.HasPrefix(ln, customCIDR6Prefix):
+			custom++
 		}
 	}
 	if state == "" {
@@ -284,6 +413,11 @@ func Parse(b []byte) (Config, bool, error) {
 	// хуже, чем попросить применить заново.
 	if rules != len(cfg.Sets) {
 		return profile, false, fmt.Errorf("%w: наборов %d, правил %d", ErrCorrupt, len(cfg.Sets), rules)
+	}
+	// То же для своих правил, и в обе стороны: строка, дописанная в тело
+	// руками, при следующей записи пропала бы молча — лучше отказать сейчас.
+	if custom != len(cfg.Rules) {
+		return profile, false, fmt.Errorf("%w: своих правил %d, строк %d", ErrCorrupt, len(cfg.Rules), custom)
 	}
 	return cfg, false, nil
 }
@@ -331,6 +465,12 @@ func parseState(s string) (Config, error) {
 				return Config{}, err
 			}
 			cfg.Sets = sets
+		case "rules":
+			rules, err := parseRules(val)
+			if err != nil {
+				return Config{}, err
+			}
+			cfg.Rules = rules
 		default:
 			// Незнакомое поле — это не наш файл нашей же версии. Молча
 			// пропустить его значило бы применить непонятно что.
@@ -370,6 +510,129 @@ func parseSets(val string) ([]Set, error) {
 	return sets, nil
 }
 
+// parseRules разбирает список своих правил «вид:значение>действие» через
+// точку с запятой. Проверки те же, что у Validate: файл, правленный руками,
+// не должен вернуть в mixin.yaml то, что PUT бы отбил.
+func parseRules(val string) ([]Rule, error) {
+	if val == "" {
+		return nil, nil
+	}
+	tokens := strings.Split(val, ";")
+	rules := make([]Rule, 0, len(tokens))
+	seen := make(map[string]bool, len(tokens))
+	for _, tok := range tokens {
+		kind, rest, ok := strings.Cut(tok, ":")
+		if !ok {
+			return nil, fmt.Errorf("%w: правило %q без вида", ErrCorrupt, tok)
+		}
+		i := strings.LastIndex(rest, ">")
+		if i < 0 {
+			return nil, fmt.Errorf("%w: правило %q без действия", ErrCorrupt, tok)
+		}
+		r := Rule{Kind: RuleKind(kind), Value: rest[:i], Action: RuleAction(rest[i+1:])}
+		if reason := ruleProblem(r); reason != "" {
+			return nil, fmt.Errorf("%w: правило %q: %s", ErrCorrupt, tok, reason)
+		}
+		key := string(r.Kind) + ":" + r.Value
+		if seen[key] {
+			return nil, fmt.Errorf("%w: правило %q повторяется", ErrCorrupt, tok)
+		}
+		seen[key] = true
+		rules = append(rules, r)
+	}
+	return rules, nil
+}
+
+// ruleProblem — почему правило не годится; пустая строка — годится.
+//
+// Один источник правды для Validate (тело PUT) и parseRules (файл): что не
+// принимается на входе, не должно приниматься и с диска.
+func ruleProblem(r Rule) string {
+	switch r.Kind {
+	case RuleSuffix, RuleDomain, RuleCIDR:
+	default:
+		return fmt.Sprintf("неизвестный вид %q — бывают suffix, domain, cidr", r.Kind)
+	}
+	switch r.Action {
+	case ActionTunnel, ActionDirect:
+	default:
+		return fmt.Sprintf("неизвестное действие %q — бывают tunnel, direct", r.Action)
+	}
+	if r.Value == "" {
+		return "пустое значение"
+	}
+	if r.Kind == RuleCIDR {
+		return cidrProblem(r.Value)
+	}
+	return domainProblem(r.Value)
+}
+
+// cidrProblem — подсеть обязана быть канонической: ровно той строкой, какую
+// mihomo и сам бы напечатал. Иначе одна и та же подсеть в двух написаниях
+// прошла бы проверку на дубль.
+func cidrProblem(v string) string {
+	if !strings.Contains(v, "/") {
+		return "подсеть записывается с маской, например 10.0.0.0/8 или 10.0.0.1/32"
+	}
+	p, err := netip.ParsePrefix(v)
+	if err != nil {
+		return "не разбирается как подсеть: нужны адрес и маска, например 100.64.0.0/10"
+	}
+	if p.Addr().Is4In6() {
+		return "IPv4 внутри IPv6 (::ffff:…) не поддерживается — запишите как IPv4"
+	}
+	if p.Masked() != p {
+		return fmt.Sprintf("в адресе есть биты вне маски — имелось в виду %s?", p.Masked())
+	}
+	if p.String() != v {
+		return fmt.Sprintf("запись не каноническая — напишите %s", p)
+	}
+	return ""
+}
+
+// domainProblem — имя хоста: строчные метки из латиницы, цифр и дефиса через
+// точку. Приводить к нижнему регистру или отрезать схему мы не беремся:
+// молчаливая правка входа — это правка, которой владелец не видел.
+func domainProblem(v string) string {
+	if _, err := netip.ParseAddr(v); err == nil {
+		return "это адрес, а не имя — выберите вид cidr и добавьте маску"
+	}
+	if strings.Contains(v, "/") {
+		return "укажите только имя хоста, без схемы и пути"
+	}
+	if strings.Contains(v, ":") {
+		return "укажите только имя хоста, без порта"
+	}
+	if strings.HasSuffix(v, ".") {
+		return "точка в конце имени не нужна"
+	}
+	for _, c := range v {
+		switch {
+		case c > 0x7f:
+			return "только латиница; кириллические имена — в punycode (xn--…)"
+		case c >= 'A' && c <= 'Z':
+			return "только строчные буквы"
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '.', c == '-':
+		default:
+			return "не похоже на имя хоста: бывают латиница, цифры, дефис и точка"
+		}
+	}
+	if len(v) > 253 {
+		return "имя длиннее 253 знаков"
+	}
+	for _, label := range strings.Split(v, ".") {
+		switch {
+		case label == "":
+			return "пустая метка между точками"
+		case len(label) > 63:
+			return "метка длиннее 63 знаков"
+		case label[0] == '-' || label[len(label)-1] == '-':
+			return "метка не может начинаться или кончаться дефисом"
+		}
+	}
+	return ""
+}
+
 // Fingerprint — отпечаток выбора для If-Match.
 //
 // Считается по канонической форме, а не по байтам файла: шапка может
@@ -383,6 +646,13 @@ func Fingerprint(c Config) string {
 	b.WriteString(string(c.Download) + "\n")
 	for _, s := range c.Sets {
 		b.WriteString(setToken(s) + "\n")
+	}
+	// Правила — после наборов и только при наличии: у выбора без правил
+	// вход байт-в-байт прежний, и отпечатки, посчитанные до их появления,
+	// остаются верными. Двоеточия и «>» в именах наборов не бывает, так что
+	// токен правила с токеном набора не спутать.
+	for _, r := range c.Rules {
+		b.WriteString(ruleToken(r) + "\n")
 	}
 	sum := sha256.Sum256([]byte(b.String()))
 	return "sha256:" + hex.EncodeToString(sum[:8])
@@ -407,6 +677,12 @@ func Validate(c Config, cat *geosite.Catalog, applied []Set) error {
 	}
 	if c.Policy == PolicyProfile && len(c.Sets) > 0 {
 		return fmt.Errorf("rulesets: политика %q не может идти с наборами (их %d)", PolicyProfile, len(c.Sets))
+	}
+	// Свои правила — раньше наборов и независимо от каталога: им каталог
+	// не нужен, и «каталог недоступен» не должен заслонять опечатку в
+	// домене — владелец пошёл бы чинить не то.
+	if err := ValidateRules(c); err != nil {
+		return err
 	}
 
 	seen := make(map[string]bool, len(c.Sets))
@@ -451,6 +727,42 @@ func Validate(c Config, cat *geosite.Catalog, applied []Set) error {
 	}
 	if len(unknown) > 0 {
 		return &UnknownSetsError{Names: unknown}
+	}
+	return nil
+}
+
+// ValidateRules — форма своих правил: политика, потолок, каждое правило,
+// дубли. Отказ — всегда *RuleError с номером строки.
+//
+// Экспортирована отдельно от Validate, потому что обработчик PUT зовёт её
+// ДО похода за каталогом: каталог стоит секунд и может быть недоступен, а
+// опечатка в домене ни от него, ни от интернета не зависит.
+func ValidateRules(c Config) error {
+	if len(c.Rules) == 0 {
+		return nil
+	}
+	if c.Policy == PolicyProfile {
+		return &RuleError{Index: 1, Rule: c.Rules[0],
+			Reason: fmt.Sprintf("политика %q не может идти со своими правилами", PolicyProfile)}
+	}
+	if len(c.Rules) > MaxRules {
+		return &RuleError{Index: MaxRules + 1, Rule: c.Rules[MaxRules],
+			Reason: fmt.Sprintf("своих правил больше %d", MaxRules)}
+	}
+	seen := make(map[string]int, len(c.Rules))
+	for i, r := range c.Rules {
+		if reason := ruleProblem(r); reason != "" {
+			return &RuleError{Index: i + 1, Rule: r, Reason: reason}
+		}
+		// Дубль — по виду и значению, действие не в счёт: второе такое
+		// правило недостижимо при любом действии, а при другом — ещё и
+		// спорит с первым.
+		key := string(r.Kind) + ":" + r.Value
+		if at, dup := seen[key]; dup {
+			return &RuleError{Index: i + 1, Rule: r,
+				Reason: fmt.Sprintf("значение %q указано дважды (первый раз — правило %d)", r.Value, at)}
+		}
+		seen[key] = i + 1
 	}
 	return nil
 }

@@ -461,6 +461,27 @@ button.row { cursor: pointer; }
 
 /* Пак — не состояние, а действие: пунктир отличает его от пилюль b4, где
    нажатое положение означает включённый сет. */
+/* Строка своего правила: вид и ✕ в первой строке, значение во всю ширину,
+   действие сегментом ниже. На телефоне четыре контрола в одну строку не
+   помещаются, а именно там вкладку и открывают. */
+.rule {
+	display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 8px; align-items: center;
+	padding: 10px; border-radius: var(--r); background: var(--row); border: 1px solid transparent;
+}
+.rule[data-bad] { border-color: var(--bad); }
+.rule select, .rule input {
+	min-height: 44px; padding: 0 12px; border-radius: var(--r);
+	background: var(--page); border: 1px solid #2a3138; color: var(--fg);
+	/* 16px обязателен: меньше — и iOS зумит страницу при фокусе. */
+	font: 16px var(--mono);
+}
+.rule select { font-family: var(--sans); }
+.rule input { grid-column: 1 / -1; width: 100%; min-width: 0; }
+.rule input:focus, .rule select:focus { border-color: var(--link); outline: none; }
+.rule input[aria-invalid="true"] { border-color: var(--bad); }
+.rule .seg, .rule .hint { grid-column: 1 / -1; }
+.rule .hint.bad { color: var(--bad-fg); }
+.rule .mini.danger { height: 44px; }
 .pills.dashed button { background: none; border: 1px dashed #2a3036; color: var(--fg-2); }
 .pills.dashed button[aria-pressed="true"] { background: var(--sel-bg); border-style: solid; border-color: var(--nikki); color: var(--fg); }
 

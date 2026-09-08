@@ -160,8 +160,11 @@ func (s *Server) rulesetsBody(ctx context.Context, cfg rulesets.Config, foreign 
 		// должны.
 		"tunnel_group": rulesets.TunnelGroup,
 		"sets":         sets,
-		"live":         haveLive,
-		"foreign":      foreign,
+		// Пустой массив, а не nil, по той же причине, что и sets. Поля
+		// правила — из тегов json типа rulesets.Rule: {kind, value, action}.
+		"rules":   append([]rulesets.Rule{}, cfg.Rules...),
+		"live":    haveLive,
+		"foreign": foreign,
 	}
 }
 
@@ -363,6 +366,13 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 		Policy   string   `json:"policy"`
 		Download string   `json:"download"`
 		Sets     []string `json:"sets"`
+		// Свои правила владельца. Необязательны: клиент прежней версии их
+		// не шлёт, и его запись значит «правил нет», а не «поле забыто».
+		Rules []struct {
+			Kind   string `json:"kind"`
+			Value  string `json:"value"`
+			Action string `json:"action"`
+		} `json:"rules"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", "Тело запроса не разбирается как JSON")
@@ -383,6 +393,22 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, name := range in.Sets {
 		want.Sets = append(want.Sets, rulesets.Set{Name: name})
+	}
+	for _, rule := range in.Rules {
+		want.Rules = append(want.Rules, rulesets.Rule{
+			Kind: rulesets.RuleKind(rule.Kind), Value: rule.Value, Action: rulesets.RuleAction(rule.Action),
+		})
+	}
+
+	// 1а. Свои правила — до всего остального, что стоит времени или сети.
+	//
+	// Опечатка в домене не зависит ни от каталога, ни от интернета; отбей мы
+	// её после похода за каталогом, владелец без аплинка получал бы
+	// «каталог недоступен» вместо «в правиле опечатка» и чинил бы не то.
+	// Номер строки в тексте: панель подсвечивает именно её.
+	if err := rulesets.ValidateRules(want); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_rule", ruleErrText(err))
+		return
 	}
 
 	// 2. Что лежит на диске сейчас.
@@ -461,6 +487,13 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 
 	// 5. Форма выбора и существование имён.
 	if err := rulesets.Validate(want, cat, cur.Sets); err != nil {
+		// Правила уже проверены шагом 1а, но Validate — единая проверка
+		// формы, и сюда её отказ по правилу тоже может прийти; код тот же.
+		var bad *rulesets.RuleError
+		if errors.As(err, &bad) {
+			writeErr(w, http.StatusBadRequest, "bad_rule", ruleErrText(err))
+			return
+		}
 		var unknown *rulesets.UnknownSetsError
 		if errors.As(err, &unknown) {
 			// Имена перечислены: панель подсвечивает именно эти чипы, а
@@ -536,6 +569,19 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"job": j})
+}
+
+// ruleErrText — текст отказа bad_rule для владельца.
+//
+// Номер строки, вид, значение и причина: панель подсвечивает строку по
+// номеру, а владелец по причине понимает, что править. Приставка пакета
+// срезается, как и у bad_request.
+func ruleErrText(err error) string {
+	var bad *rulesets.RuleError
+	if !errors.As(err, &bad) {
+		return "Своё правило не принято: " + strings.TrimPrefix(err.Error(), "rulesets: ")
+	}
+	return fmt.Sprintf("Правило %d (%s %s) не принято: %s", bad.Index, bad.Rule.Kind, bad.Rule.Value, bad.Reason)
 }
 
 // needsCatalog — есть ли среди присланных имён такие, которых нет ни в

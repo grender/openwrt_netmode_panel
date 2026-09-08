@@ -2,6 +2,7 @@ package rulesets
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -64,6 +65,21 @@ func TestRenderGolden(t *testing.T) {
 			}},
 			file: "mixin-special.yaml",
 		},
+		{
+			name: "свои правила всех видов перед наборами",
+			cfg: Config{Policy: PolicyOnly, Download: DownloadDirect,
+				Sets:  []Set{{Name: "youtube"}, {Name: "telegram", IP: true}},
+				Rules: testRules(),
+			},
+			file: "mixin-rules.yaml",
+		},
+		{
+			name: "своё правило без наборов при политике «кроме»",
+			cfg: Config{Policy: PolicyExcept, Download: DownloadTunnel,
+				Rules: []Rule{{Kind: RuleSuffix, Value: "netbird.io", Action: ActionDirect}},
+			},
+			file: "mixin-rules-nosets.yaml",
+		},
 	}
 
 	for _, tc := range cases {
@@ -88,8 +104,11 @@ func TestRenderGolden(t *testing.T) {
 // по последствиям.
 func TestRenderKeepsPrivateBeforeMatch(t *testing.T) {
 	for _, policy := range []Policy{PolicyOnly, PolicyExcept} {
+		// Свои правила здесь тоже есть: они добавляются в ту же рубрику, и
+		// проверка обязана доказать, что хвост от них не сдвинулся.
 		lines := strings.Split(strings.TrimRight(string(Render(Config{
 			Policy: policy, Download: DownloadDirect, Sets: []Set{{Name: "youtube"}},
+			Rules: []Rule{{Kind: RuleCIDR, Value: "100.64.0.0/10", Action: ActionDirect}},
 		})), "\n"), "\n")
 
 		last, prev := lines[len(lines)-1], lines[len(lines)-2]
@@ -121,6 +140,53 @@ func TestRenderEmptySetsHasNoProviders(t *testing.T) {
 	}
 }
 
+// testRules — по одному правилу каждого вида, включая IPv6.
+func testRules() []Rule {
+	return []Rule{
+		{Kind: RuleSuffix, Value: "worldsimseries.com", Action: ActionTunnel},
+		{Kind: RuleDomain, Value: "api.netbird.io", Action: ActionDirect},
+		{Kind: RuleCIDR, Value: "100.64.0.0/10", Action: ActionDirect},
+		{Kind: RuleCIDR, Value: "fd00::/8", Action: ActionDirect},
+	}
+}
+
+// TestRenderRulesPrecedeSets — свои правила стоят раньше первого RULE-SET, и
+// группа у них берётся из действия, а не из политики.
+//
+// Смысл своих правил — воля владельца поверх набора: «этот домен напрямую»
+// должно побеждать набор, в котором домен есть. Стой они после наборов, набор
+// забирал бы соединение первым, и правило было бы мёртвым — ровно та беда,
+// из-за которой они появились (правила профиля за нашим MATCH).
+func TestRenderRulesPrecedeSets(t *testing.T) {
+	for _, policy := range []Policy{PolicyOnly, PolicyExcept} {
+		lines := strings.Split(strings.TrimRight(string(Render(Config{
+			Policy: policy, Download: DownloadDirect, Sets: []Set{{Name: "youtube"}},
+			Rules: []Rule{
+				{Kind: RuleSuffix, Value: "worldsimseries.com", Action: ActionTunnel},
+				{Kind: RuleDomain, Value: "api.netbird.io", Action: ActionDirect},
+			},
+		})), "\n"), "\n")
+
+		firstSet, lastCustom := -1, -1
+		for i, ln := range lines {
+			switch {
+			case strings.HasPrefix(ln, "  - 'RULE-SET,") && firstSet < 0:
+				firstSet = i
+			case strings.HasPrefix(ln, "  - 'DOMAIN"):
+				lastCustom = i
+			}
+		}
+		if firstSet < 0 || lastCustom < 0 || lastCustom > firstSet {
+			t.Errorf("политика %s: своё правило (строка %d) не раньше первого набора (строка %d):\n%s",
+				policy, lastCustom, firstSet, strings.Join(lines, "\n"))
+		}
+		want := "  - 'DOMAIN-SUFFIX,worldsimseries.com," + TunnelGroup + "'"
+		if !strings.Contains(strings.Join(lines, "\n"), want) {
+			t.Errorf("политика %s: нет строки %q — группа взята из политики, а не из действия", policy, want)
+		}
+	}
+}
+
 // TestParseRoundTrip — Parse(Render(c)) возвращает ровно c.
 //
 // Это и есть смысл всей затеи: второго хранилища выбора нет, состояние
@@ -142,6 +208,10 @@ func TestParseRoundTrip(t *testing.T) {
 			{Name: "netflix@ads"}, {Name: "category-ai-!cn", IP: true},
 		}}},
 		{"ничего не выбрано", Config{Policy: PolicyExcept, Download: DownloadTunnel}},
+		{"свои правила с наборами", Config{Policy: PolicyOnly, Download: DownloadDirect,
+			Sets: []Set{{Name: "youtube"}, {Name: "telegram", IP: true}}, Rules: testRules()}},
+		{"своё правило без наборов", Config{Policy: PolicyExcept, Download: DownloadTunnel,
+			Rules: []Rule{{Kind: RuleSuffix, Value: "netbird.io", Action: ActionDirect}}}},
 	}
 
 	for _, tc := range cases {
@@ -232,6 +302,25 @@ func TestParseCorrupt(t *testing.T) {
 		// следующем старте nikki.
 		{"имя с апострофом", []byte(head + stateMark + " policy=only download=direct sets=it's\n" +
 			"nikki-rules:\n" + ruleSiteLinePrefix + "it's,BYPASS'\n")},
+
+		// Свои правила: строка состояния и тело обязаны сходиться и здесь.
+		{"неизвестный вид правила", []byte(head + stateMark + " policy=only download=direct sets= rules=glob:x.com>tunnel\n" +
+			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,BYPASS'\n")},
+		{"неизвестное действие правила", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:x.com>reject\n" +
+			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,REJECT'\n")},
+		{"недопустимое значение правила", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:Bad.Com>tunnel\n" +
+			"nikki-rules:\n  - 'DOMAIN-SUFFIX,Bad.Com,BYPASS'\n")},
+		{"дубль правила", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:x.com>tunnel;suffix:x.com>direct\n" +
+			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,BYPASS'\n  - 'DOMAIN-SUFFIX,x.com,DIRECT'\n")},
+		{"токен правила без действия", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:x.com\n" +
+			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,BYPASS'\n")},
+		{"правило в состоянии есть, строки в теле нет", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:x.com>tunnel\n" +
+			"nikki-rules:\n  - 'GEOIP,PRIVATE,DIRECT,no-resolve'\n  - 'MATCH,DIRECT'\n")},
+		// Строка дописана руками: в состоянии её нет, и молча принять её
+		// значило бы потерять при следующей записи то, что владелец считает
+		// применённым.
+		{"строка в теле есть, правила в состоянии нет", []byte(head + stateMark + " policy=only download=direct sets=\n" +
+			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,BYPASS'\n  - 'GEOIP,PRIVATE,DIRECT,no-resolve'\n  - 'MATCH,DIRECT'\n")},
 	}
 
 	for _, tc := range cases {
@@ -260,6 +349,24 @@ func TestParseDownloadDefaultsToDirect(t *testing.T) {
 	}
 }
 
+// TestParseOldFileWithoutRulesHasNone — файл, записанный до появления своих
+// правил, читается как «правил нет», а не как повреждённый и не как «есть
+// пустое». nil, а не пустой срез: так Parse(Render(c)) сходится с c без правил.
+func TestParseOldFileWithoutRulesHasNone(t *testing.T) {
+	in := []byte("# netmoded: шапка\n# вторая строка\n" +
+		stateMark + " policy=only download=direct sets=youtube\n" +
+		"nikki-rules:\n  - 'RULE-SET,nm-geosite-youtube,BYPASS'\n" +
+		"  - 'GEOIP,PRIVATE,DIRECT,no-resolve'\n  - 'MATCH,DIRECT'\n")
+
+	cfg, _, err := Parse(in)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Rules != nil {
+		t.Errorf("правила %+v, ожидался nil", cfg.Rules)
+	}
+}
+
 // TestFingerprintSensitive — отпечаток различает всё, из-за чего файл надо
 // переписать, и совпадает у одинакового выбора.
 //
@@ -278,7 +385,15 @@ func TestFingerprintSensitive(t *testing.T) {
 	if !strings.HasPrefix(Fingerprint(base), "sha256:") {
 		t.Errorf("отпечаток %q без приставки sha256:", Fingerprint(base))
 	}
+	// Литерал посчитан ДО появления своих правил. Выбор без правил обязан
+	// давать тот же отпечаток, что раньше: иначе после обновления демона
+	// первый же PUT из открытой вкладки отбивался бы как stale_rulesets, а
+	// пример в openapi и nikki-rulesets-only.json стал бы враньём.
+	if got := Fingerprint(base); got != "sha256:467b08a81b06cf99" {
+		t.Errorf("отпечаток выбора без правил %s, до своих правил был sha256:467b08a81b06cf99", got)
+	}
 
+	rule := Rule{Kind: RuleSuffix, Value: "worldsimseries.com", Action: ActionTunnel}
 	others := []struct {
 		name string
 		cfg  Config
@@ -294,11 +409,31 @@ func TestFingerprintSensitive(t *testing.T) {
 		{"набор убран", Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
 			{Name: "youtube"},
 		}}},
+		{"добавлено своё правило", Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: base.Sets,
+			Rules: []Rule{rule}}},
 	}
 	for _, tc := range others {
 		if Fingerprint(tc.cfg) == Fingerprint(base) {
 			t.Errorf("%s: отпечаток не изменился", tc.name)
 		}
+	}
+
+	// Среди правил различаются действие и порядок: «домен напрямую» и
+	// «домен в туннель» — разные выборы, а порядок — это кто побеждает.
+	withRule := Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: base.Sets, Rules: []Rule{
+		rule, {Kind: RuleCIDR, Value: "100.64.0.0/10", Action: ActionDirect},
+	}}
+	flipped := Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: base.Sets, Rules: []Rule{
+		{Kind: RuleSuffix, Value: "worldsimseries.com", Action: ActionDirect}, withRule.Rules[1],
+	}}
+	swapped := Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: base.Sets, Rules: []Rule{
+		withRule.Rules[1], withRule.Rules[0],
+	}}
+	if Fingerprint(withRule) == Fingerprint(flipped) {
+		t.Error("смена действия правила не изменила отпечаток")
+	}
+	if Fingerprint(withRule) == Fingerprint(swapped) {
+		t.Error("перестановка правил не изменила отпечаток")
 	}
 }
 
@@ -394,6 +529,126 @@ func TestValidate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestValidateRules — что принимается и что отбивается среди своих правил.
+//
+// Отказ обязан быть *RuleError с номером строки (с единицы) и значением: панель
+// подсвечивает именно эту строку, а владелец читает, что с ней не так. Правила
+// проверяются раньше каталога и не зависят от него: домен и подсеть каталогу
+// сверять не с чем.
+func TestValidateRules(t *testing.T) {
+	ok := func(k RuleKind, v string, a RuleAction) Config {
+		return Config{Policy: PolicyOnly, Download: DownloadDirect, Rules: []Rule{{Kind: k, Value: v, Action: a}}}
+	}
+
+	accept := []struct {
+		name string
+		cfg  Config
+	}{
+		{"домен с поддоменами", ok(RuleSuffix, "worldsimseries.com", ActionTunnel)},
+		{"точный хост", ok(RuleDomain, "api.netbird.io", ActionDirect)},
+		{"подсеть IPv4", ok(RuleCIDR, "100.64.0.0/10", ActionDirect)},
+		{"подсеть IPv6", ok(RuleCIDR, "fd00::/8", ActionDirect)},
+		{"один адрес как подсеть", ok(RuleCIDR, "10.0.0.1/32", ActionTunnel)},
+		{"домен из одной метки", ok(RuleSuffix, "lan", ActionDirect)},
+		{"punycode", ok(RuleSuffix, "xn--e1afmkfd.xn--p1ai", ActionTunnel)},
+		{"дефис внутри метки и цифры", ok(RuleSuffix, "my-site1.co.uk", ActionTunnel)},
+		{"правила при политике «кроме» без наборов", Config{Policy: PolicyExcept, Download: DownloadTunnel,
+			Rules: []Rule{{Kind: RuleSuffix, Value: "netbird.io", Action: ActionDirect}}}},
+		{"правила без каталога", ok(RuleSuffix, "example.com", ActionTunnel)},
+	}
+	for _, tc := range accept {
+		t.Run("принято: "+tc.name, func(t *testing.T) {
+			// cat=nil: правилам каталог не нужен, и ErrNoCatalog их не касается.
+			if err := Validate(tc.cfg, nil, nil); err != nil {
+				t.Fatalf("Validate: %v, ожидалось разрешение", err)
+			}
+		})
+	}
+
+	many := make([]Rule, MaxRules+1)
+	for i := range many {
+		many[i] = Rule{Kind: RuleCIDR, Value: fmt.Sprintf("10.%d.0.0/16", i), Action: ActionDirect}
+	}
+
+	reject := []struct {
+		name   string
+		cfg    Config
+		index  int
+		wantIn []string
+	}{
+		{"пустое значение", ok(RuleSuffix, "", ActionTunnel), 1, nil},
+		{"неизвестный вид", ok("glob", "x.com", ActionTunnel), 1, []string{"glob"}},
+		{"неизвестное действие", ok(RuleSuffix, "x.com", "reject"), 1, []string{"reject"}},
+		{"из профиля с правилами", Config{Policy: PolicyProfile, Download: DownloadDirect,
+			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel}}}, 1, []string{"profile"}},
+		{"больше потолка", Config{Policy: PolicyOnly, Download: DownloadDirect, Rules: many}, MaxRules + 1, []string{"64"}},
+		{"дубль вида и значения при разных действиях", Config{Policy: PolicyOnly, Download: DownloadDirect, Rules: []Rule{
+			{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel},
+			{Kind: RuleCIDR, Value: "10.0.0.0/8", Action: ActionDirect},
+			{Kind: RuleSuffix, Value: "x.com", Action: ActionDirect},
+		}}, 3, []string{"x.com", "дважды"}},
+		{"схема в домене", ok(RuleSuffix, "https://x.com", ActionTunnel), 1, []string{"https://x.com"}},
+		{"путь в домене", ok(RuleSuffix, "x.com/path", ActionTunnel), 1, nil},
+		{"порт в домене", ok(RuleDomain, "x.com:443", ActionTunnel), 1, nil},
+		{"точка в конце", ok(RuleSuffix, "x.com.", ActionTunnel), 1, nil},
+		{"звёздочка в начале", ok(RuleSuffix, "*.x.com", ActionTunnel), 1, nil},
+		{"верхний регистр", ok(RuleSuffix, "Example.com", ActionTunnel), 1, []string{"Example.com"}},
+		{"пробел внутри", ok(RuleSuffix, "x .com", ActionTunnel), 1, nil},
+		{"подчёркивание", ok(RuleSuffix, "my_site.com", ActionTunnel), 1, nil},
+		{"не-ASCII", ok(RuleSuffix, "пример.рф", ActionTunnel), 1, []string{"punycode"}},
+		{"метка начинается с дефиса", ok(RuleSuffix, "-x.com", ActionTunnel), 1, nil},
+		{"метка кончается дефисом", ok(RuleSuffix, "x-.com", ActionTunnel), 1, nil},
+		{"пустая метка", ok(RuleSuffix, "x..com", ActionTunnel), 1, nil},
+		{"метка длиннее 63", ok(RuleSuffix, strings.Repeat("a", 64)+".com", ActionTunnel), 1, nil},
+		{"имя длиннее 253", ok(RuleSuffix, strings.Repeat("abcdefghi.", 26)+"com", ActionTunnel), 1, nil},
+		{"адрес под видом домена", ok(RuleSuffix, "1.2.3.4", ActionTunnel), 1, []string{"cidr"}},
+		{"адрес под видом точного хоста", ok(RuleDomain, "fd00::1", ActionTunnel), 1, []string{"cidr"}},
+		{"подсеть без маски", ok(RuleCIDR, "10.0.0.1", ActionDirect), 1, []string{"/"}},
+		{"подсеть с битами хоста", ok(RuleCIDR, "100.64.1.0/10", ActionDirect), 1, []string{"100.64.0.0/10"}},
+		{"подсеть не канонична", ok(RuleCIDR, "001.2.3.0/24", ActionDirect), 1, nil},
+		{"IPv6 в верхнем регистре", ok(RuleCIDR, "FD00::/8", ActionDirect), 1, nil},
+		{"IPv4 внутри IPv6", ok(RuleCIDR, "::ffff:1.2.3.0/120", ActionDirect), 1, nil},
+		{"домен под видом подсети", ok(RuleCIDR, "x.com", ActionDirect), 1, []string{"x.com"}},
+	}
+	for _, tc := range reject {
+		t.Run("отбито: "+tc.name, func(t *testing.T) {
+			err := Validate(tc.cfg, nil, nil)
+			if err == nil {
+				t.Fatal("Validate разрешил, ожидался отказ")
+			}
+			var re *RuleError
+			if !errors.As(err, &re) {
+				t.Fatalf("ошибка %v не *RuleError", err)
+			}
+			if re.Index != tc.index {
+				t.Errorf("номер строки %d, ожидался %d", re.Index, tc.index)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("%d", tc.index)) {
+				t.Errorf("в тексте %q нет номера строки", err.Error())
+			}
+			for _, s := range tc.wantIn {
+				if !strings.Contains(err.Error(), s) {
+					t.Errorf("в тексте %q нет %q", err.Error(), s)
+				}
+			}
+		})
+	}
+}
+
+// TestValidateRulesBeforeCatalog — плохое правило отбивается даже тогда, когда
+// каталога нет и наборы новые: иначе владелец получал бы «каталог недоступен»
+// вместо «в правиле опечатка», и чинил бы не то.
+func TestValidateRulesBeforeCatalog(t *testing.T) {
+	err := Validate(Config{Policy: PolicyOnly, Download: DownloadDirect,
+		Sets:  []Set{{Name: "youtube"}},
+		Rules: []Rule{{Kind: RuleSuffix, Value: "Bad.Com", Action: ActionTunnel}},
+	}, nil, nil)
+	var re *RuleError
+	if !errors.As(err, &re) {
+		t.Fatalf("ошибка %v не *RuleError — правило заслонил каталог", err)
 	}
 }
 

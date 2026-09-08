@@ -14,7 +14,7 @@ import type {
 } from '../api/types';
 import type { Lang, T } from '../i18n';
 import { Meter, Skel, Spin } from './bits';
-import { dirtyCount, onLabel, Rulesets } from './Rulesets';
+import { dirtyCount, draftOf, onLabel, Rulesets } from './Rulesets';
 
 export interface EngineProps {
 	mode: Mode | 'unknown';
@@ -167,13 +167,12 @@ export function engineSummary(
 	// иначе владелец, оставивший вкладку наборов, читает в заголовке про
 	// узлы и разворачивает раздел, чтобы узнать про непринятые правки.
 	if (mode === 'nikki' && tab === 'rules') {
-		const eff = draft ?? {
-			policy: rulesets?.policy ?? 'profile',
-			download: rulesets?.download ?? 'direct',
-			sets: (rulesets?.sets ?? []).map((s) => s.name),
-		};
+		// Черновик из применённого — тот же draftOf, что у вкладки: второй
+		// экземпляр формы здесь разошёлся бы с ней от первого нового поля.
+		const eff = draft ?? draftOf(rulesets);
 		if (eff.policy === 'profile') return t('rules.sum.profile');
-		const base = onLabel(eff, t, lang);
+		let base = onLabel(eff, t, lang);
+		if (eff.rules.length > 0) base += ` · ${t('rules.sum.custom', { n: eff.rules.length })}`;
 		return dirtyCount(rulesets, draft) > 0 ? `${base} · ${t('rules.sum.dirty')}` : base;
 	}
 	if (mode === 'nikki') {

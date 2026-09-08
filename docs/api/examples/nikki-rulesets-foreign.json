@@ -4,6 +4,7 @@
   "foreign": true,
   "live": true,
   "policy": "profile",
+  "rules": [],
   "sets": [],
   "tunnel_group": "BYPASS"
 }

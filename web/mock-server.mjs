@@ -165,6 +165,7 @@ const SCENARIOS = {
 	'rulesets-foreign': 'status-single.json',
 	'rulesets-down': 'status-single.json',
 	'rulesets-nocatalog': 'status-single.json',
+	'rulesets-custom': 'status-single.json',
 };
 
 // Какой файл списка сетей отдаётся в сценарии. Умолчание — wifi-networks.json.
@@ -203,7 +204,34 @@ const RULESETS = {
 	'rulesets-foreign': 'nikki-rulesets-foreign.json',
 	'rulesets-down': 'nikki-rulesets-only.json',
 	'rulesets-nocatalog': 'nikki-rulesets-only.json',
+	// Свои правила владельца рядом с набором: домен в туннель и подсеть
+	// напрямую — по одному на каждый вид отказа демона, который панель
+	// обязана предупреждать сама (ruleProblem).
+	'rulesets-custom': 'nikki-rulesets-rules.json',
 };
+
+// Зеркало серверной проверки своих правил (rulesets.ValidateRules) в той
+// мере, в какой автор панели обязан узнать про отказ здесь, а не на
+// роутере: вид, действие, пустота, дубль, потолок, адрес без маски. Текст
+// с номером строки — тот же формат, что у демона (ruleErrText).
+function badRule(rules) {
+	if (!Array.isArray(rules)) return 'Поле rules обязано быть списком правил';
+	if (rules.length > 64) return `Правило 65 (${rules[64].kind} ${rules[64].value}) не принято: своих правил больше 64`;
+	const seen = new Set();
+	for (let i = 0; i < rules.length; i++) {
+		const r = rules[i] || {};
+		const at = `Правило ${i + 1} (${r.kind} ${r.value}) не принято: `;
+		if (!['suffix', 'domain', 'cidr'].includes(r.kind)) return at + `неизвестный вид "${r.kind}" — бывают suffix, domain, cidr`;
+		if (!['tunnel', 'direct'].includes(r.action)) return at + `неизвестное действие "${r.action}" — бывают tunnel, direct`;
+		if (typeof r.value !== 'string' || r.value === '') return at + 'пустое значение';
+		if (r.kind === 'cidr' && !r.value.includes('/')) return at + 'подсеть записывается с маской, например 10.0.0.0/8 или 10.0.0.1/32';
+		if (r.kind !== 'cidr' && !/^[a-z0-9.-]+$/.test(r.value)) return at + 'не похоже на имя хоста: бывают латиница, цифры, дефис и точка';
+		const key = r.kind + ':' + r.value;
+		if (seen.has(key)) return at + `значение "${r.value}" указано дважды`;
+		seen.add(key);
+	}
+	return '';
+}
 
 // SLOW_START_SEC — сколько секунд служба режима не слушает свой порт ПОСЛЕ
 // того, как демон уже записал mode.
@@ -1227,6 +1255,15 @@ async function handleAPI(req, res, u) {
 		if (!Array.isArray(body.sets)) {
 			return fail(res, 400, 'bad_request', 'Поле sets обязано быть списком имён');
 		}
+		// Свои правила — до каталога, как у демона (шаг 1а): опечатка в
+		// домене от каталога не зависит.
+		const rules = body.rules || [];
+		if (body.policy === 'profile' && rules.length > 0) {
+			return fail(res, 400, 'bad_rule',
+				`Правило 1 (${rules[0].kind} ${rules[0].value}) не принято: политика "profile" не может идти со своими правилами`);
+		}
+		const why = badRule(rules);
+		if (why) return fail(res, 400, 'bad_rule', why);
 		const names = body.sets;
 		const cat = await readJSON('nikki-rulesets-catalog.json');
 		const catNames = new Set(cat.names);
@@ -1277,6 +1314,9 @@ async function handleAPI(req, res, u) {
 				download: body.policy === 'profile' ? 'direct' : (body.download || 'direct'),
 				tunnel_group: 'BYPASS',
 				sets: body.policy === 'profile' ? [] : sets,
+				// Как прислали, в том же порядке: демон отдаёт правила из
+				// файла, а файл пишется из тела.
+				rules: body.policy === 'profile' ? [] : rules.map((r) => ({ kind: r.kind, value: r.value, action: r.action })),
 				live: true,
 				foreign: false,
 			};

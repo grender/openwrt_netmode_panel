@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks';
-import type { RulesDraft, RulesetsCatalog, RulesetsResponse } from '../api/types';
+import type { CustomRule, RuleAction, RuleKind, RulesDraft, RulesetsCatalog, RulesetsResponse } from '../api/types';
 import type { Key, Lang, T } from '../i18n';
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
@@ -10,6 +10,12 @@ import { Confirm, Skel, Spin } from './bits';
  * список целиком не читают: его либо сужают поиском, либо берут паком.
  */
 const ROWS = 8;
+
+/** Потолок своих правил — тот же, что у демона (rulesets.MaxRules). */
+export const MAX_RULES = 64;
+
+const KINDS: RuleKind[] = ['suffix', 'domain', 'cidr'];
+const ACTIONS: RuleAction[] = ['tunnel', 'direct'];
 
 export interface RulesetsProps {
 	/** Что применено. Три значения побочного списка, и они разные. */
@@ -40,8 +46,14 @@ export function draftOf(a: Side<RulesetsResponse>): RulesDraft {
 		policy: a?.policy ?? 'profile',
 		download: a?.download ?? 'direct',
 		sets: (a?.sets ?? []).map((s) => s.name),
+		// Копии, а не те же объекты: строки правил правятся на месте, и
+		// править применённое значило бы менять то, с чем сверяется черновик.
+		rules: (a?.rules ?? []).map((r) => ({ ...r })),
 	};
 }
+
+/** Правило одной строкой — для сверки черновика с применённым. */
+const ruleTok = (r: CustomRule) => `${r.kind}:${r.value}>${r.action}`;
 
 /**
  * Сколько правок ждёт применения. Ноль значит «применять нечего» — и это
@@ -61,7 +73,83 @@ export function dirtyCount(a: Side<RulesetsResponse>, d: RulesDraft | null): num
 	const now = new Set(d.sets);
 	for (const s of now) if (!was.has(s)) n++;
 	for (const s of was) if (!now.has(s)) n++;
+
+	// Свои правила: добавленные и убранные — по одному, и ещё одно за
+	// перестановку при том же составе. У наборов порядок не считается, у
+	// правил считается: у mihomo побеждает первое совпадение, и переставить
+	// два правила значит поменять, куда идёт домен.
+	const wasR = base.rules.map(ruleTok);
+	const nowR = d.rules.map(ruleTok);
+	const wasSet = new Set(wasR);
+	const nowSet = new Set(nowR);
+	let diff = 0;
+	for (const r of nowSet) if (!wasSet.has(r)) diff++;
+	for (const r of wasSet) if (!nowSet.has(r)) diff++;
+	n += diff;
+	if (diff === 0 && wasR.join('\n') !== nowR.join('\n')) n++;
 	return n;
+}
+
+/**
+ * Что не так со строкой своего правила; null — всё в порядке.
+ *
+ * Зеркало серверной проверки (rulesets.ValidateRules), а не её замена:
+ * демон отобьёт всё то же кодом bad_rule, но с ним владелец узнал бы об
+ * опечатке только после нажатия «Применить», а не пока печатает. Верхний
+ * регистр сюда не доезжает — поле приводит ввод к строчным на глазах.
+ */
+export function ruleProblem(r: CustomRule, all: CustomRule[], i: number): Key | null {
+	if (i >= MAX_RULES) return 'rules.custom.max';
+	const v = r.value;
+	if (v === '') return 'rules.custom.err.empty';
+	for (let j = 0; j < i; j++) {
+		const prev = all[j];
+		if (prev && prev.kind === r.kind && prev.value === v) return 'rules.custom.err.dup';
+	}
+	if (r.kind === 'cidr') return cidrProblem(v);
+	return domainProblem(v);
+}
+
+const V4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+const V6ISH = /^[0-9a-f:]+$/;
+
+function cidrProblem(v: string): Key | null {
+	const cut = v.indexOf('/');
+	if (cut < 0) return 'rules.custom.err.cidr';
+	const addr = v.slice(0, cut);
+	const bits = Number(v.slice(cut + 1));
+	const m = V4.exec(addr);
+	if (m) {
+		const [a = 0, b = 0, c = 0, d = 0] = m.slice(1).map(Number);
+		if ([a, b, c, d].some((o) => o > 255) || !Number.isInteger(bits) || bits < 0 || bits > 32) {
+			return 'rules.custom.err.cidr';
+		}
+		// Биты вне маски: адрес должен быть первым в подсети. Демон отвечает
+		// тем же и подсказывает исправленный, здесь достаточно назвать беду.
+		const n = ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;
+		const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+		if ((n & mask) >>> 0 !== n) return 'rules.custom.err.bits';
+		return null;
+	}
+	if (!V6ISH.test(addr) || !addr.includes(':') || !Number.isInteger(bits) || bits < 0 || bits > 128) {
+		return 'rules.custom.err.cidr';
+	}
+	// Каноничность IPv6 и его биты вне маски сверяет демон: считать
+	// 128-битную маску ради подсказки в поле — не та цена.
+	return null;
+}
+
+function domainProblem(v: string): Key | null {
+	if (V4.test(v) || (v.includes(':') && V6ISH.test(v))) return 'rules.custom.err.ip';
+	if (v.includes('/') || v.includes(':')) return 'rules.custom.err.scheme';
+	for (const c of v) if (c > '') return 'rules.custom.err.idn';
+	if (v.endsWith('.') || !/^[a-z0-9.-]+$/.test(v)) return 'rules.custom.err.domain';
+	for (const label of v.split('.')) {
+		if (label === '' || label.length > 63 || label.startsWith('-') || label.endsWith('-')) {
+			return 'rules.custom.err.domain';
+		}
+	}
+	return v.length > 253 ? 'rules.custom.err.domain' : null;
 }
 
 /**
@@ -112,6 +200,8 @@ export function Rulesets(p: RulesetsProps) {
 	const eff = p.draft ?? draftOf(applied);
 	const dirty = dirtyCount(applied, p.draft);
 	const busy = p.lock.on('rulesets');
+	const problems = eff.rules.map((r, i) => ruleProblem(r, eff.rules, i));
+	const invalid = problems.filter((x) => x !== null).length;
 
 	// Чужой файл замораживает вкладку целиком, а не одну кнопку: демон
 	// отобьёт запись кодом foreign_mixin, и черновик, который заведомо
@@ -138,6 +228,17 @@ export function Rulesets(p: RulesetsProps) {
 
 	const toggleSet = (name: string) =>
 		applySets(eff.sets.includes(name) ? eff.sets.filter((s) => s !== name) : [...eff.sets, name]);
+
+	// Правила при политике профиля — то же, что и наборы: первое своё
+	// правило означает «маршрут теперь решает панель».
+	const applyRules = (rules: CustomRule[]) =>
+		p.setDraft({
+			...eff,
+			policy: eff.policy === 'profile' && rules.length > 0 ? 'only' : eff.policy,
+			rules,
+		});
+	const patchRule = (i: number, patch: Partial<CustomRule>) =>
+		applyRules(eff.rules.map((r, j) => (j === i ? { ...r, ...patch } : r)));
 
 	const togglePack = (names: string[]) =>
 		// Пак, выбранный целиком, снимается целиком: иначе повторное нажатие
@@ -244,6 +345,86 @@ export function Rulesets(p: RulesetsProps) {
 				</>
 			)}
 
+			{/* Свои правила стоят между чипами и паками: это тоже «что в
+			    туннель», только словами владельца, а не именем набора. Блок
+			    виден и при профиле — добавить правило можно всегда, и это
+			    переключит политику, как и первый выбранный набор. */}
+			<div class="label">{t('rules.custom.label')}</div>
+			<p class="hint">{t('rules.custom.hint')}</p>
+			{eff.rules.length > 0 ? (
+				<div class="rows">
+					{eff.rules.map((r, i) => (
+						<div key={i} class="rule" data-bad={problems[i] ? '' : undefined}>
+							<select
+								aria-label={t('rules.custom.kind.label')}
+								value={r.kind}
+								disabled={off}
+								onChange={(e) => patchRule(i, { kind: (e.target as HTMLSelectElement).value as RuleKind })}
+							>
+								{KINDS.map((k) => (
+									<option key={k} value={k}>
+										{t(`rules.custom.kind.${k}` as Key)}
+									</option>
+								))}
+							</select>
+							<button
+								type="button"
+								class="mini danger"
+								disabled={off}
+								title={t('rules.custom.remove')}
+								aria-label={`${t('rules.custom.remove')}: ${r.value || i + 1}`}
+								onClick={() => applyRules(eff.rules.filter((_, j) => j !== i))}
+							>
+								✕
+							</button>
+							<input
+								value={r.value}
+								placeholder={t(`rules.custom.ph.${r.kind}` as Key)}
+								inputMode="url"
+								autocapitalize="off"
+								autocomplete="off"
+								spellcheck={false}
+								disabled={off}
+								aria-invalid={problems[i] ? true : undefined}
+								// К строчным — на глазах, а не молча в демоне: домен
+								// регистра не имеет, а отбивать «Example.com» после
+								// нажатия было бы придиркой к тому, чего владелец не видел.
+								onInput={(e) =>
+									patchRule(i, { value: (e.target as HTMLInputElement).value.trim().toLowerCase() })
+								}
+							/>
+							<div class="seg">
+								{ACTIONS.map((a) => (
+									<button
+										key={a}
+										type="button"
+										class="accent"
+										aria-pressed={r.action === a}
+										disabled={off}
+										onClick={() => patchRule(i, { action: a })}
+									>
+										{t(`rules.custom.action.${a}` as Key)}
+									</button>
+								))}
+							</div>
+							{problems[i] ? <p class="hint bad">{t(problems[i] as Key, { n: MAX_RULES })}</p> : null}
+						</div>
+					))}
+				</div>
+			) : null}
+			{eff.rules.length >= MAX_RULES ? (
+				<p class="hint">{t('rules.custom.max', { n: MAX_RULES })}</p>
+			) : (
+				<button
+					type="button"
+					class="linkbtn"
+					disabled={off}
+					onClick={() => applyRules([...eff.rules, { kind: 'suffix', value: '', action: 'tunnel' }])}
+				>
+					+ {t('rules.custom.add')}
+				</button>
+			)}
+
 			{catalog?.packs?.length ? (
 				<>
 					<div class="label">{t('rules.packs')}</div>
@@ -335,12 +516,14 @@ export function Rulesets(p: RulesetsProps) {
 			{dirty > 0 ? (
 				<div class="confirm" data-part="confirm" data-confirm-for="rulesets">
 					<b>{t('rules.dirty.title', { n: dirty })}</b>
-					<p>{t('rules.dirty.text')}</p>
+					<p>{invalid > 0 ? t('rules.dirty.invalid') : t('rules.dirty.text')}</p>
 					<div class="buttons">
 						<button
 							type="button"
 							class="go"
-							disabled={off}
+							// Строка с ошибкой гасит кнопку, а не ждёт отказа демона:
+							// тот ответит bad_rule и тем же, но уже после нажатия.
+							disabled={off || invalid > 0}
 							aria-busy={busy}
 							onClick={() => p.onApply(eff)}
 						>
@@ -386,7 +569,7 @@ export function Rulesets(p: RulesetsProps) {
 							cancel={t('wifi.cancel')}
 							onGo={() => {
 								setAsk(false);
-								p.onApply({ policy: 'profile', download: 'direct', sets: [] });
+								p.onApply({ policy: 'profile', download: 'direct', sets: [], rules: [] });
 							}}
 							onCancel={() => setAsk(false)}
 						/>

@@ -1,0 +1,35 @@
+# netmoded: файл пишет панель (раздел «Узлы Nikki» → «Что в туннель · наборы»).
+# Не правьте руками — при следующем применении он переписывается целиком.
+# netmoded-rulesets: policy=only download=direct sets=youtube,telegram+ip rules=suffix:worldsimseries.com>tunnel;domain:api.netbird.io>direct;cidr:100.64.0.0/10>direct;cidr:fd00::/8>direct
+rule-providers:
+  nm-geosite-youtube:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/youtube.mrs
+    path: ./rules/nm-geosite-youtube.mrs
+    interval: 86400
+  nm-geosite-telegram:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/telegram.mrs
+    path: ./rules/nm-geosite-telegram.mrs
+    interval: 86400
+  nm-geoip-telegram:
+    type: http
+    behavior: ipcidr
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/telegram.mrs
+    path: ./rules/nm-geoip-telegram.mrs
+    interval: 86400
+nikki-rules:
+  - 'DOMAIN-SUFFIX,worldsimseries.com,BYPASS'
+  - 'DOMAIN,api.netbird.io,DIRECT'
+  - 'IP-CIDR,100.64.0.0/10,DIRECT,no-resolve'
+  - 'IP-CIDR6,fd00::/8,DIRECT,no-resolve'
+  - 'RULE-SET,nm-geosite-youtube,BYPASS'
+  - 'RULE-SET,nm-geosite-telegram,BYPASS'
+  - 'RULE-SET,nm-geoip-telegram,BYPASS,no-resolve'
+  - 'GEOIP,PRIVATE,DIRECT,no-resolve'
+  - 'MATCH,DIRECT'

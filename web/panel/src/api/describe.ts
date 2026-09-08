@@ -53,6 +53,9 @@ const ERR_KEY: Record<string, Key> = {
 	// текст ключа ОБЩИЙ и отправляет обновить список, а не называет имя,
 	// которого у панели нет.
 	unknown_set: 'err.unknown_set',
+	// bad_rule доезжает сюда только если клиентское зеркало проверки
+	// (ruleProblem) отстало от демона: строка с ошибкой гасит «Применить».
+	bad_rule: 'err.bad_rule',
 	stale_rulesets: 'err.stale_rulesets',
 	foreign_mixin: 'err.foreign_mixin',
 	catalog_unavailable: 'err.catalog_unavailable',

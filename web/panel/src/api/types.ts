@@ -261,12 +261,28 @@ export interface RulesetSet {
 	updated_at: string | null;
 }
 
+export type RuleKind = 'suffix' | 'domain' | 'cidr';
+export type RuleAction = 'tunnel' | 'direct';
+
+/**
+ * Своё правило владельца: домен с поддоменами, точный хост или подсеть —
+ * в туннель или напрямую. В mixin.yaml стоит раньше наборов: у mihomo
+ * побеждает первое совпадение, и правило владельца перебивает набор.
+ */
+export interface CustomRule {
+	kind: RuleKind;
+	value: string;
+	action: RuleAction;
+}
+
 export interface RulesetsResponse {
 	fingerprint: string;
 	policy: RulesetPolicy;
 	download: RulesetDownload;
 	tunnel_group: string;
 	sets: RulesetSet[];
+	/** В порядке файла — он же порядок применения. */
+	rules: CustomRule[];
 	/** Отвечал ли движок: при false про загрузку наборов не известно ничего. */
 	live: boolean;
 	/** Файл mixin.yaml написан не панелью — применять отсюда нельзя. */
@@ -288,6 +304,7 @@ export interface RulesDraft {
 	policy: RulesetPolicy;
 	download: RulesetDownload;
 	sets: string[];
+	rules: CustomRule[];
 }
 
 export type EngineTab = 'nodes' | 'rules';

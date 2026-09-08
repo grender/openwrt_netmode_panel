@@ -4,6 +4,7 @@
   "foreign": false,
   "live": true,
   "policy": "only",
+  "rules": [],
   "sets": [
     {
       "ip": false,

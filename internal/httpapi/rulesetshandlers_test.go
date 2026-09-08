@@ -167,6 +167,11 @@ func TestRulesetsFreshInstallIsProfile(t *testing.T) {
 	if !ok || len(sets) != 0 {
 		t.Errorf("sets %#v, ожидался пустой массив", body["sets"])
 	}
+	// То же для своих правил.
+	rules, ok := body["rules"].([]any)
+	if !ok || len(rules) != 0 {
+		t.Errorf("rules %#v, ожидался пустой массив", body["rules"])
+	}
 }
 
 // TestRulesetsReportsEngineState — сверка выбора с движком.
@@ -750,6 +755,123 @@ func TestRulesetsPutAppliesFileFlagAndRestart(t *testing.T) {
 	}
 }
 
+// TestRulesetsPutWritesCustomRules — свои правила уезжают в файл в порядке
+// ввода и читаются обратно теми же полями.
+//
+// Порядок здесь — смысл, а не косметика: у mihomo побеждает первое
+// совпадение, и переставить два правила значит поменять, куда идёт домен.
+func TestRulesetsPutWritesCustomRules(t *testing.T) {
+	s, _ := newServer(t)
+	addBypass(t, s)
+	want := rulesets.Config{
+		Policy: rulesets.PolicyOnly, Download: rulesets.DownloadDirect,
+		Sets: []rulesets.Set{{Name: "youtube"}},
+		Rules: []rulesets.Rule{
+			{Kind: rulesets.RuleSuffix, Value: "worldsimseries.com", Action: rulesets.ActionTunnel},
+			{Kind: rulesets.RuleCIDR, Value: "100.64.0.0/10", Action: rulesets.ActionDirect},
+		},
+	}
+	nikkiFake(t, s).ruleProviders = loadedProviders(want.Sets...)
+
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"],"rules":[`+
+		`{"kind":"suffix","value":"worldsimseries.com","action":"tunnel"},`+
+		`{"kind":"cidr","value":"100.64.0.0/10","action":"direct"}]}`, rulesetsFP(t, s))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+	}
+	if state, msg := jobOutcome(t, s); state != job.Done {
+		t.Fatalf("джоб %s: %s", state, msg)
+	}
+
+	got, _ := mixinBytes(t, s)
+	if string(got) != string(rulesets.Render(want)) {
+		t.Errorf("файл не совпал с Render:\n--- на диске ---\n%s\n--- ожидалось ---\n%s",
+			got, rulesets.Render(want))
+	}
+
+	body := rulesetsGet(t, s)
+	rules, _ := body["rules"].([]any)
+	if len(rules) != 2 {
+		t.Fatalf("GET отдал правила %#v, ожидалось два", body["rules"])
+	}
+	first, _ := rules[0].(map[string]any)
+	if first["kind"] != "suffix" || first["value"] != "worldsimseries.com" || first["action"] != "tunnel" {
+		t.Errorf("первое правило %v, ожидалось suffix worldsimseries.com tunnel", first)
+	}
+	second, _ := rules[1].(map[string]any)
+	if second["kind"] != "cidr" || second["value"] != "100.64.0.0/10" || second["action"] != "direct" {
+		t.Errorf("второе правило %v, ожидалось cidr 100.64.0.0/10 direct", second)
+	}
+}
+
+// TestRulesetsPutRulesOnlyNoSets — правила без единого набора: применяется,
+// движок перезапускается один раз, ждать скачиваний нечего.
+//
+// Своим правилам нечего качать, и «ничего не загрузилось» здесь не отказ:
+// применённое видно сразу после перезапуска.
+func TestRulesetsPutRulesOnlyNoSets(t *testing.T) {
+	s, f := newServer(t)
+	addBypass(t, s)
+
+	rec := putRulesets(t, s, `{"policy":"except","sets":[],"rules":[`+
+		`{"kind":"suffix","value":"netbird.io","action":"direct"}]}`, rulesetsFP(t, s))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+	}
+	if state, msg := jobOutcome(t, s); state != job.Done {
+		t.Fatalf("джоб %s: %s", state, msg)
+	}
+	if n := callCount(f.Calls, "apply-mode nikki"); n != 1 {
+		t.Errorf("перезапусков движка %d, ожидался один\n%v", n, f.Calls)
+	}
+	got, _ := mixinBytes(t, s)
+	if !strings.Contains(string(got), "  - 'DOMAIN-SUFFIX,netbird.io,DIRECT'\n") {
+		t.Errorf("в файле нет своего правила:\n%s", got)
+	}
+}
+
+// TestRulesetsPutStaleWhenRulesChanged — отпечаток учитывает свои правила:
+// вкладка, не видевшая их, не должна их затереть.
+func TestRulesetsPutStaleWhenRulesChanged(t *testing.T) {
+	s, _ := newServer(t)
+	addBypass(t, s)
+	base := rulesets.Config{Policy: rulesets.PolicyOnly, Download: rulesets.DownloadDirect,
+		Sets: []rulesets.Set{{Name: "youtube"}}}
+	withRule := base
+	withRule.Rules = []rulesets.Rule{{Kind: rulesets.RuleSuffix, Value: "x.com", Action: rulesets.ActionTunnel}}
+	writeMixin(t, s, rulesets.Render(withRule))
+
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesets.Fingerprint(base))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("код %d, ожидался 409; тело %s", rec.Code, rec.Body.String())
+	}
+	var e apiError
+	_ = json.Unmarshal(rec.Body.Bytes(), &e)
+	if e.Code != "stale_rulesets" {
+		t.Errorf("код ошибки %q, ожидался stale_rulesets", e.Code)
+	}
+}
+
+// TestRulesetsPutWithoutRulesFieldMeansNone — старый клиент без поля rules
+// пишет файл без своих правил, и строка состояния прежней формы.
+func TestRulesetsPutWithoutRulesFieldMeansNone(t *testing.T) {
+	s, _ := newServer(t)
+	addBypass(t, s)
+	nikkiFake(t, s).ruleProviders = loadedProviders(rulesets.Set{Name: "youtube"})
+
+	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesetsFP(t, s))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
+	}
+	if state, msg := jobOutcome(t, s); state != job.Done {
+		t.Fatalf("джоб %s: %s", state, msg)
+	}
+	got, _ := mixinBytes(t, s)
+	if strings.Contains(string(got), " rules=") {
+		t.Errorf("в строке состояния появилось поле rules= без правил:\n%s", got)
+	}
+}
+
 // TestRulesetsPutInOtherModeSkipsRestart — режим не nikki: пишем, но не
 // перезапускаем.
 //
@@ -883,6 +1005,60 @@ func TestRulesetsPutRefusesBeforeAnyWrite(t *testing.T) {
 		body:   `{"policy":"profile","sets":["youtube"]}`,
 		status: http.StatusBadRequest,
 		code:   "bad_request",
+	}, {
+		// Свои правила: код bad_rule с номером строки и значением — панель
+		// подсвечивает строку, владелец читает, что с ней не так.
+		name:   "своё правило с опечаткой в домене",
+		body:   `{"policy":"only","sets":[],"rules":[{"kind":"suffix","value":"x.com","action":"tunnel"},{"kind":"suffix","value":"Bad.Com","action":"tunnel"}]}`,
+		status: http.StatusBadRequest,
+		code:   "bad_rule",
+		text:   []string{"2", "Bad.Com"},
+	}, {
+		name:   "адрес под видом домена",
+		body:   `{"policy":"only","sets":[],"rules":[{"kind":"domain","value":"1.2.3.4","action":"tunnel"}]}`,
+		status: http.StatusBadRequest,
+		code:   "bad_rule",
+		text:   []string{"cidr"},
+	}, {
+		name:   "подсеть с битами хоста",
+		body:   `{"policy":"only","sets":[],"rules":[{"kind":"cidr","value":"100.64.1.0/10","action":"direct"}]}`,
+		status: http.StatusBadRequest,
+		code:   "bad_rule",
+		text:   []string{"100.64.0.0/10"},
+	}, {
+		name:   "дубль своего правила",
+		body:   `{"policy":"only","sets":[],"rules":[{"kind":"suffix","value":"x.com","action":"tunnel"},{"kind":"suffix","value":"x.com","action":"direct"}]}`,
+		status: http.StatusBadRequest,
+		code:   "bad_rule",
+		text:   []string{"x.com", "дважды"},
+	}, {
+		name:   "неизвестный вид правила",
+		body:   `{"policy":"only","sets":[],"rules":[{"kind":"glob","value":"x.com","action":"tunnel"}]}`,
+		status: http.StatusBadRequest,
+		code:   "bad_rule",
+		text:   []string{"glob"},
+	}, {
+		name:   "неизвестное действие правила",
+		body:   `{"policy":"only","sets":[],"rules":[{"kind":"suffix","value":"x.com","action":"reject"}]}`,
+		status: http.StatusBadRequest,
+		code:   "bad_rule",
+		text:   []string{"reject"},
+	}, {
+		name:   "profile со своими правилами",
+		body:   `{"policy":"profile","sets":[],"rules":[{"kind":"suffix","value":"x.com","action":"tunnel"}]}`,
+		status: http.StatusBadRequest,
+		code:   "bad_rule",
+	}, {
+		// Опечатка в правиле отбивается раньше похода за каталогом: иначе
+		// без интернета владелец получал бы «каталог недоступен» вместо
+		// «в правиле опечатка» и чинил бы не то.
+		name: "плохое правило при недоступном каталоге и новом имени",
+		setup: func(t *testing.T, s *Server, f *executor.Fake) {
+			s.catalog = &geosite.Client{BaseURL: newCatalogStand(t, http.StatusInternalServerError).URL, Logf: s.logf}
+		},
+		body:   `{"policy":"only","sets":["openai"],"rules":[{"kind":"suffix","value":"Bad.Com","action":"tunnel"}]}`,
+		status: http.StatusBadRequest,
+		code:   "bad_rule",
 	}, {
 		name: "чужой стейджинг nikki",
 		setup: func(t *testing.T, s *Server, f *executor.Fake) {
