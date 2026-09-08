@@ -1,0 +1,133 @@
+# 2026-09-08, grenderRouter. Проброс LAN выключен, ПК «neural» в LAN-порту,
+# режим обхода nikki. Секрет Clash API взят из /etc/nikki/run/config.yaml
+# и в вывод не попадает.
+
+## uci show nikki.mixin | grep -i sniff   (до)
+nikki.mixin.sniffer_force_domain_name='0'
+nikki.mixin.sniffer_ignore_domain_name='0'
+nikki.mixin.sniffer_sniff='0'
+
+## grep -c "^sniffer" /etc/nikki/run/config.yaml   (до)
+0
+
+## GET /connections, свёртка «источник dnsMode цепочка правило»   (до)
+    115 192.168.9.208 normal DIRECT Match
+     43 192.168.9.238 fake-ip DIRECT Match
+     31 192.168.9.208 fake-ip DIRECT Match
+     12 192.168.9.238 normal DIRECT Match
+     11 192.168.9.238 fake-ip 🇳🇱⚡Нидерланды RuleSet
+      3 192.168.9.238 normal 🇳🇱⚡Нидерланды RuleSet
+      3 192.168.9.104 fake-ip 🇳🇱⚡Нидерланды RuleSet
+      2 192.168.9.208 fake-ip 🇳🇱⚡Нидерланды RuleSet
+      1 192.168.9.238 redir-host DIRECT Match
+
+## GET /connections, характерные записи 192.168.9.208   (до, metadata усечены)
+{"network":"tcp","type":"TProxy","sourceIP":"192.168.9.208","destinationIP":"","destinationPort":"443","inboundName":"DEFAULT-TPROXY","host":"mozilla.cloudflare-dns.com","dnsMode":"fake-ip","remoteDestination":"162.159.61.4","sniffHost":""} "upload":72356,"download":209951,"chains":["DIRECT"],"rule":"Match"
+{"network":"tcp","type":"TProxy","sourceIP":"192.168.9.208","destinationIP":"142.251.151.4","destinationGeoIP":["google","us"],"destinationPort":"443","host":"","dnsMode":"normal","sniffHost":""} "upload":1885,"download":0,"chains":["DIRECT"],"rule":"Match"
+{"network":"tcp","type":"TProxy","sourceIP":"192.168.9.208","destinationIP":"151.101.129.91","destinationGeoIP":["fastly","us"],"destinationPort":"443","host":"","dnsMode":"normal","sniffHost":""} "upload":225,"download":0,"chains":["DIRECT"],"rule":"Match"
+{"network":"tcp","type":"TProxy","sourceIP":"192.168.9.208","destinationIP":"","destinationPort":"443","host":"client.wns.windows.com","dnsMode":"fake-ip","remoteDestination":"4.207.247.138","sniffHost":""} "upload":3279,"download":7853,"chains":["DIRECT"],"rule":"Match"
+
+## GET /version
+{"meta":true,"version":"v1.19.27"}
+
+## rules: в /etc/nikki/run/config.yaml (голова)
+rules:
+  - 'RULE-SET,nm-geosite-anthropic,BYPASS'
+  - 'RULE-SET,nm-geosite-facebook,BYPASS'
+  - 'RULE-SET,nm-geoip-facebook,BYPASS,no-resolve'
+  - 'RULE-SET,nm-geosite-youtube,BYPASS'
+  - 'RULE-SET,nm-geosite-whatsapp,BYPASS'
+  - 'RULE-SET,nm-geosite-instagram,BYPASS'
+  - 'RULE-SET,nm-geosite-nintendo,BYPASS'
+  - 'RULE-SET,nm-geosite-telegram,BYPASS'
+  - 'RULE-SET,nm-geoip-telegram,BYPASS,no-resolve'
+  - 'RULE-SET,nm-geosite-twitter,BYPASS'
+  - 'RULE-SET,nm-geoip-twitter,BYPASS,no-resolve'
+  - 'RULE-SET,nm-geosite-medium,BYPASS'
+  - 'RULE-SET,nm-geosite-rutracker,BYPASS'
+  - 'GEOIP,PRIVATE,DIRECT,no-resolve'
+  - 'MATCH,DIRECT'
+  - DOMAIN-SUFFIX,vpn.e-kama.com,DIRECT
+  - DOMAIN-SUFFIX,netbird.io,DIRECT
+  - IP-CIDR,100.64.0.0/10,DIRECT,no-resolve
+  - AND,((NETWORK,UDP),(DST-PORT,3478)),DIRECT
+  - AND,((NETWORK,UDP),(DST-PORT,51820)),DIRECT
+  - DOMAIN-SUFFIX,worldsimseries.com,BYPASS
+
+## /etc/nikki/ucode/mixin.uc:128-150
+config['sniffer'] = {};
+config['sniffer']['enable'] = uci_bool(uci.get('nikki', 'mixin', 'sniffer'));
+config['sniffer']['force-dns-mapping'] = uci_bool(uci.get('nikki', 'mixin', 'sniffer_sniff_dns_mapping'));
+config['sniffer']['parse-pure-ip'] = uci_bool(uci.get('nikki', 'mixin', 'sniffer_sniff_pure_ip'));
+if (uci_bool(uci.get('nikki', 'mixin', 'sniffer_force_domain_name'))) {
+	config['sniffer']['force-domain'] = uci_array(uci.get('nikki', 'mixin', 'sniffer_force_domain_names'));
+}
+if (uci_bool(uci.get('nikki', 'mixin', 'sniffer_ignore_domain_name'))) {
+	config['sniffer']['skip-domain'] = uci_array(uci.get('nikki', 'mixin', 'sniffer_ignore_domain_names'));
+}
+if (uci_bool(uci.get('nikki', 'mixin', 'sniffer_sniff'))) {
+	config['sniffer']['sniff'] = {};
+	config['sniffer']['sniff']['HTTP'] = {};
+	config['sniffer']['sniff']['TLS'] = {};
+	config['sniffer']['sniff']['QUIC'] = {};
+	uci.foreach('nikki', 'sniff', (section) => {
+		if (!uci_bool(section.enabled)) {
+			return;
+		}
+		config['sniffer']['sniff'][section.protocol]['port'] = uci_array(section.port);
+		config['sniffer']['sniff'][section.protocol]['override-destination'] = uci_bool(section.overwrite_destination);
+	});
+}
+
+## uci set nikki.mixin.sniffer=1; uci set nikki.mixin.sniffer_sniff=1; uci commit nikki; /etc/init.d/nikki restart; sleep 4
+## pidof mihomo
+17784
+
+## uci show nikki.mixin | grep -E "sniffer=|sniffer_sniff="   (после)
+nikki.mixin.sniffer_sniff='1'
+nikki.mixin.sniffer='1'
+
+## grep -n -A14 "^sniffer:" /etc/nikki/run/config.yaml   (после)
+178:sniffer:
+179-  enable: true
+180-  sniff:
+181-    HTTP:
+182-      port:
+183-        - "80"
+184-        - "8080"
+185-      override-destination: true
+186-    TLS:
+187-      port:
+188-        - "443"
+189-        - "8443"
+190-      override-destination: true
+191-    QUIC:
+192-      port:
+
+## GET /connections через 20 с после рестарта, свёртка «источник dnsMode цепочка правило sniffHost непуст?»
+     31 192.168.9.238 fake-ip DIRECT Match sniff=no
+     21 192.168.9.208 normal DIRECT Match sniff=yes
+     15 192.168.9.238 normal DIRECT Match sniff=yes
+     13 192.168.9.208 normal 🇧🇪Бельгия RuleSet sniff=yes
+      7 192.168.9.238 fake-ip 🇧🇪Бельгия RuleSet sniff=no
+      5 192.168.9.238 normal DIRECT Match sniff=no
+      5 192.168.9.208 normal DIRECT Match sniff=no
+      5 192.168.9.208 fake-ip DIRECT Match sniff=no
+      3 192.168.9.238 normal 🇧🇪Бельгия RuleSet sniff=yes
+      3 192.168.9.238 normal 🇧🇪Бельгия RuleSet sniff=no
+      2 192.168.9.208 fake-ip 🇧🇪Бельгия RuleSet sniff=no
+
+## sniffHost у 192.168.9.208   (после)
+      3 "sniffHost":"rr2---sn-5hne6nsz.googlevideo.com"
+      3 "sniffHost":"rr1---sn-5hne6n6z.googlevideo.com"
+      2 "sniffHost":"www.gstatic.com"
+      2 "sniffHost":"push.services.mozilla.com"
+      2 "sniffHost":"firefox-settings-attachments.cdn.mozilla.net"
+      2 "sniffHost":"csp.withgoogle.com"
+      1 "sniffHost":"yt3.ggpht.com"
+      1 "sniffHost":"youtube.com"
+      1 "sniffHost":"www.youtube.com"
+      1 "sniffHost":"www.google.com"
+
+## nft list set inet nikki lan_inbound_device | grep elements   (после)
+		elements = { "br-lan" }

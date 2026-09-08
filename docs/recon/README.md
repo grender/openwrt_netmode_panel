@@ -150,3 +150,12 @@
   `rule-providers`. Команды и порядок проверки — [`nikki-mixin.md`](nikki-mixin.md);
   первая живая проба обязана поднять запись `geosite_catalog` в `evidence.json`
   до `verified` с приложенным `raw/`.
+  **Частично снято 2026-09-08** (`raw/89`): mihomo `v1.19.27`, блок `rules`
+  из `mixin.yaml` стоит перед правилами профиля, провайдеры `nm-*` грузятся и
+  срабатывают. Не снято остальное — каталог, `mixin.yaml` до записи, `yq`
+  без `rule-providers`.
+- **RQ-08 — ЗАКРЫТ.** Обход не работал у ПК в LAN-порту не из-за порта, а
+  из-за DoH в браузере: домен невидим, доменные наборы не совпадают,
+  `MATCH,DIRECT`. Sniffer mihomo включён (`nikki.mixin.sniffer`,
+  `sniffer_sniff`), после него SNI даёт домен и наборы срабатывают. Разбор —
+  [`nikki-sniffer.md`](nikki-sniffer.md), сырьё `raw/89`.
