@@ -244,12 +244,21 @@ export interface JobAccepted {
 
 // ─────────── наборы geosite ───────────
 
-export type RulesetPolicy = 'profile' | 'only' | 'except';
+/**
+ * Куда идёт ОСТАЛЬНОЙ трафик — не совпавший ни со своим правилом, ни с
+ * набором (хвост MATCH, ADR-0041). Направление набора здесь не решается:
+ * оно у каждого набора своё.
+ */
+export type RulesetPolicy = 'profile' | 'direct' | 'tunnel';
+/** Направление набора или своего правила. */
+export type SetAction = 'tunnel' | 'direct';
 export type RulesetDownload = 'direct' | 'tunnel';
 
 export interface RulesetSet {
 	name: string;
 	ip: boolean;
+	/** В туннель или напрямую — своё у каждого набора. */
+	action: SetAction;
 	/**
 	 * Три значения, и они РАЗНЫЕ: true — набор загружен, false — движок
 	 * говорит «не загружен», null — движок не ответил вовсе. Слить null с
@@ -262,7 +271,7 @@ export interface RulesetSet {
 }
 
 export type RuleKind = 'suffix' | 'domain' | 'cidr';
-export type RuleAction = 'tunnel' | 'direct';
+export type RuleAction = SetAction;
 
 /**
  * Своё правило владельца: домен с поддоменами, точный хост или подсеть —
@@ -305,8 +314,8 @@ export interface RulesetsCatalog {
 export interface RulesDraft {
 	policy: RulesetPolicy;
 	download: RulesetDownload;
-	sets: string[];
+	/** Имя и направление; признак подсетей проставляет демон. */
+	sets: { name: string; action: SetAction }[];
 	rules: CustomRule[];
 }
 
-export type EngineTab = 'nodes' | 'rules';

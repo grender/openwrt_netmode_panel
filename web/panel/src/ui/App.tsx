@@ -3,7 +3,6 @@ import { api, ApiError, T as BUDGET } from '../api/client';
 import { describe, errCode, failText, jobText, STALE_CODES, BRIDGE_STALE_CODES, WHY_CODES } from '../api/describe';
 import type {
 	BridgeState,
-	EngineTab,
 	JobAccepted,
 	LogsResponse,
 	Mode,
@@ -26,13 +25,32 @@ import { useLock } from '../state/lock';
 import { usePoll } from '../state/poll';
 import { useSide } from '../state/side';
 import { Section, Skel, Spin, useMedia } from './bits';
-import { Bridge, bridgeProblem, bridgeSummary } from './Bridge';
+import { bridgeProblem, bridgeSummary } from './Bridge';
 import { Engine, engineSummary, engineTitle } from './Engine';
+import { rulesSummary } from './Rulesets';
+import { Settings, SETTINGS_ROWS, type SettingsRow } from './Settings';
 import { BridgeForm, NetworkForm, type BridgeBody, type NetBody, type NetSeed } from './Sheets';
-import { Subscription, subSummary } from './Subscription';
+import { Shelf } from './Shelf';
+import { subSummary } from './Subscription';
 import { Uplink } from './Uplink';
 
 const MODES: Mode[] = ['nikki', 'b4', 'off'];
+
+/**
+ * Куда ведёт адрес: на главную или на экран настроек, и какой раздел там
+ * открыт. #routes / #sub / #bridge — настройки (старый #subscription из
+ * закладок — тоже подписка), #settings — настройки с первым разделом; всё
+ * остальное — главная, где хеш по-прежнему раскрывает аккордеон (fromHash).
+ */
+type Route = { screen: 'main' } | { screen: 'settings'; row: SettingsRow };
+
+function routeOf(hash: string): Route {
+	const h = hash.replace(/^#/, '');
+	if (h === 'settings') return { screen: 'settings', row: 'routes' };
+	if (h === 'subscription') return { screen: 'settings', row: 'sub' };
+	if ((SETTINGS_ROWS as string[]).includes(h)) return { screen: 'settings', row: h as SettingsRow };
+	return { screen: 'main' };
+}
 
 export function App() {
 	const [lang, setLang] = useState<Lang>(loadLang);
@@ -56,7 +74,13 @@ export function App() {
 	const catalog = useSide<RulesetsCatalog>('nikkiRulesetsCatalog');
 
 	const [netForm, setNetForm] = useState<NetSeed | null>(null);
-	const [engineTab, setEngineTab] = useState<EngineTab>('nodes');
+	// Экран — из адреса, и только из него: кнопка «назад» браузера обязана
+	// возвращать с настроек на главную без нашего участия.
+	const [route, setRoute] = useState<Route>(() => routeOf(location.hash));
+	// Колокольчик: список проблем свёрнут, красная точка — пока не открыли.
+	// Открытие гасит точку: список увиден, а не решён.
+	const [bellOpen, setBellOpen] = useState(false);
+	const [seen, setSeen] = useState<string[]>([]);
 	// Черновик наборов живёт в памяти вкладки и теряется при F5 — осознанно:
 	// сохранённый черновик пережил бы и смену режима, и правку по ssh, то
 	// есть однажды применил бы выбор поверх файла, которого владелец уже
@@ -68,6 +92,19 @@ export function App() {
 	const [failHidden, setFailHidden] = useState('');
 	const [bridgeFailHidden, setBridgeFailHidden] = useState('');
 	const [open, setOpen] = useState<Record<string, boolean>>(() => fromHash());
+
+	// Единственный слушатель хеша. Настройки пишут свой раздел через
+	// replaceState — оно события не порождает, и состояние React остаётся
+	// источником правды; сюда приходят только переходы по ссылкам и «назад».
+	useEffect(() => {
+		const on = () => {
+			const r = routeOf(location.hash);
+			setRoute(r);
+			if (r.screen === 'main') setOpen(fromHash());
+		};
+		addEventListener('hashchange', on);
+		return () => removeEventListener('hashchange', on);
+	}, []);
 
 	const status = poll.status;
 	const { running, failed, locked } = resolveJob(status, poll.seed, lock.busy, poll.skewMs);
@@ -124,18 +161,18 @@ export function App() {
 
 	// Наборы — исключение из правила «список движка ждёт живого движка»:
 	// выбор лежит в файле, и демон отдаёт его с live:false, когда Nikki
-	// молчит. Ждать здесь svcNikki значило бы прятать вкладку ровно в том
-	// случае, ради которого её и открывают.
+	// молчит. Грузятся при любом режиме: полка на главной сводит их всегда,
+	// а ждать svcNikki значило бы прятать раздел ровно в том случае, ради
+	// которого его и открывают.
 	useEffect(() => {
-		if (status && mode === 'nikki' && rulesets.value === undefined) void rulesets.load();
-	}, [status, mode, rulesets]);
+		if (status && rulesets.value === undefined) void rulesets.load();
+	}, [status, rulesets]);
 
-	// Уход из режима nikki уносит и вкладку, и черновик: раздел принадлежит
-	// режиму, и вернувшийся владелец не должен обнаружить непринятые правки
-	// для движка, который всё это время был выключен.
+	// Уход из режима nikki уносит черновик: раздел принадлежит режиму, и
+	// вернувшийся владелец не должен обнаружить непринятые правки для
+	// движка, который всё это время был выключен.
 	useEffect(() => {
 		if (mode === 'nikki') return;
-		setEngineTab('nodes');
 		setRulesDraft(null);
 	}, [mode]);
 
@@ -506,6 +543,38 @@ export function App() {
 	const isOpen = (id: string) => wide || !!open[id];
 
 	const problem = bridgeProblem(bridge.value);
+	// Факты, о которых владелец должен узнать, даже когда смотрит на другое.
+	// Не полоса над карточками, а список за колокольчиком: количество видно
+	// всегда, точка говорит только о новизне (ADR-0042).
+	const unsupported = nikki.value?.members.filter((m) => m.kind === 'unsupported') ?? [];
+	const alerts: { id: string; title: string; text: string; act?: () => void; actLabel?: string; busy?: boolean }[] = [];
+	if (problem) {
+		alerts.push({
+			id: `bridge:${problem}`,
+			title: t(`problem.${problem}.title`),
+			text: t(`problem.${problem}.text`, {
+				pc: bridge.value?.pc_ip ?? '—',
+				gw: bridge.value?.uplink?.gateway ?? '—',
+			}),
+			act: onBridgeProbe,
+			actLabel: lock.on('bridge', 'probe') ? t('bridge.probing') : t('bridge.probe'),
+			busy: lock.on('bridge', 'probe'),
+		});
+	}
+	if (unsupported.length > 0) {
+		alerts.push({
+			id: `unsupported:${unsupported.length}`,
+			title: t('sub.unsupported.title', { n: unsupported.length, names: unsupported.map((m) => m.name).join(', ') }),
+			text: unsupported[0]?.reason ?? t('sub.unsupported.text'),
+		});
+	}
+	const unseen = alerts.filter((a) => !seen.includes(a.id)).length;
+	const openRow = (id: SettingsRow) => {
+		// На широком экране раскрыты все — переключать нечего.
+		const next = !wide && route.screen === 'settings' && route.row === id ? '' : id;
+		setRoute({ screen: 'settings', row: (next || 'routes') as SettingsRow });
+		history.replaceState(null, '', `#${next || 'settings'}`);
+	};
 	const upFail = status.last_fail;
 	const upFailKey = upFail ? `${upFail.reason}:${upFail.at}` : '';
 	const brFail = bridge.value?.last_fail ?? status.bridge_last_fail ?? null;
@@ -524,6 +593,99 @@ export function App() {
 	const dotColor = running ? 'var(--warn)' : mode === 'off' ? 'var(--muted-2)' : 'var(--ok)';
 	const online = status.online?.ok;
 	const ssid = status.configured_ssid || status.associated_ssid || '';
+
+	const foot = (
+		<footer class="foot">
+			<span class={poll.stale ? 'stale' : running ? 'busy' : ''}>
+				{poll.stale
+					? t('foot.stale')
+					: running
+						? t('foot.busy', { what: jobText(running, t) })
+						: t('foot.free')}
+			</span>
+			<span>{t('foot.updated', { when: fmtTime(status.generated_at, lang) })}</span>
+		</footer>
+	);
+
+	const langSwitch = (
+		<div class="lang">
+			{(['ru', 'en'] as const).map((l) => (
+				<button key={l} type="button" aria-pressed={lang === l} onClick={() => setLang(l)}>
+					{l.toUpperCase()}
+				</button>
+			))}
+		</div>
+	);
+
+	const brFailNote =
+		brFail && brFailKey !== bridgeFailHidden ? (
+			<div class="note err full dismissable">
+				<button type="button" class="x" onClick={() => setBridgeFailHidden(brFailKey)} title={t('ui.dismiss')} aria-label={t('ui.dismiss')}>
+					✕
+				</button>
+				<h3>{t(`bridge.fail.${reasonKey(brFail.reason, 'bridge')}.title` as never)}</h3>
+				<p>{t(`bridge.fail.${reasonKey(brFail.reason, 'bridge')}.text` as never)}</p>
+				{brFail.detail ? <p class="detail">{brFail.detail}</p> : null}
+			</div>
+		) : null;
+
+	// ─── экран настроек ───
+	if (route.screen === 'settings') {
+		return (
+			<div class="page">
+				<div class="shell">
+					<header class="top settings-top" data-part="top">
+						<div class="top-id">
+							<a class="toplink" href="#">
+								‹ {t('settings.back')}
+							</a>
+							<span class="host">{t('settings.title')}</span>
+							<span class="ap-meta">{t('settings.sub')}</span>
+						</div>
+						<div class="top-links">{langSwitch}</div>
+					</header>
+					<Settings
+						row={route.row}
+						onRow={openRow}
+						wide={wide}
+						t={t}
+						lang={lang}
+						lock={lock}
+						locked={locked}
+						status={status}
+						rulesets={rulesets.value}
+						catalog={catalog.value}
+						draft={rulesDraft}
+						setDraft={setRulesDraft}
+						onApplyRules={onApplyRules}
+						onLoadCatalog={onLoadCatalog}
+						sub={sub.value}
+						logs={logs.value}
+						nikki={nikki.value}
+						onUpdateSub={onUpdateSub}
+						onSaveURL={onSaveURL}
+						bridge={bridge.value}
+						onBridgeProbe={onBridgeProbe}
+						onBridgeAccess={onBridgeAccess}
+						onBridgeDisable={onBridgeDisable}
+						onOpenBridgeForm={() => setBridgeForm(true)}
+						bridgeFail={brFailNote}
+					/>
+					{foot}
+				</div>
+				{bridgeForm && bridge.value ? (
+					<BridgeForm
+						state={bridge.value}
+						lock={lock}
+						locked={locked}
+						t={t}
+						onSubmit={onBridgeEnable}
+						onClose={() => setBridgeForm(false)}
+					/>
+				) : null}
+			</div>
+		);
+	}
 
 	return (
 		<div class="page">
@@ -567,13 +729,34 @@ export function App() {
 								LuCI <span aria-hidden="true">↗</span>
 							</a>
 						) : null}
-						<div class="lang">
-							{(['ru', 'en'] as const).map((l) => (
-								<button key={l} type="button" aria-pressed={lang === l} onClick={() => setLang(l)}>
-									{l.toUpperCase()}
-								</button>
-							))}
-						</div>
+						<button
+							type="button"
+							class={`toplink bell${alerts.length ? ' has' : ''}${bellOpen ? ' open' : ''}`}
+							aria-expanded={bellOpen}
+							aria-controls="alerts"
+							aria-label={
+								alerts.length
+									? unseen
+										? t('bell.label.new', { n: alerts.length, m: unseen })
+										: t('bell.label', { n: alerts.length })
+									: t('bell.label.none')
+							}
+							onClick={() => {
+								setBellOpen(!bellOpen);
+								if (!bellOpen) setSeen(alerts.map((a) => a.id));
+							}}
+						>
+							<svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+								<path d="M4 6.5a4 4 0 0 1 8 0c0 2.2.5 3.4 1.2 4.2.3.3.1.8-.3.8H3.1c-.4 0-.6-.5-.3-.8C3.5 9.9 4 8.7 4 6.5Z" />
+								<path d="M6.4 13.2a1.8 1.8 0 0 0 3.2 0" />
+							</svg>
+							{alerts.length}
+							{unseen ? <span class="bell-dot" aria-hidden="true" /> : null}
+						</button>
+						<a class="toplink" href="#routes" title={t('settings.title')}>
+							<span aria-hidden="true">⚙</span> {t('settings.link')}
+						</a>
+						{langSwitch}
 					</div>
 				</header>
 
@@ -680,28 +863,23 @@ export function App() {
 						{lock.toast ? lock.toast.msg : ''}
 					</div>
 
-					{/* ─── аномалия ─── */}
-					{problem ? (
-						<div class="problem" data-part="problem">
-							<span class="dot" aria-hidden="true" />
-							<div class="problem-text">
-								<b>{t(`problem.${problem}.title`)}</b>{' '}
-								<span>
-									{t(`problem.${problem}.text`, {
-										pc: bridge.value?.pc_ip ?? '—',
-										gw: bridge.value?.uplink?.gateway ?? '—',
-									})}
-								</span>
-							</div>
-							<button type="button" disabled={locked} aria-busy={lock.on('bridge', 'probe')} onClick={onBridgeProbe}>
-								{lock.on('bridge', 'probe') ? (
-									<>
-										<Spin /> {t('bridge.probing')}
-									</>
-								) : (
-									t('bridge.probe')
-								)}
-							</button>
+					{/* ─── проблемы за колокольчиком ─── */}
+					{bellOpen ? (
+						<div id="alerts" class="alerts full" data-part="alerts">
+							{alerts.map((a) => (
+								<div key={a.id} class="alert">
+									<span class="dot" aria-hidden="true" />
+									<div class="alert-text">
+										<b>{a.title}</b> <span>{a.text}</span>
+									</div>
+									{a.act ? (
+										<button type="button" disabled={locked} aria-busy={a.busy} onClick={a.act}>
+											{a.busy ? <Spin /> : null} {a.actLabel}
+										</button>
+									) : null}
+								</div>
+							))}
+							{alerts.length === 0 ? <div class="alert-none">{t('bell.none')}</div> : null}
 						</div>
 					) : null}
 
@@ -759,7 +937,7 @@ export function App() {
 						</div>
 					) : null}
 
-					<Section id="engine" title={engineTitle(mode, t)} summary={engineSummary(mode, status, nikki.value, sets.value, t, engineTab, rulesets.value, rulesDraft, lang)} wide={wide} open={isOpen('engine')} onToggle={() => toggle('engine')} t={t}>
+					<Section id="engine" title={engineTitle(mode, t)} summary={engineSummary(mode, status, nikki.value, sets.value, t)} wide={wide} open={isOpen('engine')} onToggle={() => toggle('engine')} t={t}>
 						<Engine
 							mode={mode}
 							nikki={nikki.value}
@@ -770,84 +948,28 @@ export function App() {
 							lock={lock}
 							locked={locked}
 							t={t}
-							lang={lang}
 							onPickProxy={onPickProxy}
 							onToggleSet={onToggleSet}
 							onTest={onTest}
 							onMode={onMode}
-							tab={engineTab}
-							onTab={(v) => {
-								setEngineTab(v);
-								if (v === 'rules') onLoadCatalog();
-							}}
-							rulesets={rulesets.value}
-							catalog={catalog.value}
-							draft={rulesDraft}
-							setDraft={setRulesDraft}
-							onApplyRules={onApplyRules}
-							onLoadCatalog={onLoadCatalog}
 						/>
 					</Section>
 
-					{/* Подписка и проброс живут в ОДНОЙ колонке, как в макете.
-					    Без обёртки они попадают в общий поток auto-fit, и на
-					    подписке из тридцати трёх узлов карточка движка тянется
-					    на три экрана, а проброс уезжает под неё — то есть
-					    раздел, ради которого владелец пришёл, оказывается
-					    ниже списка, который он не читает. */}
-					<div class="col">
-					<Section id="subscription" title={t('sub.title')} summary={subSummary(status, lang, t)} wide={wide} open={isOpen('subscription')} onToggle={() => toggle('subscription')} t={t}>
-						<Subscription
-							status={status}
-							sub={sub.value}
-							logs={logs.value}
-							nikki={nikki.value}
-							lang={lang}
-							lock={lock}
-							locked={locked}
-							t={t}
-							onUpdate={onUpdateSub}
-							onSaveURL={onSaveURL}
-						/>
-					</Section>
+					{/* Полка сводок вместо трёх карточек: то, что настраивают раз и
+					    надолго, живёт на экране настроек, а здесь — ответ на
+					    вопрос, надо ли туда идти. */}
+					<Shelf
+						t={t}
+						rows={[
+							{ id: 'routes', title: t('shelf.rules'), summary: rulesSummary(rulesets.value, rulesDraft, t) },
+							{ id: 'sub', title: t('shelf.sub'), summary: subSummary(status, lang, t) },
+							{ id: 'bridge', title: t('shelf.bridge'), summary: bridgeSummary(bridge.value, t), warn: !!problem },
+						]}
+					/>
 
-					<Section id="bridge" title={t('bridge.title')} summary={bridgeSummary(bridge.value, t)} wide={wide} open={isOpen('bridge')} onToggle={() => toggle('bridge')} t={t}>
-						<Bridge
-							bridge={bridge.value}
-							lock={lock}
-							locked={locked}
-							t={t}
-							onProbe={onBridgeProbe}
-							onAccess={onBridgeAccess}
-							onDisable={onBridgeDisable}
-							onOpenForm={() => setBridgeForm(true)}
-						/>
-					</Section>
-
-					</div>
-
-					{brFail && brFailKey !== bridgeFailHidden ? (
-						<div class="note err full dismissable">
-							<button type="button" class="x" onClick={() => setBridgeFailHidden(brFailKey)} title={t('ui.dismiss')} aria-label={t('ui.dismiss')}>
-								✕
-							</button>
-							<h3>{t(`bridge.fail.${reasonKey(brFail.reason, 'bridge')}.title` as never)}</h3>
-							<p>{t(`bridge.fail.${reasonKey(brFail.reason, 'bridge')}.text` as never)}</p>
-							{brFail.detail ? <p class="detail">{brFail.detail}</p> : null}
-						</div>
-					) : null}
 				</div>
 
-				<footer class="foot">
-					<span class={poll.stale ? 'stale' : running ? 'busy' : ''}>
-						{poll.stale
-							? t('foot.stale')
-							: running
-								? t('foot.busy', { what: jobText(running, t) })
-								: t('foot.free')}
-					</span>
-					<span>{t('foot.updated', { when: fmtTime(status.generated_at, lang) })}</span>
-				</footer>
+				{foot}
 			</div>
 
 			{netForm ? (

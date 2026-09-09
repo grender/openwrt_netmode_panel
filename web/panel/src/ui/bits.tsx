@@ -121,6 +121,7 @@ export function Section({
 	onToggle,
 	children,
 	full,
+	warn,
 	t,
 }: {
 	id: string;
@@ -131,6 +132,8 @@ export function Section({
 	onToggle: () => void;
 	children: ComponentChildren;
 	full?: boolean;
+	/** Сводка про аномалию — жёлтая: шлюз молчит, ПК не отвечает. */
+	warn?: boolean;
 	t: T;
 }) {
 	if (wide) {
@@ -138,7 +141,7 @@ export function Section({
 			<section class={`card${full ? ' full' : ''}`} data-part="card" data-card={id}>
 				<h2 data-anchor={`sec-${id}`}>
 					{title}
-					{summary ? <span class="summary">{summary}</span> : null}
+					{summary ? <span class={`summary${warn ? ' warn' : ''}`}>{summary}</span> : null}
 				</h2>
 				{children}
 			</section>
@@ -161,7 +164,7 @@ export function Section({
 				data-anchor={`sec-${id}`}
 			>
 				<h2>{title}</h2>
-				{summary ? <span class="acc-sum">{summary}</span> : null}
+				{summary ? <span class={`acc-sum${warn ? ' warn' : ''}`}>{summary}</span> : null}
 				<span class="chev" aria-hidden="true">
 					›
 				</span>

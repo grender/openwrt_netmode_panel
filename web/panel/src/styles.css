@@ -96,7 +96,12 @@ h1, h2, h3, h4, p { text-wrap: pretty; }
 	font: 12.5px var(--mono); color: var(--muted);
 	min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.top-links { display: flex; align-items: center; gap: 8px; flex: none; flex-wrap: wrap; }
+/* Ссылок стало больше (колокольчик, настройки): контейнер обязан УЖИМАТЬСЯ и
+   переносить их, а не выталкивать шапку за край экрана на 390px. */
+.top-links {
+	display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+	flex: 1 1 auto; min-width: 0; justify-content: flex-end;
+}
 .toplink {
 	display: inline-flex; align-items: center; gap: 6px;
 	font: 12.5px var(--mono); padding: 8px 12px; border-radius: 9px;
@@ -310,7 +315,9 @@ button[aria-busy="true"]:disabled { opacity: 1; }
 	background: none; border: 0; padding: 0; min-height: 44px;
 	color: inherit; text-align: left; font: inherit;
 }
-.acc-head h2 { flex: 1; margin: 0; font: 600 14.5px var(--sans); }
+/* Заголовок не переносится: при длинной сводке жмётся и обрезается она, а
+   имя раздела остаётся одной строкой. */
+.acc-head h2 { flex: 1 0 auto; margin: 0; font: 600 14.5px var(--sans); white-space: nowrap; }
 .acc-head .chev { flex: none; color: var(--muted-2); transition: transform .15s ease; }
 .acc-head[aria-expanded="true"] .chev { transform: rotate(90deg); }
 .acc-sum {
@@ -636,3 +643,110 @@ button.row { cursor: pointer; }
 	   лишь размазывает эти скачки. Убрав его, мы не теряем ни бита. */
 	.bar > i { transition: none; }
 }
+
+/* ─────────── колокольчик и список проблем (ADR-0042) ─────────── */
+
+/* Одна кнопка с числом и точкой вместо полосы над карточками: количество
+   видно всегда, точка говорит только о новизне — открытие списка гасит её,
+   потому что список увиден, а не решён. */
+.bell { position: relative; gap: 7px; }
+.bell.has { color: var(--warn-fg); border-color: #3a3630; }
+.bell.has.open, .bell.open { background: #22282e; }
+.bell.has:not(.open) { background: var(--warn-bg); }
+.bell-dot {
+	position: absolute; top: 5px; right: 6px; width: 8px; height: 8px;
+	border-radius: 50%; background: var(--bad); border: 2px solid var(--bar);
+}
+
+.alerts {
+	display: flex; flex-direction: column; gap: 8px;
+	padding: 8px; border-radius: var(--r-lg);
+	background: var(--card); border: 1px solid var(--line);
+}
+.alert {
+	padding: 13px 14px; border-radius: 11px; background: var(--warn-bg);
+	display: flex; gap: 13px; align-items: center; flex-wrap: wrap;
+}
+.alert .dot { animation: pulse 1.6s infinite; background: var(--warn); }
+.alert-text { flex: 1; min-width: 240px; }
+.alert-text b { font: 600 14px var(--sans); color: var(--warn-fg); }
+.alert-text span { font-size: 13px; color: var(--fg-2); }
+.alert button {
+	flex: none; min-height: 40px; padding: 0 14px; border: 0; border-radius: 10px;
+	background: var(--warn); color: var(--warn-bg); font: 600 13px var(--sans);
+}
+.alert button:disabled { opacity: .6; }
+.alert-none { padding: 13px 14px; font: 12.5px var(--mono); color: var(--muted-2); }
+
+/* ─────────── полка сводок ─────────── */
+
+/* Три строки-ссылки в настройки. Строка выглядит как закрытый раздел на
+   экране настроек: переход «полка → настройки» не меняет картинку, меняет
+   только открытую строку. */
+.shelf {
+	display: flex; flex-direction: column; gap: 1px;
+	background: var(--line); border: 1px solid var(--line);
+	border-radius: var(--r-lg); overflow: hidden;
+}
+.shelf-row {
+	display: flex; align-items: center; gap: 12px; padding: 15px 18px;
+	background: var(--card); text-decoration: none; color: var(--fg);
+	min-height: 52px;
+}
+.shelf-row:hover { background: var(--row); color: var(--fg); }
+/* Шеврон — единственное, что говорит «сюда можно нажать», и уезжать ему
+   нельзя: строка не переносится, сводка жмётся и обрезается. */
+.shelf-title { font: 600 14px var(--sans); flex: 0 0 auto; }
+.shelf-sum {
+	flex: 1 1 auto; min-width: 12ch; font: 12.5px var(--mono); color: var(--muted);
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.shelf-sum.warn, .summary.warn, .acc-sum.warn { color: var(--warn); }
+.shelf-row .chev { flex: none; color: var(--muted-3); font-size: 16px; }
+
+/* ─────────── экран настроек ─────────── */
+
+.settings-top .top-id { gap: 12px; flex-wrap: wrap; }
+.settings-top .ap-meta { flex: 1 1 auto; }
+/* Одна колонка при любой ширине: три раздела читаются подряд, а не
+   расставляются по сетке — они не про «сейчас», их не сравнивают глазами. */
+.grid.settings { grid-template-columns: minmax(0, 1fr); }
+
+/* Три шага проверки — карточки-вкладки с номером и сводкой. Номер — не
+   украшение: это порядок, в котором mihomo решает судьбу соединения. */
+.steps { display: flex; gap: 8px; flex-wrap: wrap; }
+.step {
+	flex: 1; min-width: 170px; display: flex; flex-direction: column; align-items: flex-start;
+	gap: 3px; padding: 11px 14px; min-height: 56px; border: 1px solid var(--line-2);
+	border-radius: 11px; background: transparent; color: var(--fg); text-align: left;
+}
+.step[aria-selected="true"] { background: var(--sel-bg); border-color: var(--nikki); }
+.step-head { display: flex; align-items: center; gap: 8px; font: 600 13.5px var(--sans); }
+.step-head i { font: 11px var(--mono); font-style: normal; color: var(--muted-3); }
+.step[aria-selected="true"] .step-head i { color: var(--link); }
+.step-head .chev { color: var(--muted-3); }
+.step-sum {
+	font: 11.5px var(--mono); color: var(--muted-2); max-width: 100%;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.step-bad .step-sum { color: var(--bad-fg); }
+.steppanel {
+	display: flex; flex-direction: column; gap: 9px; padding: 14px;
+	border-radius: var(--r); background: var(--row-2); border: 1px solid var(--line);
+}
+
+/* Строка каталога с направлением: имя и id в первой строке, сегмент из трёх
+   положений и тег — во второй. Выбранная напрямую — серая рамка, чтобы
+   «напрямую» не читалось как «в туннель» синим. */
+.row.set { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: center; }
+.row.set .name { min-width: 0; }
+.row.set .id { flex: none; font: 10.5px var(--mono); color: var(--muted-3); }
+.row.set.sel-direct { border-color: #3a4249; }
+.setacts { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.seg.small { flex: 1; min-width: 230px; padding: 3px; gap: 3px; border-radius: 10px; }
+.seg.small button { min-height: 40px; border-radius: 8px; font-size: 12.5px; }
+.row.set .seg.small button[aria-pressed="true"].accent:nth-child(2) { background: #3a4249; }
+.row.set .tag-bad { color: var(--bad); }
+
+.chip .dir { font: 10px var(--mono); font-style: normal; color: var(--muted-2); }
+.chip .dir-tunnel { color: var(--link); }

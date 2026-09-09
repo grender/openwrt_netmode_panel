@@ -1,20 +1,9 @@
-import { useRef } from 'preact/hooks';
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
 import type { SvcState } from '../state/job';
-import type {
-	EngineTab,
-	Mode,
-	ProxiesResponse,
-	RulesDraft,
-	RulesetsCatalog,
-	RulesetsResponse,
-	SetsResponse,
-	Status,
-} from '../api/types';
-import type { Lang, T } from '../i18n';
+import type { Mode, ProxiesResponse, SetsResponse, Status } from '../api/types';
+import type { T } from '../i18n';
 import { Meter, Skel, Spin } from './bits';
-import { dirtyCount, draftOf, onLabel, Rulesets } from './Rulesets';
 
 export interface EngineProps {
 	mode: Mode | 'unknown';
@@ -26,117 +15,24 @@ export interface EngineProps {
 	lock: Lock;
 	locked: boolean;
 	t: T;
-	/** Нужен числительному наборов: у русского три формы, у английского две. */
-	lang: Lang;
 	onPickProxy(name: string): void;
 	onToggleSet(id: string, enabled: boolean): void;
 	onTest(): void;
 	onMode(m: Mode): void;
-	tab: EngineTab;
-	onTab(v: EngineTab): void;
-	rulesets: Side<RulesetsResponse>;
-	catalog: Side<RulesetsCatalog>;
-	draft: RulesDraft | null;
-	setDraft(d: RulesDraft | null): void;
-	onApplyRules(d: RulesDraft): void;
-	onLoadCatalog(): void;
 }
 
 /**
  * Опции запущенного движка.
  *
  * Раздел ПРИНАДЛЕЖИТ режиму: у Nikki это узлы, у b4 — сеты, у выключенного —
- * сводка обоих. То, что живёт независимо от движка (подписка), вынесено
- * в свой раздел: скачать её можно и при остановленном Nikki, и держать это
- * внутри карточки движка значило бы прятать рабочую кнопку.
+ * сводка обоих. Всё, что живёт независимо от движка и меняется редко —
+ * подписка, наборы, проброс, — на экране настроек: главная отвечает на «что
+ * сейчас и что переключить», а не на «что настроено надолго» (ADR-0042).
  */
 export function Engine(p: EngineProps) {
 	if (p.mode === 'b4') return <B4 {...p} />;
 	if (p.mode === 'off' || p.mode === 'unknown') return <Off {...p} />;
-	return <NikkiCard {...p} />;
-}
-
-const TABS: EngineTab[] = ['nodes', 'rules'];
-
-/**
- * Две вкладки Nikki: узлы и наборы.
- *
- * Переключатель рисуется ДО проверок starting/down: выбор наборов читается
- * из файла и правится при лежащем движке — там он как раз и нужен, когда
- * туннель не поднялся из-за правил. Спрятать вкладку за живым Clash API
- * значило бы запереть лечение внутри болезни.
- */
-function NikkiCard(p: EngineProps) {
-	const rules = p.tab === 'rules';
-	// Ссылки на сами кнопки: роль tablist обещает стрелки, а перевести по
-	// ним фокус можно только на настоящий узел. Искать его в документе по
-	// id значило бы завести второй источник правды о том, где вкладки.
-	const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-
-	// Обещание роли выполняется целиком: скринридер объявляет «вкладка 1 из
-	// 2», и стрелки обязаны работать. Фокус БЛУЖДАЮЩИЙ (tabIndex -1 у
-	// невыбранной) — иначе Tab останавливался бы на каждой вкладке, а по
-	// ARIA APG табсписок занимает одну остановку.
-	const onKey = (e: KeyboardEvent) => {
-		const i = TABS.indexOf(p.tab);
-		let next = -1;
-		if (e.key === 'ArrowRight') next = (i + 1) % TABS.length;
-		else if (e.key === 'ArrowLeft') next = (i - 1 + TABS.length) % TABS.length;
-		else if (e.key === 'Home') next = 0;
-		else if (e.key === 'End') next = TABS.length - 1;
-		if (next < 0) return;
-		const to = TABS[next];
-		if (!to) return;
-		e.preventDefault();
-		p.onTab(to);
-		tabRefs.current[to]?.focus();
-	};
-
-	return (
-		<>
-			<div class="seg" role="tablist">
-				{TABS.map((k) => (
-					<button
-						key={k}
-						type="button"
-						role="tab"
-						id={`tab-${k}`}
-						ref={(el) => {
-							tabRefs.current[k] = el as HTMLButtonElement | null;
-						}}
-						aria-controls="engine-tabpanel"
-						// Только aria-selected: aria-pressed роли tab не
-						// положен, и вместе они звучат как «выбрана и нажата».
-						// Оформление нажатого сегмента .seg ловит оба атрибута.
-						aria-selected={p.tab === k}
-						tabIndex={p.tab === k ? 0 : -1}
-						onKeyDown={onKey}
-						onClick={() => p.onTab(k)}
-					>
-						{p.t(`rules.tab.${k}` as never)}
-					</button>
-				))}
-			</div>
-			<div id="engine-tabpanel" class="tabpanel" role="tabpanel" aria-labelledby={rules ? 'tab-rules' : 'tab-nodes'}>
-				{rules ? (
-					<Rulesets
-						applied={p.rulesets}
-						catalog={p.catalog}
-						draft={p.draft}
-						setDraft={p.setDraft}
-						lang={p.lang}
-						lock={p.lock}
-						locked={p.locked}
-						t={p.t}
-						onApply={p.onApplyRules}
-						onLoadCatalog={p.onLoadCatalog}
-					/>
-				) : (
-					<Nikki {...p} />
-				)}
-			</div>
-		</>
-	);
+	return <Nikki {...p} />;
 }
 
 /** Заголовок раздела зависит от режима — его считает App, чтобы показать в свёрнутом виде. */
@@ -152,28 +48,12 @@ export function engineSummary(
 	nikki: Side<ProxiesResponse>,
 	sets: Side<SetsResponse>,
 	t: T,
-	tab: EngineTab,
-	rulesets: Side<RulesetsResponse>,
-	draft: RulesDraft | null,
-	lang: Lang,
 ): string {
 	if (mode === 'b4') {
 		const n = sets?.enabled_count ?? status.b4.enabled_count;
 		if (n === 1) return t('sets.sum.one', { set: sets?.selected || status.b4.set });
 		if (n === 0) return t('sets.sum.none');
 		return t('sets.sum.many', { n });
-	}
-	// Сводка свёрнутого раздела обязана описывать ТО, ЧТО В НЁМ ОТКРЫТО:
-	// иначе владелец, оставивший вкладку наборов, читает в заголовке про
-	// узлы и разворачивает раздел, чтобы узнать про непринятые правки.
-	if (mode === 'nikki' && tab === 'rules') {
-		// Черновик из применённого — тот же draftOf, что у вкладки: второй
-		// экземпляр формы здесь разошёлся бы с ней от первого нового поля.
-		const eff = draft ?? draftOf(rulesets);
-		if (eff.policy === 'profile') return t('rules.sum.profile');
-		let base = onLabel(eff, t, lang);
-		if (eff.rules.length > 0) base += ` · ${t('rules.sum.custom', { n: eff.rules.length })}`;
-		return dirtyCount(rulesets, draft) > 0 ? `${base} · ${t('rules.sum.dirty')}` : base;
 	}
 	if (mode === 'nikki') {
 		const pinned = nikki?.pinned ?? status.nikki.pinned ?? false;
@@ -334,7 +214,13 @@ function Nikki({ nikki, svcNikki, status, lock, locked, t, onPickProxy, onTest }
 			) : null}
 
 			<p class="hint">{t('srv.measure.hint')}</p>
-			{status.subscription ? <p class="hint">{t('srv.list.from.sub')}</p> : null}
+			{/* Список — из подписки, а она на экране настроек: сказать это
+			    здесь дешевле, чем заставить искать кнопку «Обновить». */}
+			{status.subscription ? (
+				<p class="hint">
+					{t('srv.list.from.sub')} <a href="#sub">{t('settings.link')}</a>
+				</p>
+			) : null}
 		</>
 	);
 }

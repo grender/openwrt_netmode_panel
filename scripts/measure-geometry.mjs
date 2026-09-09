@@ -101,7 +101,9 @@ const STATES = [
 	// не значит ничего — там секции раскрыты всегда, — и это проверяет C8.
 	{ key: 'acc-closed', scenario: 'single', hash: '', rm: false },
 	{ key: 'acc-uplink', scenario: 'single', hash: 'uplink', rm: false },
-	{ key: 'acc-bridge', scenario: 'bridge-on', hash: 'bridge', rm: false },
+	// #bridge с ADR-0042 ведёт на экран настроек, у которого нет баннера; на
+	// главной раскрытый раздел проверяется на карточке движка.
+	{ key: 'acc-engine', scenario: 'bridge-on', hash: 'engine', rm: false },
 ];
 
 const REST = 'calm';
@@ -201,8 +203,10 @@ const MEASURE = `(() => {
 	};
 	const empties = [];
 	if (!filled(slot.querySelector(':scope > *:not(.ghost)'))) empties.push('hero-status');
-	const problem = q('[data-part="problem"]');
-	if (problem && !filled(problem)) empties.push('problem');
+	// Список проблем живёт за колокольчиком (ADR-0042) и раскрыт только по
+	// нажатию; раскрытый обязан быть заполнен так же, как карточка.
+	const alerts = q('[data-part="alerts"]');
+	if (alerts && !filled(alerts)) empties.push('alerts');
 	for (const c of cards) if (!filled(c)) empties.push('card:' + (c.dataset.card || '?'));
 
 	// Аккордеон: aria-expanded обязано согласовываться с видимостью панели.
@@ -716,7 +720,7 @@ const checkCriteria = (results) => {
 	// Ошибки переполнения прячутся в свёрнутых панелях: прежняя оснастка их
 	// не открывала вовсе и не увидела бы никогда.
 	for (const w of NARROW) {
-		for (const key of ['acc-closed', 'acc-uplink', 'acc-bridge']) {
+		for (const key of ['acc-closed', 'acc-uplink', 'acc-engine']) {
 			const m = R(w, key);
 			if (m.accordions === 0) {
 				bad.push(`C6: ${w}px, ${key} — аккордеона нет вовсе, а на узком экране он обязан быть`);

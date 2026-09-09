@@ -49,6 +49,9 @@ export function Subscription({
 }: SubProps) {
 	const [editing, setEditing] = useState(false);
 	const [draft, setDraft] = useState('');
+	// Журнал свёрнут: обновление в норме заканчивается тостом, а журнал
+	// нужен, когда «обновлена вчера» противоречит «нажимал сегодня».
+	const [showLog, setShowLog] = useState(false);
 	const s = status.subscription;
 	const unset = s ? !s.configured : false;
 
@@ -158,8 +161,10 @@ export function Subscription({
 				</div>
 			) : null}
 
-			<div class="label">{t('sub.log.label')}</div>
-			{logs === undefined ? (
+			<button type="button" class="linkbtn" aria-expanded={showLog} onClick={() => setShowLog(!showLog)}>
+				{t(showLog ? 'sub.log.hide' : 'sub.log.show')}
+			</button>
+			{!showLog ? null : logs === undefined ? (
 				<Skel n={2} cls="line" wrap="log" />
 			) : logs === null ? (
 				<div class="log-line">{t('sub.log.down')}</div>

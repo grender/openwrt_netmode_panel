@@ -1,5 +1,12 @@
-import { useState } from 'preact/hooks';
-import type { CustomRule, RuleAction, RuleKind, RulesDraft, RulesetsCatalog, RulesetsResponse } from '../api/types';
+import { useEffect, useState } from 'preact/hooks';
+import type {
+	CustomRule,
+	RuleKind,
+	RulesDraft,
+	RulesetsCatalog,
+	RulesetsResponse,
+	SetAction,
+} from '../api/types';
 import type { Key, Lang, T } from '../i18n';
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
@@ -17,12 +24,20 @@ export const MAX_RULES = 64;
 export const MAX_COMMENT = 80;
 
 const KINDS: RuleKind[] = ['suffix', 'domain', 'cidr'];
-const ACTIONS: RuleAction[] = ['tunnel', 'direct'];
+const ACTIONS: SetAction[] = ['tunnel', 'direct'];
+
+/**
+ * Три шага в порядке проверки mihomo: свои правила → наборы → остальной
+ * трафик. Номера — не украшение: у mihomo побеждает первое совпадение, и
+ * порядок шагов и есть порядок, в котором решается судьба соединения.
+ */
+type Step = 'custom' | 'packs' | 'rest';
+const STEPS: Step[] = ['custom', 'packs', 'rest'];
 
 export interface RulesetsProps {
 	/** Что применено. Три значения побочного списка, и они разные. */
 	applied: Side<RulesetsResponse>;
-	/** Имена с GitHub. Грузится лениво: 60 КБ ради вкладки, куда заходят редко. */
+	/** Имена с GitHub. Грузится лениво: 60 КБ ради шага, куда заходят редко. */
 	catalog: Side<RulesetsCatalog>;
 	/** null означает «совпадает с применённым», а не «пусто». */
 	draft: RulesDraft | null;
@@ -40,14 +55,14 @@ export interface RulesetsProps {
  * Черновик из применённого.
  *
  * Отдельная функция, потому что «ничего не меняли» выражено null-ом:
- * дальше по вкладке считать надо один объект, а не разбирать два случая
- * в каждой строке.
+ * дальше по разделу считать надо один объект, а не разбирать два случая
+ * в каждой строке. Сводка полки на главной строится из него же.
  */
 export function draftOf(a: Side<RulesetsResponse>): RulesDraft {
 	return {
 		policy: a?.policy ?? 'profile',
 		download: a?.download ?? 'direct',
-		sets: (a?.sets ?? []).map((s) => s.name),
+		sets: (a?.sets ?? []).map((s) => ({ name: s.name, action: s.action })),
 		// Копии, а не те же объекты: строки правил правятся на месте, и
 		// править применённое значило бы менять то, с чем сверяется черновик.
 		rules: (a?.rules ?? []).map((r) => ({ ...r })),
@@ -57,6 +72,8 @@ export function draftOf(a: Side<RulesetsResponse>): RulesDraft {
 /** Правило одной строкой — для сверки черновика с применённым. Комментарий
  *  тоже в счёт: сменился текст — файл переписывается. */
 const ruleTok = (r: CustomRule) => `${r.kind}:${r.value}>${r.action}|${r.comment}`;
+/** Набор одной строкой: смена направления — такое же изменение, как снятие. */
+const setTok = (s: { name: string; action: SetAction }) => `${s.name}>${s.action}`;
 
 /**
  * Сколько правок ждёт применения. Ноль значит «применять нечего» — и это
@@ -72,8 +89,8 @@ export function dirtyCount(a: Side<RulesetsResponse>, d: RulesDraft | null): num
 	// вовсе), поэтому изменением оно там не считается: иначе панель
 	// предлагала бы применить то, что ничего не поменяет.
 	if (d.policy !== 'profile' && d.download !== base.download) n++;
-	const was = new Set(base.sets);
-	const now = new Set(d.sets);
+	const was = new Set(base.sets.map(setTok));
+	const now = new Set(d.sets.map(setTok));
 	for (const s of now) if (!was.has(s)) n++;
 	for (const s of was) if (!now.has(s)) n++;
 
@@ -91,6 +108,52 @@ export function dirtyCount(a: Side<RulesetsResponse>, d: RulesDraft | null): num
 	n += diff;
 	if (diff === 0 && wasR.join('\n') !== nowR.join('\n')) n++;
 	return n;
+}
+
+/**
+ * Числительное по трём формам русского и двум английского.
+ *
+ * Числительное собирается выбором ключа, а не окончанием: общего правила
+ * множественного числа в словаре нет намеренно (i18n/index.ts), и одно
+ * исключение ради одной строки завело бы второй механизм подстановки.
+ * Язык обязателен: русское правило, применённое к английскому, дало бы
+ * «21 rule» рядом с «5 rules» — форма второго ключа там просто другая.
+ */
+export function plural(n: number, lang: Lang, one: Key, few: Key, many: Key, t: T): string {
+	if (lang !== 'ru') return t(n === 1 ? one : many, { n });
+	const ten = n % 10;
+	const hundred = n % 100;
+	if (ten === 1 && hundred !== 11) return t(one, { n });
+	if (ten >= 2 && ten <= 4 && (hundred < 12 || hundred > 14)) return t(few, { n });
+	return t(many, { n });
+}
+
+/**
+ * «в туннель: 2 · напрямую: 1» — сводка наборов называет ОБА направления:
+ * одно число «3 набора» скрывало бы, что часть из них выключена из туннеля.
+ */
+export function setsSummary(sets: RulesDraft['sets'], t: T): string {
+	if (sets.length === 0) return t('rules.sum.sets.none');
+	const tun = sets.filter((s) => s.action === 'tunnel').length;
+	const dir = sets.length - tun;
+	const parts: string[] = [];
+	if (tun) parts.push(t('rules.sum.tunnel', { n: tun }));
+	if (dir) parts.push(t('rules.sum.direct', { n: dir }));
+	return parts.join(' · ');
+}
+
+/**
+ * Сводка раздела «Что в туннель» — она же строка полки на главной и
+ * заголовок свёрнутой карточки. Обязана называть СОСТОЯНИЕ, а не раздел:
+ * имя без цифр заставляет заходить внутрь, чтобы узнать, надо ли было.
+ */
+export function rulesSummary(a: Side<RulesetsResponse>, d: RulesDraft | null, t: T): string {
+	const eff = d ?? draftOf(a);
+	if (eff.policy === 'profile') return t('rules.sum.profile');
+	let s = `${setsSummary(eff.sets, t)} · ${t(`rules.rest.sum.${eff.policy}` as Key)}`;
+	if (eff.rules.length > 0) s += ` · ${t('rules.sum.custom', { n: eff.rules.length })}`;
+	if (dirtyCount(a, d) > 0) s += ` · ${t('rules.sum.dirty')}`;
+	return s;
 }
 
 /**
@@ -150,7 +213,7 @@ function cidrProblem(v: string): Key | null {
 function domainProblem(v: string): Key | null {
 	if (V4.test(v) || (v.includes(':') && V6ISH.test(v))) return 'rules.custom.err.ip';
 	if (v.includes('/') || v.includes(':')) return 'rules.custom.err.scheme';
-	for (const c of v) if (c > '') return 'rules.custom.err.idn';
+	for (const c of v) if (c > '\u007f') return 'rules.custom.err.idn';
 	if (v.endsWith('.') || !/^[a-z0-9.-]+$/.test(v)) return 'rules.custom.err.domain';
 	for (const label of v.split('.')) {
 		if (label === '' || label.length > 63 || label.startsWith('-') || label.endsWith('-')) {
@@ -161,43 +224,23 @@ function domainProblem(v: string): Key | null {
 }
 
 /**
- * «3 набора» по-русски, «3 sets» по-английски.
- *
- * Числительное собирается выбором ключа, а не окончанием: общего правила
- * множественного числа в словаре нет намеренно (i18n/index.ts), и одно
- * исключение ради одной строки завело бы второй механизм подстановки.
- *
- * Язык обязателен: русское правило, применённое к английскому, дало бы
- * «21 set» рядом с «5 sets» — форма второго ключа там просто другая.
- */
-export function countSets(n: number, t: T, lang: Lang): string {
-	if (lang !== 'ru') return t(n === 1 ? 'rules.count.one' : 'rules.count.many', { n });
-	const ten = n % 10;
-	const hundred = n % 100;
-	if (ten === 1 && hundred !== 11) return t('rules.count.one', { n });
-	if (ten >= 2 && ten <= 4 && (hundred < 12 || hundred > 14)) return t('rules.count.few', { n });
-	return t('rules.count.many', { n });
-}
-
-/** Подпись «В туннель · 3 набора» — она же уходит в сводку свёрнутого раздела. */
-export function onLabel(d: RulesDraft, t: T, lang: Lang): string {
-	return t(d.policy === 'except' ? 'rules.on.except' : 'rules.on.only', {
-		n: countSets(d.sets.length, t, lang),
-	});
-}
-
-/**
  * Что идёт в туннель.
  *
- * Вкладка — чистое представление: состояние (вкладка, черновик) и запись
- * живут в App. Здесь только выбор того, ЧТО показать, потому что порядок
- * блоков и есть содержание раздела: диагноз (кто сейчас решает маршрут) →
- * действие (политика) → параметры (наборы) → опасное («вернуть профилю»).
+ * Раздел — чистое представление: состояние (черновик) и запись живут в
+ * App. Здесь только выбор того, ЧТО показать, и он повторяет порядок
+ * проверки mihomo: свои правила → наборы → остальной трафик. Открыт один
+ * шаг из трёх — два развёрнутых снова дали бы страницу в два экрана.
  */
 export function Rulesets(p: RulesetsProps) {
-	const { applied, catalog, t } = p;
+	const { applied, catalog, t, lang } = p;
 	const [query, setQuery] = useState('');
 	const [ask, setAsk] = useState(false);
+	const [step, setStep] = useState<Step>('custom');
+
+	// Каталог нужен только шагу с наборами — и тянется, когда его открыли.
+	useEffect(() => {
+		if (step === 'packs') p.onLoadCatalog();
+	}, [step, p.onLoadCatalog]);
 
 	if (applied === undefined) return <Skel n={3} />;
 	// null — спросили и отказали. Это НЕ «наборов нет»: файл на диске жив,
@@ -210,8 +253,9 @@ export function Rulesets(p: RulesetsProps) {
 	const busy = p.lock.on('rulesets');
 	const problems = eff.rules.map((r, i) => ruleProblem(r, eff.rules, i));
 	const invalid = problems.filter((x) => x !== null).length;
+	const profile = eff.policy === 'profile';
 
-	// Чужой файл замораживает вкладку целиком, а не одну кнопку: демон
+	// Чужой файл замораживает раздел целиком, а не одну кнопку: демон
 	// отобьёт запись кодом foreign_mixin, и черновик, который заведомо
 	// некуда применить, — это приглашение к отказу.
 	const frozen = applied.foreign;
@@ -223,47 +267,64 @@ export function Rulesets(p: RulesetsProps) {
 	// так метка не исчезает вместе с недоступным GitHub.
 	const hasIP = (name: string) => ipNames.has(name) || !!was.get(name)?.ip;
 	const missed = (name: string) => was.get(name)?.loaded === false;
+	const cur = (name: string) => eff.sets.find((s) => s.name === name);
 
-	const applySets = (sets: string[]) =>
-		p.setDraft({
-			...eff,
-			// Выбор набора при политике профиля означает «маршрут теперь
-			// решает панель»: без переключения нажатие меняло бы только чип,
-			// а трафик шёл бы по-прежнему весь в туннель.
-			policy: eff.policy === 'profile' && sets.length > 0 ? 'only' : eff.policy,
-			sets,
-		});
+	// Первый выбранный набор или своё правило при политике профиля означают
+	// «маршрут теперь решает панель»: без переключения нажатие меняло бы
+	// только строку, а трафик шёл бы по-прежнему весь в туннель.
+	const leaveProfile = (any: boolean) => (profile && any ? ('direct' as const) : eff.policy);
 
-	const toggleSet = (name: string) =>
-		applySets(eff.sets.includes(name) ? eff.sets.filter((s) => s !== name) : [...eff.sets, name]);
+	const applySets = (sets: RulesDraft['sets']) =>
+		p.setDraft({ ...eff, policy: leaveProfile(sets.length > 0), sets });
 
-	// Правила при политике профиля — то же, что и наборы: первое своё
-	// правило означает «маршрут теперь решает панель».
+	// По умолчанию набор ведёт туда, куда НЕ идёт остальное: набор выбирают
+	// всегда ради исключения из общего правила.
+	const defaultAction = (): SetAction => (eff.policy === 'tunnel' ? 'direct' : 'tunnel');
+
+	const setAction = (name: string, action: SetAction | null) => {
+		if (action === null) return applySets(eff.sets.filter((s) => s.name !== name));
+		applySets(
+			cur(name)
+				? eff.sets.map((s) => (s.name === name ? { name, action } : s))
+				: [...eff.sets, { name, action }],
+		);
+	};
+
+	const togglePack = (names: string[]) => {
+		// Пак, выбранный целиком, снимается целиком: иначе повторное нажатие
+		// не делало бы ничего, и кнопка выглядела бы сломанной.
+		const missing = names.filter((n) => !cur(n));
+		const act = defaultAction();
+		applySets(
+			missing.length
+				? [...eff.sets, ...missing.map((name) => ({ name, action: act }))]
+				: eff.sets.filter((s) => !names.includes(s.name)),
+		);
+	};
+
 	const applyRules = (rules: CustomRule[]) =>
-		p.setDraft({
-			...eff,
-			policy: eff.policy === 'profile' && rules.length > 0 ? 'only' : eff.policy,
-			rules,
-		});
+		p.setDraft({ ...eff, policy: leaveProfile(rules.length > 0), rules });
 	const patchRule = (i: number, patch: Partial<CustomRule>) =>
 		applyRules(eff.rules.map((r, j) => (j === i ? { ...r, ...patch } : r)));
 
-	const togglePack = (names: string[]) =>
-		// Пак, выбранный целиком, снимается целиком: иначе повторное нажатие
-		// не делало бы ничего, и кнопка выглядела бы сломанной.
-		applySets(
-			names.every((n) => eff.sets.includes(n))
-				? eff.sets.filter((n) => !names.includes(n))
-				: [...eff.sets, ...names.filter((n) => !eff.sets.includes(n))],
-		);
-
 	const q = query.trim().toLowerCase();
 	const packNames = (catalog?.packs ?? []).flatMap((k) => k.sets);
+	const names = eff.sets.map((s) => s.name);
 	// Без запроса показываются выбранное и частое, с запросом — совпадения.
 	// Тысяча девятьсот имён списком не читаются ни на каком экране.
 	const found = q
 		? (catalog?.names ?? []).filter((n) => n.toLowerCase().includes(q))
-		: [...new Set([...eff.sets, ...packNames])];
+		: [...new Set([...names, ...packNames])];
+
+	// Сводки шагов: каждая называет состояние своего шага, а не его имя.
+	const customSum =
+		eff.rules.length === 0
+			? t('rules.step.custom.none')
+			: plural(eff.rules.length, lang, 'rules.custom.count.one', 'rules.custom.count.few', 'rules.custom.count.many', t) +
+				(invalid > 0 ? ` · ${t('rules.step.custom.bad', { n: invalid })}` : '');
+	const packsSum = profile ? t('rules.step.packs.profile') : setsSummary(eff.sets, t);
+	const restSum = profile ? t('rules.step.rest.profile') : t(`rules.rest.sum.${eff.policy}` as Key);
+	const sums: Record<Step, string> = { custom: customSum, packs: packsSum, rest: restSum };
 
 	return (
 		<>
@@ -279,267 +340,325 @@ export function Rulesets(p: RulesetsProps) {
 				</div>
 			) : null}
 
-			{/* Профиль — это не «пусто», а другой хозяин маршрута, поэтому
-			    у переключателя политики нет нажатого положения: панель не
-			    делает вид, что выбор за ней. */}
-			{eff.policy === 'profile' ? <div class="summary">{t('rules.profile.note')}</div> : null}
+			{/* Профиль — это не «пусто», а другой хозяин маршрута. */}
+			{profile ? <div class="summary">{t('rules.profile.note')}</div> : null}
 
-			<div class="label">{t('rules.policy.label')}</div>
-			<div class="seg">
-				{(['only', 'except'] as const).map((k) => (
+			<div class="label">{t('rules.order.label')}</div>
+			<p class="hint">{t('rules.order.text')}</p>
+
+			<div class="steps" role="tablist" aria-label={t('rules.order.label')}>
+				{STEPS.map((k, i) => (
 					<button
 						key={k}
 						type="button"
-						class="accent"
-						aria-pressed={eff.policy === k}
-						disabled={off}
-						onClick={() => p.setDraft({ ...eff, policy: k })}
+						role="tab"
+						id={`step-${k}`}
+						aria-selected={step === k}
+						aria-controls="step-panel"
+						class={`step${k === 'custom' && invalid > 0 ? ' step-bad' : ''}`}
+						onClick={() => setStep(k)}
 					>
-						{t(`rules.policy.${k}` as Key)}
+						<span class="step-head">
+							<i>{i + 1}</i>
+							{t(`rules.step.${k}` as Key)}
+							<span class="chev" aria-hidden="true">
+								{step === k ? '⌃' : '⌄'}
+							</span>
+						</span>
+						<span class="step-sum">{sums[k]}</span>
 					</button>
 				))}
 			</div>
-			{eff.policy === 'profile' ? null : (
-				<p class="hint">{t(`rules.policy.${eff.policy}.hint` as Key)}</p>
-			)}
 
-			<div class="label">{t('rules.download.label')}</div>
-			<div class="seg">
-				{(['direct', 'tunnel'] as const).map((k) => (
-					<button
-						key={k}
-						type="button"
-						aria-pressed={eff.download === k}
-						// При профиле выбор скачивания не значит ничего: правил
-						// панели в файле нет, качать нечего.
-						disabled={off || eff.policy === 'profile'}
-						onClick={() => p.setDraft({ ...eff, download: k })}
-					>
-						{t(`rules.download.${k}` as Key)}
-					</button>
-				))}
-			</div>
-			<p class="hint">{t('rules.download.hint')}</p>
-
-			{/* Подпись и чипы рисуются только там, где панель решает маршрут.
-			    «В туннель · 0 наборов» при профиле было бы ложью: туда идёт
-			    весь трафик, просто не по нашим правилам. */}
-			{eff.policy === 'profile' ? null : (
-				<>
-					<div class="label">{onLabel(eff, t, p.lang)}</div>
-					{eff.sets.length === 0 ? (
-						<div class="empty">
-							{t(eff.policy === 'except' ? 'rules.none.except' : 'rules.none.only')}
-						</div>
-					) : (
-						<div class="chips">
-							{eff.sets.map((n) => (
-								<span key={n} class={`chip${missed(n) ? ' chip-bad' : ''}`}>
-									<span>{n}</span>
-									{hasIP(n) ? <i class="ip">{t('rules.chip.ip')}</i> : null}
-									<button
-										type="button"
-										disabled={off}
-										title={t('rules.chip.off')}
-										aria-label={`${t('rules.chip.off')}: ${n}`}
-										onClick={() => toggleSet(n)}
-									>
-										✕
-									</button>
-								</span>
-							))}
-						</div>
-					)}
-				</>
-			)}
-
-			{/* Свои правила стоят между чипами и паками: это тоже «что в
-			    туннель», только словами владельца, а не именем набора. Блок
-			    виден и при профиле — добавить правило можно всегда, и это
-			    переключит политику, как и первый выбранный набор. */}
-			<div class="label">{t('rules.custom.label')}</div>
-			<p class="hint">{t('rules.custom.hint')}</p>
-			{eff.rules.length > 0 ? (
-				<div class="rows">
-					{eff.rules.map((r, i) => (
-						<div key={i} class="rule" data-bad={problems[i] ? '' : undefined}>
-							<select
-								aria-label={t('rules.custom.kind.label')}
-								value={r.kind}
-								disabled={off}
-								onChange={(e) => patchRule(i, { kind: (e.target as HTMLSelectElement).value as RuleKind })}
-							>
-								{KINDS.map((k) => (
-									<option key={k} value={k}>
-										{t(`rules.custom.kind.${k}` as Key)}
-									</option>
-								))}
-							</select>
-							<button
-								type="button"
-								class="mini danger"
-								disabled={off}
-								title={t('rules.custom.remove')}
-								aria-label={`${t('rules.custom.remove')}: ${r.value || i + 1}`}
-								onClick={() => applyRules(eff.rules.filter((_, j) => j !== i))}
-							>
-								✕
-							</button>
-							<input
-								value={r.value}
-								placeholder={t(`rules.custom.ph.${r.kind}` as Key)}
-								inputMode="url"
-								autocapitalize="off"
-								autocomplete="off"
-								spellcheck={false}
-								disabled={off}
-								aria-invalid={problems[i] ? true : undefined}
-								// К строчным — на глазах, а не молча в демоне: домен
-								// регистра не имеет, а отбивать «Example.com» после
-								// нажатия было бы придиркой к тому, чего владелец не видел.
-								onInput={(e) =>
-									patchRule(i, { value: (e.target as HTMLInputElement).value.trim().toLowerCase() })
-								}
-							/>
-							<input
-								class="note"
-								value={r.comment}
-								placeholder={t('rules.custom.ph.comment')}
-								maxLength={MAX_COMMENT}
-								autocomplete="off"
-								disabled={off}
-								// Края обрезаются при потере фокуса, а не на каждом
-								// вводе: иначе не набрать пробел между словами.
-								// Перевод строки из вставки убирается сразу.
-								onInput={(e) =>
-									patchRule(i, { comment: (e.target as HTMLInputElement).value.replace(/[\r\n]+/g, ' ') })
-								}
-								onBlur={(e) => {
-									const v = (e.target as HTMLInputElement).value.trim();
-									if (v !== r.comment) patchRule(i, { comment: v });
-								}}
-							/>
-							<div class="seg">
-								{ACTIONS.map((a) => (
-									<button
-										key={a}
-										type="button"
-										class="accent"
-										aria-pressed={r.action === a}
-										disabled={off}
-										onClick={() => patchRule(i, { action: a })}
-									>
-										{t(`rules.custom.action.${a}` as Key)}
-									</button>
+			<div id="step-panel" class="steppanel" role="tabpanel" aria-labelledby={`step-${step}`}>
+				{step === 'custom' ? (
+					<>
+						<p class="hint">{t('rules.custom.hint')}</p>
+						{eff.rules.length > 0 ? (
+							<div class="rows">
+								{eff.rules.map((r, i) => (
+									<div key={i} class="rule" data-bad={problems[i] ? '' : undefined}>
+										<select
+											aria-label={t('rules.custom.kind.label')}
+											value={r.kind}
+											disabled={off}
+											onChange={(e) => patchRule(i, { kind: (e.target as HTMLSelectElement).value as RuleKind })}
+										>
+											{KINDS.map((k) => (
+												<option key={k} value={k}>
+													{t(`rules.custom.kind.${k}` as Key)}
+												</option>
+											))}
+										</select>
+										<button
+											type="button"
+											class="mini danger"
+											disabled={off}
+											title={t('rules.custom.remove')}
+											aria-label={`${t('rules.custom.remove')}: ${r.value || i + 1}`}
+											onClick={() => applyRules(eff.rules.filter((_, j) => j !== i))}
+										>
+											✕
+										</button>
+										<input
+											value={r.value}
+											placeholder={t(`rules.custom.ph.${r.kind}` as Key)}
+											inputMode="url"
+											autocapitalize="off"
+											autocomplete="off"
+											spellcheck={false}
+											disabled={off}
+											aria-invalid={problems[i] ? true : undefined}
+											// К строчным — на глазах, а не молча в демоне: домен
+											// регистра не имеет, а отбивать «Example.com» после
+											// нажатия было бы придиркой к тому, чего владелец не видел.
+											onInput={(e) =>
+												patchRule(i, { value: (e.target as HTMLInputElement).value.trim().toLowerCase() })
+											}
+										/>
+										<input
+											class="note"
+											value={r.comment}
+											placeholder={t('rules.custom.ph.comment')}
+											maxLength={MAX_COMMENT}
+											autocomplete="off"
+											disabled={off}
+											// Края обрезаются при потере фокуса, а не на каждом
+											// вводе: иначе не набрать пробел между словами.
+											// Перевод строки из вставки убирается сразу.
+											onInput={(e) =>
+												patchRule(i, { comment: (e.target as HTMLInputElement).value.replace(/[\r\n]+/g, ' ') })
+											}
+											onBlur={(e) => {
+												const v = (e.target as HTMLInputElement).value.trim();
+												if (v !== r.comment) patchRule(i, { comment: v });
+											}}
+										/>
+										<div class="seg">
+											{ACTIONS.map((a) => (
+												<button
+													key={a}
+													type="button"
+													class="accent"
+													aria-pressed={r.action === a}
+													disabled={off}
+													onClick={() => patchRule(i, { action: a })}
+												>
+													{t(`rules.custom.action.${a}` as Key)}
+												</button>
+											))}
+										</div>
+										{problems[i] ? <p class="hint bad">{t(problems[i] as Key, { n: MAX_RULES })}</p> : null}
+									</div>
 								))}
 							</div>
-							{problems[i] ? <p class="hint bad">{t(problems[i] as Key, { n: MAX_RULES })}</p> : null}
-						</div>
-					))}
-				</div>
-			) : null}
-			{eff.rules.length >= MAX_RULES ? (
-				<p class="hint">{t('rules.custom.max', { n: MAX_RULES })}</p>
-			) : (
-				<button
-					type="button"
-					class="linkbtn"
-					disabled={off}
-					onClick={() =>
-						applyRules([...eff.rules, { kind: 'suffix', value: '', action: 'tunnel', comment: '' }])
-					}
-				>
-					+ {t('rules.custom.add')}
-				</button>
-			)}
-
-			{catalog?.packs?.length ? (
-				<>
-					<div class="label">{t('rules.packs')}</div>
-					<div class="pills dashed">
-						{catalog.packs.map((k) => (
+						) : null}
+						{eff.rules.length >= MAX_RULES ? (
+							<p class="hint">{t('rules.custom.max', { n: MAX_RULES })}</p>
+						) : (
 							<button
-								key={k.id}
 								type="button"
-								aria-pressed={k.sets.every((n) => eff.sets.includes(n))}
+								class="linkbtn"
 								disabled={off}
-								onClick={() => togglePack(k.sets)}
+								onClick={() =>
+									applyRules([...eff.rules, { kind: 'suffix', value: '', action: 'tunnel', comment: '' }])
+								}
 							>
-								{/* Незнакомый пак покажет ключ «pack.<id>» — так по всей
-								    панели поступает пропущенный ключ (i18n/index.ts):
-								    пустое место выглядит задуманным и живёт годами,
-								    а ключ на кнопке чинится при первом же взгляде.
-								    Демон и панель обновляются порознь, и новый пак
-								    вполне может приехать раньше перевода. */}
-								{t(`pack.${k.id}` as Key)}
+								+ {t('rules.custom.add')}
 							</button>
-						))}
-					</div>
-				</>
-			) : null}
+						)}
+					</>
+				) : null}
 
-			<input
-				class="search"
-				type="search"
-				value={query}
-				placeholder={t('rules.search.placeholder')}
-				aria-label={t('rules.search.placeholder')}
-				// Замок поиску не мешает: это чтение, а не действие. Гасит
-				// поле только чужой файл — там искать нечего, применить всё
-				// равно не дадут.
-				disabled={frozen}
-				onFocus={p.onLoadCatalog}
-				onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)}
-			/>
+				{step === 'packs' ? (
+					<>
+						{/* Подпись и чипы рисуются только там, где панель решает
+						    маршрут: при профиле «наборов нет» было бы ложью — туда
+						    идёт весь трафик, просто не по нашим правилам. */}
+						{profile ? null : (
+							<>
+								<div class="label">{`${setsSummary(eff.sets, t)} · ${t(`rules.rest.sum.${eff.policy}` as Key)}`}</div>
+								{eff.sets.length === 0 ? (
+									<div class="empty">{t(`rules.none.${eff.policy}` as Key)}</div>
+								) : (
+									<div class="chips">
+										{eff.sets.map((s) => (
+											<span key={s.name} class={`chip${missed(s.name) ? ' chip-bad' : ''}`}>
+												<span>{s.name}</span>
+												<i class={`dir dir-${s.action}`}>{t(`rules.dir.${s.action}` as Key)}</i>
+												{hasIP(s.name) ? <i class="ip">{t('rules.chip.ip')}</i> : null}
+												<button
+													type="button"
+													disabled={off}
+													title={t('rules.chip.off')}
+													aria-label={`${t('rules.chip.off')}: ${s.name}`}
+													onClick={() => setAction(s.name, null)}
+												>
+													✕
+												</button>
+											</span>
+										))}
+									</div>
+								)}
+							</>
+						)}
 
-			{catalog === undefined ? (
-				<Skel n={4} />
-			) : catalog === null ? (
-				<div class="empty">
-					{/* Причина берётся из словаря, а не из ответа: побочный
-					    список сообщение отказа не хранит. Поэтому текст
-					    говорит про ПОСЛЕДСТВИЕ (имён нет, поиск не работает,
-					    выбранное цело), а не выдумывает причину — 503 это был
-					    или таймаут, панель отсюда не знает. */}
-					{t('rules.catalog.down', { why: t('rules.catalog.why') })}{' '}
-					<button type="button" class="linkbtn" onClick={p.onLoadCatalog}>
-						{t('rules.catalog.retry')}
-					</button>
-				</div>
-			) : (
-				<>
-					{/* Дата показывается КАК ПРИСЛАЛ демон, без пересчёта в
-					    местное время: часы роутера и браузера расходятся, и
-					    пересчёт врал бы на величину расхождения. */}
-					{catalog.stale ? (
-						<p class="hint">{t('rules.catalog.stale', { date: catalog.fetched_at.slice(0, 10) })}</p>
-					) : null}
+						{catalog?.packs?.length ? (
+							<>
+								<div class="label">{t('rules.packs')}</div>
+								<div class="pills dashed">
+									{catalog.packs.map((k) => (
+										<button
+											key={k.id}
+											type="button"
+											aria-pressed={k.sets.every((n) => !!cur(n))}
+											disabled={off}
+											onClick={() => togglePack(k.sets)}
+										>
+											{/* Незнакомый пак покажет ключ «pack.<id>» — так по всей
+											    панели поступает пропущенный ключ (i18n/index.ts):
+											    демон новее панели, и это не отказ. */}
+											{t(`pack.${k.id}` as Key)}
+										</button>
+									))}
+								</div>
+							</>
+						) : null}
 
-					<div class="rows">
-						{found.slice(0, ROWS).map((n) => (
-							<Row
-								key={n}
-								name={n}
-								picked={eff.sets.includes(n)}
-								applied={was.has(n)}
-								except={eff.policy === 'except'}
-								missed={missed(n)}
-								off={off}
-								t={t}
-								onPick={() => toggleSet(n)}
+						<label class="field">
+							<span class="sr-only">{t('rules.search.placeholder')}</span>
+							<input
+								value={query}
+								placeholder={t('rules.search.placeholder')}
+								autocomplete="off"
+								spellcheck={false}
+								onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
 							/>
-						))}
-					</div>
+						</label>
 
-					<p class="hint">
-						{q
-							? found.length > 0
-								? t('rules.found', { q: query.trim(), n: found.length })
-								: t('rules.found.none', { q: query.trim() })
-							: t('rules.found.default')}
-					</p>
-				</>
-			)}
+						{catalog === undefined ? (
+							<Skel n={3} />
+						) : catalog === null ? (
+							<>
+								<p class="hint">{t('rules.catalog.down', { why: t('rules.catalog.why') })}</p>
+								<button type="button" class="linkbtn" onClick={p.onLoadCatalog}>
+									{t('rules.catalog.retry')}
+								</button>
+								{/* Каталога нет, но применённое показать можно: оно из файла. */}
+								{!q && names.length > 0 ? (
+									<div class="rows">
+										{names.map((n) => (
+											<Row key={n} name={n} draft={cur(n)} applied={was.get(n)} off={off} t={t} onSet={(a) => setAction(n, a)} />
+										))}
+									</div>
+								) : null}
+							</>
+						) : (
+							<>
+								{/* Дата показывается КАК ПРИСЛАЛ демон, без пересчёта в
+								    местное время: часы роутера и браузера расходятся, и
+								    пересчёт врал бы на величину расхождения. */}
+								{catalog.stale ? (
+									<p class="hint">{t('rules.catalog.stale', { date: catalog.fetched_at.slice(0, 10) })}</p>
+								) : null}
+
+								<div class="rows">
+									{found.slice(0, ROWS).map((n) => (
+										<Row key={n} name={n} draft={cur(n)} applied={was.get(n)} off={off} t={t} onSet={(a) => setAction(n, a)} />
+									))}
+								</div>
+
+								<p class="hint">
+									{q
+										? found.length > 0
+											? t('rules.found', { q: query.trim(), n: found.length })
+											: t('rules.found.none', { q: query.trim() })
+										: t('rules.found.default')}
+								</p>
+							</>
+						)}
+
+						<div class="label">{t('rules.download.label')}</div>
+						<div class="seg">
+							{(['direct', 'tunnel'] as const).map((k) => (
+								<button
+									key={k}
+									type="button"
+									aria-pressed={eff.download === k}
+									// При профиле выбор скачивания не значит ничего: правил
+									// панели в файле нет, качать нечего.
+									disabled={off || profile}
+									onClick={() => p.setDraft({ ...eff, download: k })}
+								>
+									{t(`rules.download.${k}` as Key)}
+								</button>
+							))}
+						</div>
+						<p class="hint">{t('rules.download.hint')}</p>
+						<p class="hint">{t('rules.source')}</p>
+					</>
+				) : null}
+
+				{step === 'rest' ? (
+					<>
+						<p class="hint">{t('rules.rest.text')}</p>
+						<div class="seg">
+							{(['direct', 'tunnel'] as const).map((k) => (
+								<button
+									key={k}
+									type="button"
+									class="accent"
+									aria-pressed={eff.policy === k}
+									disabled={off}
+									// Политика — такое же изменение конфигурации, как список:
+									// попадает в черновик и применяется тем же джобом.
+									// Инверсия маршрутизации, объявленная без применения, —
+									// самая дорогая ложь в этой панели.
+									onClick={() => p.setDraft({ ...eff, policy: k })}
+								>
+									{t(`rules.rest.${k}` as Key)}
+								</button>
+							))}
+						</div>
+						{profile ? null : <p class="hint">{t(`rules.rest.hint.${eff.policy}` as Key)}</p>}
+
+						{/* Возврат профилю стоит последним и открывается подтверждением:
+						    он стирает весь выбор и перезапускает движок, а откатов
+						    в проекте нет (ADR-0006). Пока правил панели и так нет,
+						    кнопки нет вовсе — нажимать было бы не на что. */}
+						{applied.policy === 'profile' ? null : (
+							<>
+								<div class="label">{t('rules.rest.profile.label')}</div>
+								<p class="hint">{t('rules.rest.profile.text')}</p>
+								<button
+									type="button"
+									class="linkbtn"
+									disabled={off}
+									aria-expanded={ask}
+									onClick={() => setAsk(!ask)}
+								>
+									{t('rules.profile.back')}
+								</button>
+								{ask ? (
+									<Confirm
+										forAction="rulesets-profile"
+										danger
+										title={t('rules.profile.back')}
+										text={t('rules.profile.back.text')}
+										go={t('rules.profile.back')}
+										cancel={t('wifi.cancel')}
+										onGo={() => {
+											setAsk(false);
+											p.onApply({ policy: 'profile', download: 'direct', sets: [], rules: [] });
+										}}
+										onCancel={() => setAsk(false)}
+									/>
+								) : null}
+							</>
+						)}
+					</>
+				) : null}
+			</div>
 
 			{dirty > 0 ? (
 				<div class="confirm" data-part="confirm" data-confirm-for="rulesets">
@@ -569,83 +688,62 @@ export function Rulesets(p: RulesetsProps) {
 					</div>
 				</div>
 			) : null}
-
-			<p class="hint">{t('rules.source')}</p>
-
-			{/* Возврат профилю стоит последним и открывается подтверждением:
-			    он стирает весь выбор и перезапускает движок, а откатов
-			    в проекте нет (ADR-0006). Пока правил панели и так нет,
-			    кнопки нет вовсе — нажимать было бы не на что. */}
-			{applied.policy === 'profile' ? null : (
-				<>
-					<button
-						type="button"
-						class="linkbtn"
-						disabled={off}
-						aria-expanded={ask}
-						onClick={() => setAsk(!ask)}
-					>
-						{t('rules.profile.back')}
-					</button>
-					{ask ? (
-						<Confirm
-							forAction="rulesets-profile"
-							danger
-							title={t('rules.profile.back')}
-							text={t('rules.profile.back.text')}
-							go={t('rules.profile.back')}
-							cancel={t('wifi.cancel')}
-							onGo={() => {
-								setAsk(false);
-								p.onApply({ policy: 'profile', download: 'direct', sets: [], rules: [] });
-							}}
-							onCancel={() => setAsk(false)}
-						/>
-					) : null}
-				</>
-			)}
 		</>
 	);
 }
 
 /**
- * Строка каталога.
- *
- * Тегов может быть два, и это не многословие: «добавлен, не применён»
- * говорит про черновик, «не загрузился» — про то, что уже лежит в файле.
- * Один тег вместо двух скрыл бы либо намерение владельца, либо отказ
- * движка.
+ * Строка каталога с трёхсегментным выбором: в туннель / напрямую / не
+ * выбран. Тегов может быть два смысла, и это не многословие: «не
+ * применено» говорит про черновик, «не загрузился» — про то, что уже лежит
+ * в файле.
  */
 function Row({
 	name,
-	picked,
+	draft,
 	applied,
-	except,
-	missed,
 	off,
 	t,
-	onPick,
+	onSet,
 }: {
 	name: string;
-	picked: boolean;
-	applied: boolean;
-	except: boolean;
-	missed: boolean;
+	draft: { name: string; action: SetAction } | undefined;
+	applied: RulesetsResponse['sets'][number] | undefined;
 	off: boolean;
 	t: T;
-	onPick(): void;
+	onSet(a: SetAction | null): void;
 }) {
-	const staged = picked !== applied;
+	const act = draft?.action ?? null;
+	const changed = (draft?.action ?? '-') !== (applied?.action ?? '-');
+	const missed = applied?.loaded === false;
 	return (
-		<button type="button" class={`row${picked ? ' sel' : ''}`} disabled={off} onClick={onPick}>
+		<div class={`row set${act ? ' sel' : ''}${act === 'direct' ? ' sel-direct' : ''}`}>
 			<span class="name">{name}</span>
-			{staged ? (
-				<span class="tag tag-pin">{t(picked ? 'rules.tag.added' : 'rules.tag.removed')}</span>
-			) : picked ? (
-				<span class="tag tag-dim">{t(except ? 'rules.tag.direct' : 'rules.tag.tunnel')}</span>
-			) : null}
-			{missed ? <span class="tag tag-bad">{t('rules.tag.notloaded')}</span> : null}
 			<span class="id">geosite:{name}</span>
-		</button>
+			<div class="setacts">
+				<div class="seg small">
+					{ACTIONS.map((a) => (
+						<button
+							key={a}
+							type="button"
+							class="accent"
+							aria-pressed={act === a}
+							disabled={off}
+							onClick={() => onSet(a)}
+						>
+							{t(`rules.row.${a}` as Key)}
+						</button>
+					))}
+					<button type="button" aria-pressed={act === null} disabled={off} onClick={() => onSet(null)}>
+						{t('rules.row.none')}
+					</button>
+				</div>
+				{changed ? (
+					<span class="tag tag-pin">{t(act ? 'rules.tag.changed' : 'rules.tag.removed')}</span>
+				) : missed ? (
+					<span class="tag tag-bad">{t('rules.tag.notloaded')}</span>
+				) : null}
+			</div>
+		</div>
 	);
 }

@@ -1253,11 +1253,23 @@ async function handleAPI(req, res, u) {
 	}
 	if (p === '/api/nikki/rulesets' && method === 'PUT') {
 		const body = await readBody(req);
-		if (!['profile', 'only', 'except'].includes(body.policy)) {
+		// Форма до ADR-0041 отбивается с подсказкой, как у демона.
+		if (body.policy === 'only' || body.policy === 'except') {
+			return fail(res, 400, 'bad_request', 'Политика ' + body.policy + ' переименована: направление теперь у каждого набора (sets — объекты {name, action}), а policy — куда идёт остальное: direct, tunnel или profile.');
+		}
+		if (!['profile', 'direct', 'tunnel'].includes(body.policy)) {
 			return fail(res, 400, 'bad_request', 'Неизвестная политика наборов geosite');
 		}
 		if (!Array.isArray(body.sets)) {
-			return fail(res, 400, 'bad_request', 'Поле sets обязано быть списком имён');
+			return fail(res, 400, 'bad_request', 'Поле sets обязано быть списком наборов');
+		}
+		if (body.sets.some((x) => typeof x !== 'object' || !x)) {
+			return fail(res, 400, 'bad_request', 'Наборы теперь с направлением: sets — объекты {"name": …, "action": "tunnel"|"direct"}, а не строки.');
+		}
+		for (const x of body.sets) {
+			if (!['tunnel', 'direct'].includes(x.action)) {
+				return fail(res, 400, 'bad_request', 'У набора ' + x.name + ' неизвестное направление ' + JSON.stringify(x.action) + ' — бывают tunnel, direct');
+			}
 		}
 		// Свои правила — до каталога, как у демона (шаг 1а): опечатка в
 		// домене от каталога не зависит.
@@ -1268,7 +1280,8 @@ async function handleAPI(req, res, u) {
 		}
 		const why = badRule(rules);
 		if (why) return fail(res, 400, 'bad_rule', why);
-		const names = body.sets;
+		const names = body.sets.map((x) => x.name);
+		const actionOf = new Map(body.sets.map((x) => [x.name, x.action]));
 		const cat = await readJSON('nikki-rulesets-catalog.json');
 		const catNames = new Set(cat.names);
 		const unknown = names.filter((n) => !catNames.has(n));
@@ -1307,6 +1320,7 @@ async function handleAPI(req, res, u) {
 				return {
 					name,
 					ip: ip.has(name),
+					action: actionOf.get(name) || 'tunnel',
 					loaded: !missed,
 					rules: missed ? 0 : 100 + i,
 					updated_at: missed ? null : nowISO(),
