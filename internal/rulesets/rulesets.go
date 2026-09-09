@@ -55,10 +55,18 @@ type Policy string
 const (
 	// PolicyProfile — наборов нет, правила целиком из профиля nikki.
 	PolicyProfile Policy = "profile"
-	// PolicyOnly — в туннель идут только выбранные наборы.
-	PolicyOnly Policy = "only"
-	// PolicyExcept — в туннель идёт всё, кроме выбранных наборов.
-	PolicyExcept Policy = "except"
+	// PolicyDirect — остальной трафик (не совпавший ни с правилом, ни с
+	// набором) идёт напрямую: хвост MATCH,DIRECT.
+	PolicyDirect Policy = "direct"
+	// PolicyTunnel — остальной трафик идёт в туннель: хвост MATCH,BYPASS.
+	PolicyTunnel Policy = "tunnel"
+
+	// legacyOnly и legacyExcept — политики до ADR-0041, когда направление
+	// всем наборам задавалось разом. Читаются (старый файл на диске обязан
+	// открыться), не пишутся никогда: only = наборы в туннель, остальное
+	// напрямую; except = наборы напрямую, остальное в туннель.
+	legacyOnly   Policy = "only"
+	legacyExcept Policy = "except"
 )
 
 // Download — откуда mihomo качает сами файлы правил.
@@ -81,6 +89,11 @@ const (
 type Set struct {
 	Name string `json:"name"`
 	IP   bool   `json:"ip"`
+	// Action — направление набора: в туннель или напрямую. Своё у
+	// каждого набора, а не одно на всех (ADR-0041): «банки напрямую, а
+	// YouTube в туннель» в одном списке иначе не выразить. Обязательно —
+	// Parse всегда его заполняет, Validate пустое отбивает.
+	Action RuleAction `json:"action"`
 }
 
 // RuleKind — вид своего правила: по чему сопоставлять.
@@ -133,7 +146,8 @@ const MaxRules = 64
 const MaxCommentRunes = 80
 
 // Config — весь выбор целиком. Порядок Sets и Rules значим: он же порядок
-// правил в файле, а у mihomo побеждает первое совпадение.
+// правил в файле, а у mihomo побеждает первое совпадение. Policy — только
+// про хвост MATCH, то есть про остальной трафик.
 type Config struct {
 	Policy   Policy
 	Download Download
@@ -233,15 +247,15 @@ func ProviderNames(s Set) []string {
 	return []string{ProviderSitePrefix + s.Name}
 }
 
-// groups — какая группа достаётся наборам и какая хвосту MATCH.
-func groups(p Policy) (set, tail string) {
-	if p == PolicyExcept {
-		return directGroup, TunnelGroup
+// tailGroup — группа хвоста MATCH: куда идёт остальной трафик.
+func tailGroup(p Policy) string {
+	if p == PolicyTunnel {
+		return TunnelGroup
 	}
-	return TunnelGroup, directGroup
+	return directGroup
 }
 
-// groupFor — группа своего правила. Из действия, не из политики.
+// groupFor — группа своего правила или набора. Из действия, не из политики.
 func groupFor(a RuleAction) string {
 	if a == ActionTunnel {
 		return TunnelGroup
@@ -283,8 +297,6 @@ func Render(c Config) []byte {
 		return []byte(b.String())
 	}
 
-	setGroup, tailGroup := groups(c.Policy)
-
 	// Рубрика провайдеров пишется, только если наборы есть: пустая
 	// «rule-providers:» — это rule-providers: null, и склейка затёрла бы
 	// провайдеров профиля владельца.
@@ -312,15 +324,15 @@ func Render(c Config) []byte {
 		// Порядок внутри набора: сначала домены, потом подсети. Правило по
 		// подсетям идёт с no-resolve — иначе mihomo резолвил бы каждый
 		// домен, чтобы сверить адрес, и платил бы за это задержкой DNS.
-		fmt.Fprintf(&b, "  - 'RULE-SET,%s%s,%s'\n", ProviderSitePrefix, s.Name, setGroup)
+		fmt.Fprintf(&b, "  - 'RULE-SET,%s%s,%s'\n", ProviderSitePrefix, s.Name, groupFor(s.Action))
 		if s.IP {
-			fmt.Fprintf(&b, "  - 'RULE-SET,%s%s,%s,no-resolve'\n", ProviderIPPrefix, s.Name, setGroup)
+			fmt.Fprintf(&b, "  - 'RULE-SET,%s%s,%s,no-resolve'\n", ProviderIPPrefix, s.Name, groupFor(s.Action))
 		}
 	}
 	// См. документацию пакета: без этой строки политика «кроме» уводит в
 	// туннель локальную сеть.
 	b.WriteString("  - 'GEOIP,PRIVATE," + directGroup + ",no-resolve'\n")
-	b.WriteString("  - 'MATCH," + tailGroup + "'\n")
+	b.WriteString("  - 'MATCH," + tailGroup(c.Policy) + "'\n")
 
 	return []byte(b.String())
 }
@@ -372,12 +384,17 @@ func stateLine(c Config) string {
 	return line
 }
 
-// setToken — набор в строке состояния: «имя» или «имя+ip».
+// setToken — набор в строке состояния: «имя[+ip]>действие».
+//
+// «+ip» стоит РАНЬШЕ «>»: разбор сначала отрезает действие по «>», потом
+// суффикс «+ip» — в обратном порядке «telegram+ip>direct» не разобрался бы.
+// «>» в именах каталога не бывает (geosite.ValidName).
 func setToken(s Set) string {
+	tok := s.Name
 	if s.IP {
-		return s.Name + "+ip"
+		tok += "+ip"
 	}
-	return s.Name
+	return tok + ">" + string(s.Action)
 }
 
 // ruleToken — правило в строке состояния: «вид:значение>действие», при
@@ -463,6 +480,10 @@ func hasContent(lines []string) bool {
 func parseState(s string) (Config, error) {
 	cfg := Config{Download: DownloadDirect}
 	seenPolicy := false
+	// Политика до ADR-0041 (only/except): направление наборам выводится
+	// после цикла — поля идут через пробел в любом порядке, и sets= может
+	// стоять раньше policy=.
+	var legacy Policy
 
 	for _, field := range strings.Fields(s) {
 		key, val, ok := strings.Cut(field, "=")
@@ -472,9 +493,13 @@ func parseState(s string) (Config, error) {
 		switch key {
 		case "policy":
 			switch Policy(val) {
-			case PolicyProfile, PolicyOnly, PolicyExcept:
+			case PolicyProfile, PolicyDirect, PolicyTunnel:
 				cfg.Policy = Policy(val)
 				seenPolicy = true
+			case legacyOnly:
+				legacy, cfg.Policy, seenPolicy = legacyOnly, PolicyDirect, true
+			case legacyExcept:
+				legacy, cfg.Policy, seenPolicy = legacyExcept, PolicyTunnel, true
 			default:
 				return Config{}, fmt.Errorf("%w: неизвестная политика %q", ErrCorrupt, val)
 			}
@@ -506,10 +531,28 @@ func parseState(s string) (Config, error) {
 	if !seenPolicy {
 		return Config{}, fmt.Errorf("%w: в состоянии нет политики", ErrCorrupt)
 	}
+	// Две грамматики не смешиваются: у старого файла направление выводится
+	// из политики, и токен с «>» в нём — правка руками; у нового токен без
+	// «>» — оборванная запись. Пустого Action после разбора не бывает.
+	for i := range cfg.Sets {
+		switch {
+		case legacy == "" && cfg.Sets[i].Action == "":
+			return Config{}, fmt.Errorf("%w: набор %q без направления", ErrCorrupt, cfg.Sets[i].Name)
+		case legacy != "" && cfg.Sets[i].Action != "":
+			return Config{}, fmt.Errorf("%w: набор %q с направлением при политике %q", ErrCorrupt, cfg.Sets[i].Name, legacy)
+		case legacy == legacyOnly:
+			cfg.Sets[i].Action = ActionTunnel
+		case legacy == legacyExcept:
+			cfg.Sets[i].Action = ActionDirect
+		}
+	}
 	return cfg, nil
 }
 
-// parseSets разбирает список наборов «имя» / «имя+ip» через запятую.
+// parseSets разбирает список наборов «имя[+ip][>действие]» через запятую.
+//
+// Действие здесь может отсутствовать — это форма файла до ADR-0041; сверку
+// «есть ли оно там, где должно» делает parseState, когда известна политика.
 func parseSets(val string) ([]Set, error) {
 	if val == "" {
 		// nil, а не пустой срез: так Parse(Render(c)) сходится с c, у
@@ -519,9 +562,13 @@ func parseSets(val string) ([]Set, error) {
 	tokens := strings.Split(val, ",")
 	sets := make([]Set, 0, len(tokens))
 	for _, tok := range tokens {
-		name, ip := strings.CutSuffix(tok, "+ip")
+		head, act, hasAct := strings.Cut(tok, ">")
+		name, ip := strings.CutSuffix(head, "+ip")
 		if name == "" {
 			return nil, fmt.Errorf("%w: пустое имя набора в %q", ErrCorrupt, val)
+		}
+		if hasAct && act != string(ActionTunnel) && act != string(ActionDirect) {
+			return nil, fmt.Errorf("%w: у набора %q неизвестное направление %q", ErrCorrupt, name, act)
 		}
 		// Посторонний знак в имени — это файл, правленный руками: сами мы
 		// таких имён не пишем (их отсеивает каталог). Принять его значило
@@ -531,7 +578,7 @@ func parseSets(val string) ([]Set, error) {
 		if !geosite.ValidName(name) {
 			return nil, fmt.Errorf("%w: в имени набора %q недопустимые знаки", ErrCorrupt, name)
 		}
-		sets = append(sets, Set{Name: name, IP: ip})
+		sets = append(sets, Set{Name: name, IP: ip, Action: RuleAction(act)})
 	}
 	return sets, nil
 }
@@ -734,9 +781,11 @@ func Fingerprint(c Config) string {
 // демон и записал.
 func Validate(c Config, cat *geosite.Catalog, applied []Set) error {
 	switch c.Policy {
-	case PolicyProfile, PolicyOnly, PolicyExcept:
+	case PolicyProfile, PolicyDirect, PolicyTunnel:
 	default:
-		return fmt.Errorf("rulesets: неизвестная политика %q", c.Policy)
+		// Сюда же попадают only/except: тело PUT прежней панели. Текст
+		// называет новую форму, чтобы владелец с curl не гадал.
+		return fmt.Errorf("rulesets: неизвестная политика %q — бывают direct, tunnel, profile", c.Policy)
 	}
 	switch c.Download {
 	case DownloadDirect, DownloadTunnel:
@@ -774,6 +823,11 @@ func Validate(c Config, cat *geosite.Catalog, applied []Set) error {
 			return fmt.Errorf("rulesets: набор %q выбран дважды", s.Name)
 		}
 		seen[s.Name] = true
+		// Направление обязательно: groupFor("") молча дал бы DIRECT, и
+		// набор без направления уехал бы в файл мимо туннеля.
+		if s.Action != ActionTunnel && s.Action != ActionDirect {
+			return fmt.Errorf("rulesets: у набора %q неизвестное направление %q — бывают tunnel, direct", s.Name, s.Action)
+		}
 
 		if _, ok := known[s.Name]; ok {
 			continue

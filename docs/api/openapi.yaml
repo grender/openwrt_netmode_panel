@@ -3049,16 +3049,24 @@ components:
             сопроводить.
 
             Пример — отпечаток того самого выбора, что лежит в
-            `examples/nikki-rulesets-only.json` (`only`, `direct`, `youtube`,
-            `telegram+ip`, `openai`): значение посчитано, а не выдумано.
-          examples: ["sha256:9ab0127ba74cf4bb"]
+            `examples/nikki-rulesets-only.json` (`direct`, `direct`,
+            `youtube>tunnel`, `telegram+ip>tunnel`, `openai>tunnel`): значение
+            посчитано, а не выдумано. Токен набора несёт направление
+            (ADR-0041), поэтому отпечатки выборов до него не совпадают с
+            нынешними — один раз, при обновлении демона.
+          examples: ["sha256:cd5187f91d87561c"]
         policy:
           type: string
-          enum: [profile, only, except]
+          enum: [profile, direct, tunnel]
           description: |
-            `profile` — наборов нет, правила целиком из профиля nikki;
-            `only` — в туннель идут только выбранные наборы;
-            `except` — в туннель идёт всё, кроме них.
+            Куда идёт **остальной** трафик — не совпавший ни со своим
+            правилом, ни с набором (хвост `MATCH`, ADR-0041): `direct` —
+            напрямую, `tunnel` — в группу `tunnel_group`; `profile` — наборов
+            и правил нет, маршрут целиком из профиля nikki. Направление
+            набора здесь не решается — оно у каждого набора своё (`action`).
+            Прежние `only`/`except` демон читает из старого файла (`only` =
+            наборы в туннель, остальное напрямую), но в `GET` не отдаёт и в
+            `PUT` не принимает.
         download:
           type: string
           enum: [direct, tunnel]
@@ -3102,13 +3110,20 @@ components:
     RulesetSet:
       type: object
       description: Один выбранный набор и его состояние в движке.
-      required: [name, ip, loaded, rules, updated_at]
+      required: [name, ip, action, loaded, rules, updated_at]
       additionalProperties: false
       properties:
         name:
           type: string
           description: Имя набора в `MetaCubeX/meta-rules-dat`.
           examples: ["youtube"]
+        action:
+          type: string
+          enum: [tunnel, direct]
+          description: |
+            Направление набора: `tunnel` — в группу `tunnel_group`, `direct`
+            — напрямую. Своё у каждого набора, наборы разных направлений
+            смешиваются в одном списке (ADR-0041).
         ip:
           type: boolean
           description: |
@@ -3148,10 +3163,12 @@ components:
       properties:
         policy:
           type: string
-          enum: [profile, only, except]
+          enum: [profile, direct, tunnel]
           description: |
-            С `profile` список `sets` обязан быть пустым: «правила из профиля»
-            с наборами — противоречие, а не сокращение.
+            Куда идёт остальной трафик. С `profile` списки `sets` и `rules`
+            обязаны быть пустыми: «правила из профиля» с наборами —
+            противоречие, а не сокращение. Прежние `only`/`except` —
+            `400 bad_request` с подсказкой, что переименовано.
         download:
           type: string
           enum: [direct, tunnel]
@@ -3161,16 +3178,17 @@ components:
             где `raw.githubusercontent.com` недоступен у провайдера.
         sets:
           type: array
-          items: { type: string }
+          items: { $ref: "#/components/schemas/SetWrite" }
           description: |
-            **Только имена.** Признак подсетей не присылается: знать, есть ли
-            имя в дереве `geoip`, может только каталог, и проставляет его
-            демон. Вкладка, открытая до обновления каталога, иначе теряла бы
-            половину набора молча.
+            Имя и направление, **без признака подсетей**: знать, есть ли имя
+            в дереве `geoip`, может только каталог, и проставляет его демон.
+            Вкладка, открытая до обновления каталога, иначе теряла бы
+            половину набора молча. Массив строк (форма до ADR-0041) —
+            `400 bad_request` с подсказкой.
 
             Порядок значим — он станет порядком правил. Повтор имени —
             `400 bad_request`.
-          examples: [["youtube", "telegram", "openai"]]
+          examples: [[{"name": "youtube", "action": "tunnel"}, {"name": "telegram", "action": "direct"}]]
         rules:
           type: array
           maxItems: 64
@@ -3181,6 +3199,19 @@ components:
             «своих правил нет». При `policy: profile` обязан быть пустым.
             Порядок значим — правила пишутся в файл в этом порядке, раньше
             наборов. Отказ — `400 bad_rule` с номером строки.
+
+    SetWrite:
+      type: object
+      description: "Набор в теле `PUT` — имя из каталога и направление."
+      required: [name, action]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          examples: ["youtube"]
+        action:
+          type: string
+          enum: [tunnel, direct]
 
     CustomRule:
       type: object
@@ -3221,7 +3252,8 @@ components:
           description: |
             `tunnel` — в группу `tunnel_group` (та же, что у наборов); `direct`
             — напрямую. Группа берётся из действия, не из политики: «этот
-            домен напрямую» значит одно и то же при `only` и при `except`.
+            домен напрямую» значит одно и то же при любом хвосте — и то же,
+            что «напрямую» у набора.
         comment:
           type: string
           maxLength: 80

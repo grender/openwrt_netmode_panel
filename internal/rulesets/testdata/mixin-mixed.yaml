@@ -1,6 +1,6 @@
 # netmoded: файл пишет панель (раздел «Узлы Nikki» → «Что в туннель · наборы»).
 # Не правьте руками — при следующем применении он переписывается целиком.
-# netmoded-rulesets: policy=direct download=direct sets=youtube>tunnel,telegram+ip>tunnel
+# netmoded-rulesets: policy=direct download=direct sets=youtube>tunnel,telegram+ip>direct
 rule-providers:
   nm-geosite-youtube:
     type: http
@@ -25,7 +25,7 @@ rule-providers:
     interval: 86400
 nikki-rules:
   - 'RULE-SET,nm-geosite-youtube,BYPASS'
-  - 'RULE-SET,nm-geosite-telegram,BYPASS'
-  - 'RULE-SET,nm-geoip-telegram,BYPASS,no-resolve'
+  - 'RULE-SET,nm-geosite-telegram,DIRECT'
+  - 'RULE-SET,nm-geoip-telegram,DIRECT,no-resolve'
   - 'GEOIP,PRIVATE,DIRECT,no-resolve'
   - 'MATCH,DIRECT'

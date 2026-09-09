@@ -40,16 +40,16 @@ func TestRenderGolden(t *testing.T) {
 		file string
 	}{
 		{
-			name: "только эти наборы, качать напрямую",
-			cfg: Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-				{Name: "youtube"}, {Name: "telegram", IP: true},
+			name: "наборы в туннель, остальное напрямую",
+			cfg: Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{
+				{Name: "youtube", Action: ActionTunnel}, {Name: "telegram", IP: true, Action: ActionTunnel},
 			}},
 			file: "mixin-only.yaml",
 		},
 		{
-			name: "всё кроме этих наборов, качать через туннель",
-			cfg: Config{Policy: PolicyExcept, Download: DownloadTunnel, Sets: []Set{
-				{Name: "github"}, {Name: "telegram", IP: true},
+			name: "наборы напрямую, остальное в туннель, качать через туннель",
+			cfg: Config{Policy: PolicyTunnel, Download: DownloadTunnel, Sets: []Set{
+				{Name: "github", Action: ActionDirect}, {Name: "telegram", IP: true, Action: ActionDirect},
 			}},
 			file: "mixin-except-tunnel.yaml",
 		},
@@ -60,22 +60,22 @@ func TestRenderGolden(t *testing.T) {
 		},
 		{
 			name: "имена с @ и ! плюс подсети",
-			cfg: Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-				{Name: "netflix@ads"}, {Name: "category-ai-!cn", IP: true},
+			cfg: Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{
+				{Name: "netflix@ads", Action: ActionTunnel}, {Name: "category-ai-!cn", IP: true, Action: ActionTunnel},
 			}},
 			file: "mixin-special.yaml",
 		},
 		{
 			name: "свои правила всех видов перед наборами",
-			cfg: Config{Policy: PolicyOnly, Download: DownloadDirect,
-				Sets:  []Set{{Name: "youtube"}, {Name: "telegram", IP: true}},
+			cfg: Config{Policy: PolicyDirect, Download: DownloadDirect,
+				Sets:  []Set{{Name: "youtube", Action: ActionTunnel}, {Name: "telegram", IP: true, Action: ActionTunnel}},
 				Rules: testRules(),
 			},
 			file: "mixin-rules.yaml",
 		},
 		{
 			name: "своё правило без наборов при политике «кроме»",
-			cfg: Config{Policy: PolicyExcept, Download: DownloadTunnel,
+			cfg: Config{Policy: PolicyTunnel, Download: DownloadTunnel,
 				Rules: []Rule{{Kind: RuleSuffix, Value: "netbird.io", Action: ActionDirect}},
 			},
 			file: "mixin-rules-nosets.yaml",
@@ -103,11 +103,11 @@ func TestRenderGolden(t *testing.T) {
 // собственного LAN. Убрать её — самая дешёвая на вид правка и самая дорогая
 // по последствиям.
 func TestRenderKeepsPrivateBeforeMatch(t *testing.T) {
-	for _, policy := range []Policy{PolicyOnly, PolicyExcept} {
+	for _, policy := range []Policy{PolicyDirect, PolicyTunnel} {
 		// Свои правила здесь тоже есть: они добавляются в ту же рубрику, и
 		// проверка обязана доказать, что хвост от них не сдвинулся.
 		lines := strings.Split(strings.TrimRight(string(Render(Config{
-			Policy: policy, Download: DownloadDirect, Sets: []Set{{Name: "youtube"}},
+			Policy: policy, Download: DownloadDirect, Sets: []Set{{Name: "youtube", Action: ActionTunnel}},
 			Rules: []Rule{{Kind: RuleCIDR, Value: "100.64.0.0/10", Action: ActionDirect}},
 		})), "\n"), "\n")
 
@@ -128,7 +128,7 @@ func TestRenderKeepsPrivateBeforeMatch(t *testing.T) {
 // затёрла бы провайдеров профиля — то есть безобидный на вид «ничего не
 // выбрано» сломал бы чужие правила.
 func TestRenderEmptySetsHasNoProviders(t *testing.T) {
-	got := string(Render(Config{Policy: PolicyOnly, Download: DownloadDirect}))
+	got := string(Render(Config{Policy: PolicyDirect, Download: DownloadDirect}))
 	if strings.Contains(got, "rule-providers") {
 		t.Errorf("при пустом выборе появилась рубрика rule-providers:\n%s", got)
 	}
@@ -157,7 +157,7 @@ func testRules() []Rule {
 // строке состояния. Строка с решёткой не должна ни сбивать счёт правил, ни
 // попадать в другое место файла: над чужим правилом она врала бы.
 func TestRenderCommentLine(t *testing.T) {
-	cfg := Config{Policy: PolicyOnly, Download: DownloadDirect, Rules: []Rule{
+	cfg := Config{Policy: PolicyDirect, Download: DownloadDirect, Rules: []Rule{
 		{Kind: RuleSuffix, Value: "a.com", Action: ActionTunnel},
 		{Kind: RuleCIDR, Value: "10.0.0.0/8", Action: ActionDirect, Comment: "домашняя сеть; см. wiki > vpn"},
 		{Kind: RuleDomain, Value: "b.com", Action: ActionDirect},
@@ -187,9 +187,9 @@ func TestRenderCommentLine(t *testing.T) {
 // забирал бы соединение первым, и правило было бы мёртвым — ровно та беда,
 // из-за которой они появились (правила профиля за нашим MATCH).
 func TestRenderRulesPrecedeSets(t *testing.T) {
-	for _, policy := range []Policy{PolicyOnly, PolicyExcept} {
+	for _, policy := range []Policy{PolicyDirect, PolicyTunnel} {
 		lines := strings.Split(strings.TrimRight(string(Render(Config{
-			Policy: policy, Download: DownloadDirect, Sets: []Set{{Name: "youtube"}},
+			Policy: policy, Download: DownloadDirect, Sets: []Set{{Name: "youtube", Action: ActionTunnel}},
 			Rules: []Rule{
 				{Kind: RuleSuffix, Value: "worldsimseries.com", Action: ActionTunnel},
 				{Kind: RuleDomain, Value: "api.netbird.io", Action: ActionDirect},
@@ -226,25 +226,25 @@ func TestParseRoundTrip(t *testing.T) {
 		name string
 		cfg  Config
 	}{
-		{"только эти", Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-			{Name: "youtube"}, {Name: "telegram", IP: true},
+		{"наборы в туннель", Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{
+			{Name: "youtube", Action: ActionTunnel}, {Name: "telegram", IP: true, Action: ActionTunnel},
 		}}},
-		{"кроме этих через туннель", Config{Policy: PolicyExcept, Download: DownloadTunnel, Sets: []Set{
-			{Name: "github"}, {Name: "telegram", IP: true},
+		{"наборы напрямую, остальное в туннель", Config{Policy: PolicyTunnel, Download: DownloadTunnel, Sets: []Set{
+			{Name: "github", Action: ActionDirect}, {Name: "telegram", IP: true, Action: ActionDirect},
 		}}},
 		{"из профиля", Config{Policy: PolicyProfile, Download: DownloadDirect}},
-		{"имена с @ и !", Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-			{Name: "netflix@ads"}, {Name: "category-ai-!cn", IP: true},
+		{"имена с @ и !", Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{
+			{Name: "netflix@ads", Action: ActionTunnel}, {Name: "category-ai-!cn", IP: true, Action: ActionTunnel},
 		}}},
-		{"ничего не выбрано", Config{Policy: PolicyExcept, Download: DownloadTunnel}},
-		{"свои правила с наборами", Config{Policy: PolicyOnly, Download: DownloadDirect,
-			Sets: []Set{{Name: "youtube"}, {Name: "telegram", IP: true}}, Rules: testRules()}},
-		{"своё правило без наборов", Config{Policy: PolicyExcept, Download: DownloadTunnel,
+		{"ничего не выбрано", Config{Policy: PolicyTunnel, Download: DownloadTunnel}},
+		{"свои правила с наборами", Config{Policy: PolicyDirect, Download: DownloadDirect,
+			Sets: []Set{{Name: "youtube", Action: ActionTunnel}, {Name: "telegram", IP: true, Action: ActionTunnel}}, Rules: testRules()}},
+		{"своё правило без наборов", Config{Policy: PolicyTunnel, Download: DownloadTunnel,
 			Rules: []Rule{{Kind: RuleSuffix, Value: "netbird.io", Action: ActionDirect}}}},
 		// Комментарий со всеми знаками, которые что-то значат в строке
 		// состояния: пробел (разделитель полей), ; (правил), > (действия),
 		// | (комментария), # (комментарий YAML), плюс и процент (кодирование).
-		{"комментарий с опасными знаками", Config{Policy: PolicyOnly, Download: DownloadDirect,
+		{"комментарий с опасными знаками", Config{Policy: PolicyDirect, Download: DownloadDirect,
 			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel,
 				Comment: "a;b>c#d|e f+g%h — кириллица"}}}},
 	}
@@ -328,41 +328,48 @@ func TestParseCorrupt(t *testing.T) {
 		{"правил меньше, чем наборов", golden(t, "mixin-corrupt.yaml")},
 		{"строки состояния нет вовсе", []byte(head + "rule-providers:\n")},
 		{"неизвестная политика", []byte(head + stateMark + " policy=maybe download=direct sets=\n")},
-		{"неизвестное скачивание", []byte(head + stateMark + " policy=only download=carrier sets=\n")},
-		{"неизвестное поле состояния", []byte(head + stateMark + " policy=only mood=good sets=\n")},
-		{"пустое имя набора", []byte(head + stateMark + " policy=only download=direct sets=youtube,\n")},
+		{"неизвестное скачивание", []byte(head + stateMark + " policy=direct download=carrier sets=\n")},
+		{"неизвестное поле состояния", []byte(head + stateMark + " policy=direct mood=good sets=\n")},
+		{"пустое имя набора", []byte(head + stateMark + " policy=direct download=direct sets=youtube>tunnel,\n")},
+		{"набор без направления при новой политике", []byte(head + stateMark + " policy=direct download=direct sets=youtube\n" +
+			"nikki-rules:\n  - 'RULE-SET,nm-geosite-youtube,BYPASS'\n")},
+		{"набор с неизвестным направлением", []byte(head + stateMark + " policy=direct download=direct sets=youtube>reject\n" +
+			"nikki-rules:\n  - 'RULE-SET,nm-geosite-youtube,BYPASS'\n")},
+		// Старый файл направления не писал: токен с «>» под only — правка руками.
+		{"набор с направлением при старой политике", []byte(head + stateMark + " policy=only download=direct sets=youtube>tunnel\n" +
+			"nikki-rules:\n  - 'RULE-SET,nm-geosite-youtube,BYPASS'\n")},
 		// Тело здесь СХОДИТСЯ с состоянием — одно правило на один набор,
 		// — и без проверки знаков такой файл проезжал бы молча: имя с
 		// апострофом уехало бы обратно в mixin.yaml и порвало бы YAML на
 		// следующем старте nikki.
-		{"имя с апострофом", []byte(head + stateMark + " policy=only download=direct sets=it's\n" +
+		{"имя с апострофом", []byte(head + stateMark + " policy=direct download=direct sets=it's>tunnel\n" +
 			"nikki-rules:\n" + ruleSiteLinePrefix + "it's,BYPASS'\n")},
 
 		// Свои правила: строка состояния и тело обязаны сходиться и здесь.
-		{"неизвестный вид правила", []byte(head + stateMark + " policy=only download=direct sets= rules=glob:x.com>tunnel\n" +
+		{"неизвестный вид правила", []byte(head + stateMark + " policy=direct download=direct sets= rules=glob:x.com>tunnel\n" +
 			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,BYPASS'\n")},
-		{"неизвестное действие правила", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:x.com>reject\n" +
+		{"неизвестное действие правила", []byte(head + stateMark + " policy=direct download=direct sets= rules=suffix:x.com>reject\n" +
 			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,REJECT'\n")},
-		{"недопустимое значение правила", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:Bad.Com>tunnel\n" +
+		{"недопустимое значение правила", []byte(head + stateMark + " policy=direct download=direct sets= rules=suffix:Bad.Com>tunnel\n" +
 			"nikki-rules:\n  - 'DOMAIN-SUFFIX,Bad.Com,BYPASS'\n")},
-		{"дубль правила", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:x.com>tunnel;suffix:x.com>direct\n" +
+		{"дубль правила", []byte(head + stateMark + " policy=direct download=direct sets= rules=suffix:x.com>tunnel;suffix:x.com>direct\n" +
 			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,BYPASS'\n  - 'DOMAIN-SUFFIX,x.com,DIRECT'\n")},
-		{"токен правила без действия", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:x.com\n" +
+		{"токен правила без действия", []byte(head + stateMark + " policy=direct download=direct sets= rules=suffix:x.com\n" +
 			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,BYPASS'\n")},
-		{"правило в состоянии есть, строки в теле нет", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:x.com>tunnel\n" +
+		{"правило в состоянии есть, строки в теле нет", []byte(head + stateMark + " policy=direct download=direct sets= rules=suffix:x.com>tunnel\n" +
 			"nikki-rules:\n  - 'GEOIP,PRIVATE,DIRECT,no-resolve'\n  - 'MATCH,DIRECT'\n")},
 		// Строка дописана руками: в состоянии её нет, и молча принять её
 		// значило бы потерять при следующей записи то, что владелец считает
 		// применённым.
-		{"строка в теле есть, правила в состоянии нет", []byte(head + stateMark + " policy=only download=direct sets=\n" +
+		{"строка в теле есть, правила в состоянии нет", []byte(head + stateMark + " policy=direct download=direct sets=\n" +
 			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,BYPASS'\n  - 'GEOIP,PRIVATE,DIRECT,no-resolve'\n  - 'MATCH,DIRECT'\n")},
 		// Комментарий в состоянии: битое кодирование, перевод строки,
 		// длиннее потолка — всё это файл, правленный руками.
-		{"комментарий с битым процент-кодированием", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:x.com>tunnel|%ZZ\n" +
+		{"комментарий с битым процент-кодированием", []byte(head + stateMark + " policy=direct download=direct sets= rules=suffix:x.com>tunnel|%ZZ\n" +
 			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,BYPASS'\n")},
-		{"комментарий с переводом строки", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:x.com>tunnel|a%0Ab\n" +
+		{"комментарий с переводом строки", []byte(head + stateMark + " policy=direct download=direct sets= rules=suffix:x.com>tunnel|a%0Ab\n" +
 			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,BYPASS'\n")},
-		{"комментарий длиннее 80", []byte(head + stateMark + " policy=only download=direct sets= rules=suffix:x.com>tunnel|" + strings.Repeat("a", 81) + "\n" +
+		{"комментарий длиннее 80", []byte(head + stateMark + " policy=direct download=direct sets= rules=suffix:x.com>tunnel|" + strings.Repeat("a", 81) + "\n" +
 			"nikki-rules:\n  - 'DOMAIN-SUFFIX,x.com,BYPASS'\n")},
 	}
 
@@ -380,7 +387,7 @@ func TestParseCorrupt(t *testing.T) {
 // как «качать напрямую», а не как повреждённый: умолчание меняться не должно.
 func TestParseDownloadDefaultsToDirect(t *testing.T) {
 	in := []byte("# netmoded: шапка\n# вторая строка\n" +
-		stateMark + " policy=only sets=youtube\n" +
+		stateMark + " policy=direct sets=youtube>tunnel\n" +
 		"nikki-rules:\n  - 'RULE-SET,nm-geosite-youtube,BYPASS'\n")
 
 	cfg, _, err := Parse(in)
@@ -397,7 +404,7 @@ func TestParseDownloadDefaultsToDirect(t *testing.T) {
 // пустое». nil, а не пустой срез: так Parse(Render(c)) сходится с c без правил.
 func TestParseOldFileWithoutRulesHasNone(t *testing.T) {
 	in := []byte("# netmoded: шапка\n# вторая строка\n" +
-		stateMark + " policy=only download=direct sets=youtube\n" +
+		stateMark + " policy=direct download=direct sets=youtube>tunnel\n" +
 		"nikki-rules:\n  - 'RULE-SET,nm-geosite-youtube,BYPASS'\n" +
 		"  - 'GEOIP,PRIVATE,DIRECT,no-resolve'\n  - 'MATCH,DIRECT'\n")
 
@@ -410,17 +417,96 @@ func TestParseOldFileWithoutRulesHasNone(t *testing.T) {
 	}
 }
 
+// TestParseLegacyOnlyExcept — файл до ADR-0041 читается: направление наборам
+// выводится из старой политики, а перерисовка даёт то же тело в новой форме.
+//
+// На роутере такой файл лежит в момент обновления демона; прочитать его
+// как испорченный значило бы отбить GET сразу после деплоя.
+func TestParseLegacyOnlyExcept(t *testing.T) {
+	cases := []struct {
+		name   string
+		file   string
+		policy Policy
+		action RuleAction
+		modern string
+	}{
+		{"only → наборы в туннель, остальное напрямую", "mixin-legacy-only.yaml", PolicyDirect, ActionTunnel, "mixin-only.yaml"},
+		{"except → наборы напрямую, остальное в туннель", "mixin-legacy-except.yaml", PolicyTunnel, ActionDirect, "mixin-except-tunnel.yaml"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, foreign, err := Parse(golden(t, tc.file))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if foreign {
+				t.Fatal("старый свой файл опознан как чужой")
+			}
+			if cfg.Policy != tc.policy {
+				t.Errorf("политика %q, ожидалась %q", cfg.Policy, tc.policy)
+			}
+			for _, s := range cfg.Sets {
+				if s.Action != tc.action {
+					t.Errorf("набор %s: направление %q, ожидалось %q", s.Name, s.Action, tc.action)
+				}
+			}
+			// Перерисовка — байт-в-байт современный голден: тело то же,
+			// изменилась только строка состояния.
+			if got, want := string(Render(cfg)), string(golden(t, tc.modern)); got != want {
+				t.Errorf("перерисовка старого файла не совпала с %s:\n%s", tc.modern, got)
+			}
+		})
+	}
+}
+
+// TestRenderMixedDirections — наборы разных направлений в одном списке:
+// группа у RULE-SET берётся из набора, хвост — из политики.
+func TestRenderMixedDirections(t *testing.T) {
+	cfg := Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{
+		{Name: "youtube", Action: ActionTunnel}, {Name: "telegram", IP: true, Action: ActionDirect},
+	}}
+	got := string(Render(cfg))
+	if want := string(golden(t, "mixin-mixed.yaml")); got != want {
+		t.Errorf("Render не совпал с mixin-mixed.yaml:\n--- получено ---\n%s\n--- ожидалось ---\n%s", got, want)
+	}
+	back, _, err := Parse([]byte(got))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !reflect.DeepEqual(back, cfg) {
+		t.Errorf("прочитано %+v, записано %+v", back, cfg)
+	}
+}
+
+// TestValidateRejectsEmptySetAction — набор без направления отбивается:
+// groupFor("") молча дал бы DIRECT, и набор уехал бы в файл мимо туннеля.
+func TestValidateRejectsEmptySetAction(t *testing.T) {
+	err := Validate(Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{{Name: "youtube"}}}, testCatalog(), nil)
+	if err == nil || !strings.Contains(err.Error(), "направление") {
+		t.Errorf("получено %v, ожидался отказ про направление", err)
+	}
+	err = Validate(Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{{Name: "youtube", Action: "reject"}}}, testCatalog(), nil)
+	if err == nil || !strings.Contains(err.Error(), "reject") {
+		t.Errorf("получено %v, ожидался отказ с названием направления", err)
+	}
+	// Старая политика в теле PUT — отказ с подсказкой новой формы.
+	err = Validate(Config{Policy: "only", Download: DownloadDirect}, testCatalog(), nil)
+	if err == nil || !strings.Contains(err.Error(), "direct, tunnel, profile") {
+		t.Errorf("получено %v, ожидался отказ с перечнем политик", err)
+	}
+}
+
 // TestFingerprintSensitive — отпечаток различает всё, из-за чего файл надо
 // переписать, и совпадает у одинакового выбора.
 //
 // На нём держится If-Match: если отпечаток не заметит перестановку наборов,
 // две открытые вкладки молча затрут выбор друг друга.
 func TestFingerprintSensitive(t *testing.T) {
-	base := Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-		{Name: "youtube"}, {Name: "telegram", IP: true},
+	base := Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{
+		{Name: "youtube", Action: ActionTunnel}, {Name: "telegram", IP: true, Action: ActionTunnel},
 	}}
-	same := Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-		{Name: "youtube"}, {Name: "telegram", IP: true},
+	same := Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{
+		{Name: "youtube", Action: ActionTunnel}, {Name: "telegram", IP: true, Action: ActionTunnel},
 	}}
 	if Fingerprint(base) != Fingerprint(same) {
 		t.Error("одинаковый выбор дал разные отпечатки")
@@ -428,12 +514,12 @@ func TestFingerprintSensitive(t *testing.T) {
 	if !strings.HasPrefix(Fingerprint(base), "sha256:") {
 		t.Errorf("отпечаток %q без приставки sha256:", Fingerprint(base))
 	}
-	// Литерал посчитан ДО появления своих правил. Выбор без правил обязан
-	// давать тот же отпечаток, что раньше: иначе после обновления демона
-	// первый же PUT из открытой вкладки отбивался бы как stale_rulesets, а
-	// пример в openapi и nikki-rulesets-only.json стал бы враньём.
-	if got := Fingerprint(base); got != "sha256:467b08a81b06cf99" {
-		t.Errorf("отпечаток выбора без правил %s, до своих правил был sha256:467b08a81b06cf99", got)
+	// Литерал закреплён: отпечаток — часть контракта (If-Match), и менять
+	// его молча нельзя. Последняя намеренная смена — ADR-0041 (направление
+	// у набора вошло в токен); пример в openapi и nikki-rulesets-only.json
+	// посчитаны от той же формы.
+	if got := Fingerprint(base); got != "sha256:3152c5b169d15b70" {
+		t.Errorf("отпечаток базового выбора %s, закреплён sha256:3152c5b169d15b70", got)
 	}
 
 	rule := Rule{Kind: RuleSuffix, Value: "worldsimseries.com", Action: ActionTunnel}
@@ -441,18 +527,18 @@ func TestFingerprintSensitive(t *testing.T) {
 		name string
 		cfg  Config
 	}{
-		{"другой порядок наборов", Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-			{Name: "telegram", IP: true}, {Name: "youtube"},
+		{"другой порядок наборов", Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{
+			{Name: "telegram", IP: true, Action: ActionTunnel}, {Name: "youtube", Action: ActionTunnel},
 		}}},
-		{"другое скачивание", Config{Policy: PolicyOnly, Download: DownloadTunnel, Sets: base.Sets}},
-		{"другая политика", Config{Policy: PolicyExcept, Download: DownloadDirect, Sets: base.Sets}},
-		{"снят признак подсетей", Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-			{Name: "youtube"}, {Name: "telegram"},
+		{"другое скачивание", Config{Policy: PolicyDirect, Download: DownloadTunnel, Sets: base.Sets}},
+		{"другая политика", Config{Policy: PolicyTunnel, Download: DownloadDirect, Sets: base.Sets}},
+		{"снят признак подсетей", Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{
+			{Name: "youtube", Action: ActionTunnel}, {Name: "telegram", Action: ActionTunnel},
 		}}},
-		{"набор убран", Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-			{Name: "youtube"},
+		{"набор убран", Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{
+			{Name: "youtube", Action: ActionTunnel},
 		}}},
-		{"добавлено своё правило", Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: base.Sets,
+		{"добавлено своё правило", Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: base.Sets,
 			Rules: []Rule{rule}}},
 	}
 	for _, tc := range others {
@@ -463,13 +549,13 @@ func TestFingerprintSensitive(t *testing.T) {
 
 	// Среди правил различаются действие и порядок: «домен напрямую» и
 	// «домен в туннель» — разные выборы, а порядок — это кто побеждает.
-	withRule := Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: base.Sets, Rules: []Rule{
+	withRule := Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: base.Sets, Rules: []Rule{
 		rule, {Kind: RuleCIDR, Value: "100.64.0.0/10", Action: ActionDirect},
 	}}
-	flipped := Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: base.Sets, Rules: []Rule{
+	flipped := Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: base.Sets, Rules: []Rule{
 		{Kind: RuleSuffix, Value: "worldsimseries.com", Action: ActionDirect}, withRule.Rules[1],
 	}}
-	swapped := Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: base.Sets, Rules: []Rule{
+	swapped := Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: base.Sets, Rules: []Rule{
 		withRule.Rules[1], withRule.Rules[0],
 	}}
 	if Fingerprint(withRule) == Fingerprint(flipped) {
@@ -482,22 +568,22 @@ func TestFingerprintSensitive(t *testing.T) {
 	// Комментарий — тоже часть выбора: сменился текст, файл надо переписать.
 	// А правило БЕЗ комментария даёт тот же токен, что до появления поля:
 	// литерал посчитан до него, и отпечатки правил на роутере не меняются.
-	commented := Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: base.Sets, Rules: []Rule{
+	commented := Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: base.Sets, Rules: []Rule{
 		{Kind: RuleSuffix, Value: "worldsimseries.com", Action: ActionTunnel, Comment: "лига"}, withRule.Rules[1],
 	}}
 	if Fingerprint(withRule) == Fingerprint(commented) {
 		t.Error("смена комментария не изменила отпечаток")
 	}
-	noComments := Config{Policy: PolicyOnly, Download: DownloadDirect,
-		Sets: []Set{{Name: "youtube"}, {Name: "telegram", IP: true}},
+	noComments := Config{Policy: PolicyDirect, Download: DownloadDirect,
+		Sets: []Set{{Name: "youtube", Action: ActionTunnel}, {Name: "telegram", IP: true, Action: ActionTunnel}},
 		Rules: []Rule{
 			{Kind: RuleSuffix, Value: "worldsimseries.com", Action: ActionTunnel},
 			{Kind: RuleDomain, Value: "api.netbird.io", Action: ActionDirect},
 			{Kind: RuleCIDR, Value: "100.64.0.0/10", Action: ActionDirect},
 			{Kind: RuleCIDR, Value: "fd00::/8", Action: ActionDirect},
 		}}
-	if got := Fingerprint(noComments); got != "sha256:0e5545a52d1a0040" {
-		t.Errorf("отпечаток правил без комментариев %s, до поля был sha256:0e5545a52d1a0040", got)
+	if got := Fingerprint(noComments); got != "sha256:6b4f38279fd28c12" {
+		t.Errorf("отпечаток правил без комментариев %s, закреплён sha256:6b4f38279fd28c12", got)
 	}
 }
 
@@ -515,7 +601,7 @@ func TestValidate(t *testing.T) {
 	// Второе имя применено, но написано непозволительно: попасть в файл
 	// оно могло только правкой руками, а PUT с ним придёт как «уже
 	// применённое», то есть мимо сверки с каталогом.
-	applied := []Set{{Name: "already-applied", IP: true}, {Name: "bad'name"}}
+	applied := []Set{{Name: "already-applied", IP: true, Action: ActionTunnel}, {Name: "bad'name", Action: ActionTunnel}}
 
 	cases := []struct {
 		name    string
@@ -529,41 +615,41 @@ func TestValidate(t *testing.T) {
 		// wantIn — что обязано быть в тексте ошибки.
 		wantIn []string
 	}{
-		{name: "только эти, имена из каталога", cat: cat,
-			cfg: Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{{Name: "youtube"}}}},
-		{name: "кроме этих, наборов ноль", cat: cat,
-			cfg: Config{Policy: PolicyExcept, Download: DownloadTunnel}},
+		{name: "хвост напрямую, имена из каталога", cat: cat,
+			cfg: Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{{Name: "youtube", Action: ActionTunnel}}}},
+		{name: "хвост в туннель, наборов ноль", cat: cat,
+			cfg: Config{Policy: PolicyTunnel, Download: DownloadTunnel}},
 		{name: "из профиля без наборов", cat: cat,
 			cfg: Config{Policy: PolicyProfile, Download: DownloadDirect}},
 		{name: "уже применённое имя валидно и без каталога", cat: nil,
-			cfg: Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{{Name: "already-applied"}}}},
+			cfg: Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{{Name: "already-applied", Action: ActionTunnel}}}},
 
 		{name: "неизвестная политика", cat: cat, wantErr: true,
 			cfg: Config{Policy: "maybe", Download: DownloadDirect}},
 		{name: "неизвестное скачивание", cat: cat, wantErr: true,
-			cfg: Config{Policy: PolicyOnly, Download: "carrier"}},
+			cfg: Config{Policy: PolicyDirect, Download: "carrier"}},
 		{name: "из профиля с наборами", cat: cat, wantErr: true,
-			cfg: Config{Policy: PolicyProfile, Download: DownloadDirect, Sets: []Set{{Name: "youtube"}}}},
+			cfg: Config{Policy: PolicyProfile, Download: DownloadDirect, Sets: []Set{{Name: "youtube", Action: ActionTunnel}}}},
 		{name: "дубль имени", cat: cat, wantErr: true, wantIn: []string{"youtube"},
-			cfg: Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-				{Name: "youtube"}, {Name: "telegram"}, {Name: "youtube"},
+			cfg: Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{
+				{Name: "youtube", Action: ActionTunnel}, {Name: "telegram", Action: ActionTunnel}, {Name: "youtube", Action: ActionTunnel},
 			}}},
 		{name: "имён нет в каталоге", cat: cat, wantErr: true,
 			wantUnknown: true, wantIn: []string{"nosuchset", "norsuchone"},
-			cfg: Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-				{Name: "youtube"}, {Name: "nosuchset"}, {Name: "norsuchone"},
+			cfg: Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{
+				{Name: "youtube", Action: ActionTunnel}, {Name: "nosuchset", Action: ActionTunnel}, {Name: "norsuchone", Action: ActionTunnel},
 			}}},
 		// Текст обязан назвать причину именно знаками: имя с запятой есть
 		// в списке «неизвестных» и без проверки, но чинится оно не поиском
 		// по каталогу.
 		{name: "посторонний знак в имени", cat: cat, wantErr: true,
 			wantIn: []string{"a,b", "недопустим"},
-			cfg:    Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{{Name: "a,b"}}}},
+			cfg:    Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{{Name: "a,b", Action: ActionTunnel}}}},
 		{name: "посторонний знак у уже применённого имени", cat: cat, wantErr: true,
 			wantIn: []string{"недопустим"},
-			cfg:    Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{{Name: "bad'name"}}}},
+			cfg:    Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{{Name: "bad'name", Action: ActionTunnel}}}},
 		{name: "каталога нет, а имя новое", cat: nil, wantErr: true, wantIs: ErrNoCatalog,
-			cfg: Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{{Name: "youtube"}}}},
+			cfg: Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{{Name: "youtube", Action: ActionTunnel}}}},
 	}
 
 	for _, tc := range cases {
@@ -604,7 +690,7 @@ func TestValidate(t *testing.T) {
 // сверять не с чем.
 func TestValidateRules(t *testing.T) {
 	ok := func(k RuleKind, v string, a RuleAction) Config {
-		return Config{Policy: PolicyOnly, Download: DownloadDirect, Rules: []Rule{{Kind: k, Value: v, Action: a}}}
+		return Config{Policy: PolicyDirect, Download: DownloadDirect, Rules: []Rule{{Kind: k, Value: v, Action: a}}}
 	}
 
 	accept := []struct {
@@ -619,12 +705,12 @@ func TestValidateRules(t *testing.T) {
 		{"домен из одной метки", ok(RuleSuffix, "lan", ActionDirect)},
 		{"punycode", ok(RuleSuffix, "xn--e1afmkfd.xn--p1ai", ActionTunnel)},
 		{"дефис внутри метки и цифры", ok(RuleSuffix, "my-site1.co.uk", ActionTunnel)},
-		{"правила при политике «кроме» без наборов", Config{Policy: PolicyExcept, Download: DownloadTunnel,
+		{"правила при хвосте в туннель без наборов", Config{Policy: PolicyTunnel, Download: DownloadTunnel,
 			Rules: []Rule{{Kind: RuleSuffix, Value: "netbird.io", Action: ActionDirect}}}},
 		{"правила без каталога", ok(RuleSuffix, "example.com", ActionTunnel)},
-		{"комментарий в 80 рун кириллицей", Config{Policy: PolicyOnly, Download: DownloadDirect,
+		{"комментарий в 80 рун кириллицей", Config{Policy: PolicyDirect, Download: DownloadDirect,
 			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel, Comment: strings.Repeat("ё", 80)}}}},
-		{"комментарий с пробелами внутри и знаками", Config{Policy: PolicyOnly, Download: DownloadDirect,
+		{"комментарий с пробелами внутри и знаками", Config{Policy: PolicyDirect, Download: DownloadDirect,
 			Rules: []Rule{{Kind: RuleCIDR, Value: "157.90.0.0/16", Action: ActionTunnel, Comment: "серверы WSS; Hetzner (выделенные) > туннель #1"}}}},
 	}
 	for _, tc := range accept {
@@ -652,8 +738,8 @@ func TestValidateRules(t *testing.T) {
 		{"неизвестное действие", ok(RuleSuffix, "x.com", "reject"), 1, []string{"reject"}},
 		{"из профиля с правилами", Config{Policy: PolicyProfile, Download: DownloadDirect,
 			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel}}}, 1, []string{"profile"}},
-		{"больше потолка", Config{Policy: PolicyOnly, Download: DownloadDirect, Rules: many}, MaxRules + 1, []string{"64"}},
-		{"дубль вида и значения при разных действиях", Config{Policy: PolicyOnly, Download: DownloadDirect, Rules: []Rule{
+		{"больше потолка", Config{Policy: PolicyDirect, Download: DownloadDirect, Rules: many}, MaxRules + 1, []string{"64"}},
+		{"дубль вида и значения при разных действиях", Config{Policy: PolicyDirect, Download: DownloadDirect, Rules: []Rule{
 			{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel},
 			{Kind: RuleCIDR, Value: "10.0.0.0/8", Action: ActionDirect},
 			{Kind: RuleSuffix, Value: "x.com", Action: ActionDirect},
@@ -680,15 +766,15 @@ func TestValidateRules(t *testing.T) {
 		{"IPv6 в верхнем регистре", ok(RuleCIDR, "FD00::/8", ActionDirect), 1, nil},
 		{"IPv4 внутри IPv6", ok(RuleCIDR, "::ffff:1.2.3.0/120", ActionDirect), 1, nil},
 		{"домен под видом подсети", ok(RuleCIDR, "x.com", ActionDirect), 1, []string{"x.com"}},
-		{"комментарий в 81 руну", Config{Policy: PolicyOnly, Download: DownloadDirect,
+		{"комментарий в 81 руну", Config{Policy: PolicyDirect, Download: DownloadDirect,
 			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel, Comment: strings.Repeat("ё", 81)}}}, 1, []string{"80"}},
-		{"комментарий с переводом строки", Config{Policy: PolicyOnly, Download: DownloadDirect,
+		{"комментарий с переводом строки", Config{Policy: PolicyDirect, Download: DownloadDirect,
 			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel, Comment: "a\nb"}}}, 1, nil},
-		{"комментарий с управляющим символом", Config{Policy: PolicyOnly, Download: DownloadDirect,
+		{"комментарий с управляющим символом", Config{Policy: PolicyDirect, Download: DownloadDirect,
 			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel, Comment: "a\x01b"}}}, 1, nil},
-		{"комментарий с пробелом по краю", Config{Policy: PolicyOnly, Download: DownloadDirect,
+		{"комментарий с пробелом по краю", Config{Policy: PolicyDirect, Download: DownloadDirect,
 			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel, Comment: " лига"}}}, 1, nil},
-		{"комментарий не UTF-8", Config{Policy: PolicyOnly, Download: DownloadDirect,
+		{"комментарий не UTF-8", Config{Policy: PolicyDirect, Download: DownloadDirect,
 			Rules: []Rule{{Kind: RuleSuffix, Value: "x.com", Action: ActionTunnel, Comment: "a\xffb"}}}, 1, nil},
 	}
 	for _, tc := range reject {
@@ -720,8 +806,8 @@ func TestValidateRules(t *testing.T) {
 // каталога нет и наборы новые: иначе владелец получал бы «каталог недоступен»
 // вместо «в правиле опечатка», и чинил бы не то.
 func TestValidateRulesBeforeCatalog(t *testing.T) {
-	err := Validate(Config{Policy: PolicyOnly, Download: DownloadDirect,
-		Sets:  []Set{{Name: "youtube"}},
+	err := Validate(Config{Policy: PolicyDirect, Download: DownloadDirect,
+		Sets:  []Set{{Name: "youtube", Action: ActionTunnel}},
 		Rules: []Rule{{Kind: RuleSuffix, Value: "Bad.Com", Action: ActionTunnel}},
 	}, nil, nil)
 	var re *RuleError
@@ -733,8 +819,8 @@ func TestValidateRulesBeforeCatalog(t *testing.T) {
 // TestValidateListsUnknownNames — неизвестные имена перечислены все и в
 // порядке выбора: владелец должен увидеть, какие именно чипы убрать.
 func TestValidateListsUnknownNames(t *testing.T) {
-	err := Validate(Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-		{Name: "zzz"}, {Name: "youtube"}, {Name: "aaa"},
+	err := Validate(Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{
+		{Name: "zzz", Action: ActionTunnel}, {Name: "youtube", Action: ActionTunnel}, {Name: "aaa", Action: ActionTunnel},
 	}}, testCatalog(), nil)
 
 	var unknown *UnknownSetsError
@@ -749,14 +835,14 @@ func TestValidateListsUnknownNames(t *testing.T) {
 // TestResolveTakesIPFromCatalog — признак подсетей проставляет каталог, а не
 // панель: только он знает, есть ли имя в дереве geoip.
 func TestResolveTakesIPFromCatalog(t *testing.T) {
-	in := Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-		{Name: "youtube", IP: true}, // в geoip его нет — признак обязан слететь
-		{Name: "telegram"},          // в geoip есть — признак обязан появиться
-		{Name: "netflix@ads", IP: true},
+	in := Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{
+		{Name: "youtube", IP: true, Action: ActionTunnel}, // в geoip его нет — признак обязан слететь
+		{Name: "telegram", Action: ActionTunnel},          // в geoip есть — признак обязан появиться
+		{Name: "netflix@ads", IP: true, Action: ActionTunnel},
 	}}
 
 	got := Resolve(in, testCatalog(), nil)
-	want := []Set{{Name: "youtube"}, {Name: "telegram", IP: true}, {Name: "netflix@ads", IP: true}}
+	want := []Set{{Name: "youtube", Action: ActionTunnel}, {Name: "telegram", IP: true, Action: ActionTunnel}, {Name: "netflix@ads", IP: true, Action: ActionTunnel}}
 	if !reflect.DeepEqual(got.Sets, want) {
 		t.Errorf("наборы %+v, ожидались %+v", got.Sets, want)
 	}
@@ -769,13 +855,13 @@ func TestResolveTakesIPFromCatalog(t *testing.T) {
 // подсетей берётся из файла. Иначе повторное применение без интернета молча
 // потеряло бы половину набора telegram.
 func TestResolveFallsBackToApplied(t *testing.T) {
-	applied := []Set{{Name: "telegram", IP: true}, {Name: "youtube"}}
-	in := Config{Policy: PolicyOnly, Download: DownloadDirect, Sets: []Set{
-		{Name: "telegram"}, {Name: "youtube", IP: true},
+	applied := []Set{{Name: "telegram", IP: true, Action: ActionTunnel}, {Name: "youtube", Action: ActionTunnel}}
+	in := Config{Policy: PolicyDirect, Download: DownloadDirect, Sets: []Set{
+		{Name: "telegram", Action: ActionTunnel}, {Name: "youtube", IP: true, Action: ActionTunnel},
 	}}
 
 	got := Resolve(in, nil, applied)
-	want := []Set{{Name: "telegram", IP: true}, {Name: "youtube"}}
+	want := []Set{{Name: "telegram", IP: true, Action: ActionTunnel}, {Name: "youtube", Action: ActionTunnel}}
 	if !reflect.DeepEqual(got.Sets, want) {
 		t.Errorf("наборы %+v, ожидались %+v", got.Sets, want)
 	}
@@ -783,10 +869,10 @@ func TestResolveFallsBackToApplied(t *testing.T) {
 
 // TestProviderNames — имена провайдеров: одно без подсетей, два с ними.
 func TestProviderNames(t *testing.T) {
-	if got, want := ProviderNames(Set{Name: "youtube"}), []string{"nm-geosite-youtube"}; !reflect.DeepEqual(got, want) {
+	if got, want := ProviderNames(Set{Name: "youtube", Action: ActionTunnel}), []string{"nm-geosite-youtube"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("без подсетей %v, ожидалось %v", got, want)
 	}
-	got := ProviderNames(Set{Name: "telegram", IP: true})
+	got := ProviderNames(Set{Name: "telegram", IP: true, Action: ActionTunnel})
 	want := []string{"nm-geosite-telegram", "nm-geoip-telegram"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("с подсетями %v, ожидалось %v", got, want)
@@ -806,15 +892,15 @@ func TestVerify(t *testing.T) {
 	}
 
 	sets := []Set{
-		{Name: "youtube"},
-		{Name: "telegram", IP: true},
-		{Name: "пустой"},
-		{Name: "которого нет"},
+		{Name: "youtube", Action: ActionTunnel},
+		{Name: "telegram", IP: true, Action: ActionTunnel},
+		{Name: "пустой", Action: ActionTunnel},
+		{Name: "которого нет", Action: ActionTunnel},
 	}
 
 	loaded, missing := Verify(sets, live)
-	wantLoaded := []Set{{Name: "youtube"}, {Name: "пустой"}}
-	wantMissing := []Set{{Name: "telegram", IP: true}, {Name: "которого нет"}}
+	wantLoaded := []Set{{Name: "youtube", Action: ActionTunnel}, {Name: "пустой", Action: ActionTunnel}}
+	wantMissing := []Set{{Name: "telegram", IP: true, Action: ActionTunnel}, {Name: "которого нет", Action: ActionTunnel}}
 	if !reflect.DeepEqual(loaded, wantLoaded) {
 		t.Errorf("загружены %+v, ожидались %+v", loaded, wantLoaded)
 	}

@@ -1,6 +1,6 @@
 # netmoded: файл пишет панель (раздел «Узлы Nikki» → «Что в туннель · наборы»).
 # Не правьте руками — при следующем применении он переписывается целиком.
-# netmoded-rulesets: policy=only download=direct sets=youtube,telegram+ip rules=suffix:worldsimseries.com>tunnel|%D0%9B%D0%B8%D0%B3%D0%B0+WSS%3A+%D0%BF%D0%B0%D0%B4%D0%B4%D0%BE%D0%BA;domain:api.netbird.io>direct;cidr:100.64.0.0/10>direct|CGNAT+netbird;cidr:fd00::/8>direct
+# netmoded-rulesets: policy=direct download=direct sets=youtube>tunnel,telegram+ip>tunnel rules=suffix:worldsimseries.com>tunnel|%D0%9B%D0%B8%D0%B3%D0%B0+WSS%3A+%D0%BF%D0%B0%D0%B4%D0%B4%D0%BE%D0%BA;domain:api.netbird.io>direct;cidr:100.64.0.0/10>direct|CGNAT+netbird;cidr:fd00::/8>direct
 rule-providers:
   nm-geosite-youtube:
     type: http

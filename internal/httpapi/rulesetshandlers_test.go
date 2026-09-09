@@ -117,19 +117,19 @@ func setByName(t *testing.T, body map[string]any, name string) map[string]any {
 	return nil
 }
 
-// onlyMixin — файл с политикой «только эти» и тремя наборами.
+// onlyMixin — файл с тремя наборами в туннель и остальным напрямую.
 //
 // Собирается Render-ом, а не литералом: тело файла порождается из состояния,
 // и литерал в тесте разошёлся бы с ним от первой же правки формата — тест
 // начал бы проверять форму, которой демон уже не пишет.
 func onlyMixin() []byte {
 	return rulesets.Render(rulesets.Config{
-		Policy:   rulesets.PolicyOnly,
+		Policy:   rulesets.PolicyDirect,
 		Download: rulesets.DownloadDirect,
 		Sets: []rulesets.Set{
-			{Name: "youtube"},
-			{Name: "telegram", IP: true},
-			{Name: "openai"},
+			{Name: "youtube", Action: rulesets.ActionTunnel},
+			{Name: "telegram", IP: true, Action: rulesets.ActionTunnel},
+			{Name: "openai", Action: rulesets.ActionTunnel},
 		},
 	})
 }
@@ -203,7 +203,7 @@ func TestRulesetsReportsEngineState(t *testing.T) {
 	if body["live"] != true {
 		t.Fatalf("live %v: движок ответил, состояние сверено", body["live"])
 	}
-	if body["policy"] != string(rulesets.PolicyOnly) {
+	if body["policy"] != string(rulesets.PolicyDirect) {
 		t.Errorf("policy %v", body["policy"])
 	}
 
@@ -706,13 +706,13 @@ func TestRulesetsPutAppliesFileFlagAndRestart(t *testing.T) {
 	s, f := newServer(t)
 	addBypass(t, s)
 	want := rulesets.Config{
-		Policy: rulesets.PolicyOnly, Download: rulesets.DownloadDirect,
-		Sets: []rulesets.Set{{Name: "youtube"}, {Name: "telegram", IP: true}},
+		Policy: rulesets.PolicyDirect, Download: rulesets.DownloadDirect,
+		Sets: []rulesets.Set{{Name: "youtube", Action: rulesets.ActionTunnel}, {Name: "telegram", IP: true, Action: rulesets.ActionTunnel}},
 	}
 	nikkiFake(t, s).ruleProviders = loadedProviders(want.Sets...)
 
 	// download не прислан: умолчание direct — часть контракта.
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube","telegram"]}`, rulesetsFP(t, s))
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"},{"name":"telegram","action":"tunnel"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
 	}
@@ -744,7 +744,7 @@ func TestRulesetsPutAppliesFileFlagAndRestart(t *testing.T) {
 	// выбора, и разойдись запись с чтением, панель показывала бы не то,
 	// что применено.
 	body := rulesetsGet(t, s)
-	if body["policy"] != string(rulesets.PolicyOnly) || body["download"] != string(rulesets.DownloadDirect) {
+	if body["policy"] != string(rulesets.PolicyDirect) || body["download"] != string(rulesets.DownloadDirect) {
 		t.Errorf("GET после записи: policy %v, download %v", body["policy"], body["download"])
 	}
 	if tg := setByName(t, body, "telegram"); tg["ip"] != true {
@@ -764,8 +764,8 @@ func TestRulesetsPutWritesCustomRules(t *testing.T) {
 	s, _ := newServer(t)
 	addBypass(t, s)
 	want := rulesets.Config{
-		Policy: rulesets.PolicyOnly, Download: rulesets.DownloadDirect,
-		Sets: []rulesets.Set{{Name: "youtube"}},
+		Policy: rulesets.PolicyDirect, Download: rulesets.DownloadDirect,
+		Sets: []rulesets.Set{{Name: "youtube", Action: rulesets.ActionTunnel}},
 		Rules: []rulesets.Rule{
 			{Kind: rulesets.RuleSuffix, Value: "worldsimseries.com", Action: rulesets.ActionTunnel, Comment: "лига WSS"},
 			{Kind: rulesets.RuleCIDR, Value: "100.64.0.0/10", Action: rulesets.ActionDirect},
@@ -774,7 +774,7 @@ func TestRulesetsPutWritesCustomRules(t *testing.T) {
 	nikkiFake(t, s).ruleProviders = loadedProviders(want.Sets...)
 
 	// У второго правила поля comment нет вовсе — клиент прежней версии.
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"],"rules":[`+
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}],"rules":[`+
 		`{"kind":"suffix","value":"worldsimseries.com","action":"tunnel","comment":"лига WSS"},`+
 		`{"kind":"cidr","value":"100.64.0.0/10","action":"direct"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
@@ -825,7 +825,7 @@ func TestRulesetsPutRulesOnlyNoSets(t *testing.T) {
 	s, f := newServer(t)
 	addBypass(t, s)
 
-	rec := putRulesets(t, s, `{"policy":"except","sets":[],"rules":[`+
+	rec := putRulesets(t, s, `{"policy":"tunnel","sets":[],"rules":[`+
 		`{"kind":"suffix","value":"netbird.io","action":"direct"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
@@ -847,13 +847,13 @@ func TestRulesetsPutRulesOnlyNoSets(t *testing.T) {
 func TestRulesetsPutStaleWhenRulesChanged(t *testing.T) {
 	s, _ := newServer(t)
 	addBypass(t, s)
-	base := rulesets.Config{Policy: rulesets.PolicyOnly, Download: rulesets.DownloadDirect,
-		Sets: []rulesets.Set{{Name: "youtube"}}}
+	base := rulesets.Config{Policy: rulesets.PolicyDirect, Download: rulesets.DownloadDirect,
+		Sets: []rulesets.Set{{Name: "youtube", Action: rulesets.ActionTunnel}}}
 	withRule := base
 	withRule.Rules = []rulesets.Rule{{Kind: rulesets.RuleSuffix, Value: "x.com", Action: rulesets.ActionTunnel}}
 	writeMixin(t, s, rulesets.Render(withRule))
 
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesets.Fingerprint(base))
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, rulesets.Fingerprint(base))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("код %d, ожидался 409; тело %s", rec.Code, rec.Body.String())
 	}
@@ -869,9 +869,9 @@ func TestRulesetsPutStaleWhenRulesChanged(t *testing.T) {
 func TestRulesetsPutWithoutRulesFieldMeansNone(t *testing.T) {
 	s, _ := newServer(t)
 	addBypass(t, s)
-	nikkiFake(t, s).ruleProviders = loadedProviders(rulesets.Set{Name: "youtube"})
+	nikkiFake(t, s).ruleProviders = loadedProviders(rulesets.Set{Name: "youtube", Action: rulesets.ActionTunnel})
 
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesetsFP(t, s))
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
 	}
@@ -881,6 +881,71 @@ func TestRulesetsPutWithoutRulesFieldMeansNone(t *testing.T) {
 	got, _ := mixinBytes(t, s)
 	if strings.Contains(string(got), " rules=") {
 		t.Errorf("в строке состояния появилось поле rules= без правил:\n%s", got)
+	}
+}
+
+// TestRulesetsGetLegacyFileReportsDirections — файл до ADR-0041 (policy=only,
+// наборы без направления) читается: политика direct, у всех наборов
+// action tunnel, а отпечаток тот же, что будет после первой перезаписи —
+// открытая вкладка не получит ложного stale_rulesets.
+func TestRulesetsGetLegacyFileReportsDirections(t *testing.T) {
+	s, _ := newServer(t)
+	writeMixin(t, s, []byte(
+		"# netmoded: файл пишет панель.\n"+
+			"# Не правьте руками.\n"+
+			"# netmoded-rulesets: policy=only download=direct sets=youtube,telegram+ip\n"+
+			"nikki-rules:\n"+
+			"  - 'RULE-SET,nm-geosite-youtube,BYPASS'\n"+
+			"  - 'RULE-SET,nm-geosite-telegram,BYPASS'\n"+
+			"  - 'RULE-SET,nm-geoip-telegram,BYPASS,no-resolve'\n"+
+			"  - 'GEOIP,PRIVATE,DIRECT,no-resolve'\n"+
+			"  - 'MATCH,DIRECT'\n"))
+
+	body := rulesetsGet(t, s)
+	if body["policy"] != string(rulesets.PolicyDirect) {
+		t.Errorf("policy %v, ожидалась direct", body["policy"])
+	}
+	for _, name := range []string{"youtube", "telegram"} {
+		if set := setByName(t, body, name); set["action"] != string(rulesets.ActionTunnel) {
+			t.Errorf("%s: action %v, ожидалось tunnel", name, set["action"])
+		}
+	}
+	want := rulesets.Fingerprint(rulesets.Config{Policy: rulesets.PolicyDirect, Download: rulesets.DownloadDirect,
+		Sets: []rulesets.Set{{Name: "youtube", Action: rulesets.ActionTunnel}, {Name: "telegram", IP: true, Action: rulesets.ActionTunnel}}})
+	if body["fingerprint"] != want {
+		t.Errorf("отпечаток старого файла %v, ожидался %s (как после перезаписи)", body["fingerprint"], want)
+	}
+}
+
+// TestRulesetsPutRejectsOldShape — тело прежней панели отбивается с подсказкой,
+// а не «не разбирается как JSON».
+func TestRulesetsPutRejectsOldShape(t *testing.T) {
+	cases := []struct {
+		name, body, want string
+	}{
+		{"политика only", `{"policy":"only","sets":[]}`, "переименована"},
+		{"политика except", `{"policy":"except","sets":[]}`, "переименована"},
+		{"наборы строками", `{"policy":"direct","sets":["youtube"]}`, "объекты"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, f := newServer(t)
+			addBypass(t, s)
+			fp := rulesetsFP(t, s)
+			f.Calls = nil
+			rec := putRulesets(t, s, tc.body, fp)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("код %d, ожидался 400; тело %s", rec.Code, rec.Body.String())
+			}
+			var e apiError
+			_ = json.Unmarshal(rec.Body.Bytes(), &e)
+			if e.Code != "bad_request" || !strings.Contains(e.Error, tc.want) {
+				t.Errorf("ошибка %q / %q, ожидался bad_request с %q", e.Code, e.Error, tc.want)
+			}
+			if len(f.Calls) != 0 {
+				t.Errorf("отказ дошёл до записи: %v", f.Calls)
+			}
+		})
 	}
 }
 
@@ -895,7 +960,7 @@ func TestRulesetsPutInOtherModeSkipsRestart(t *testing.T) {
 	addBypass(t, s)
 	f.UCIValues["netmode.main.mode"] = "b4"
 
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesetsFP(t, s))
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
 	}
@@ -927,7 +992,7 @@ func TestRulesetsPutFailsWhenModeUnreadable(t *testing.T) {
 	addBypass(t, s)
 	f.Errors["uci get netmode.main.mode"] = errors.New("uci: I/O error")
 
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesetsFP(t, s))
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
 	}
@@ -963,9 +1028,9 @@ func TestRulesetsPutKeepsFlagAlreadyOn(t *testing.T) {
 	s, f := newServer(t)
 	addBypass(t, s)
 	f.UCIValues["nikki.mixin.mixin_file_content"] = "1"
-	nikkiFake(t, s).ruleProviders = loadedProviders(rulesets.Set{Name: "youtube"})
+	nikkiFake(t, s).ruleProviders = loadedProviders(rulesets.Set{Name: "youtube", Action: rulesets.ActionTunnel})
 
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesetsFP(t, s))
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
 	}
@@ -1006,7 +1071,7 @@ func TestRulesetsPutRefusesBeforeAnyWrite(t *testing.T) {
 		code:   "bad_request",
 	}, {
 		name:   "имени нет в каталоге",
-		body:   `{"policy":"only","sets":["nosuchsetname"]}`,
+		body:   `{"policy":"direct","sets":[{"name":"nosuchsetname","action":"tunnel"}]}`,
 		status: http.StatusBadRequest,
 		code:   "unknown_set",
 		// Имя в тексте: панель подсвечивает именно эти чипы, и «неверный
@@ -1014,44 +1079,44 @@ func TestRulesetsPutRefusesBeforeAnyWrite(t *testing.T) {
 		text: []string{"nosuchsetname"},
 	}, {
 		name:   "profile с наборами",
-		body:   `{"policy":"profile","sets":["youtube"]}`,
+		body:   `{"policy":"profile","sets":[{"name":"youtube","action":"tunnel"}]}`,
 		status: http.StatusBadRequest,
 		code:   "bad_request",
 	}, {
 		// Свои правила: код bad_rule с номером строки и значением — панель
 		// подсвечивает строку, владелец читает, что с ней не так.
 		name:   "своё правило с опечаткой в домене",
-		body:   `{"policy":"only","sets":[],"rules":[{"kind":"suffix","value":"x.com","action":"tunnel"},{"kind":"suffix","value":"Bad.Com","action":"tunnel"}]}`,
+		body:   `{"policy":"direct","sets":[],"rules":[{"kind":"suffix","value":"x.com","action":"tunnel"},{"kind":"suffix","value":"Bad.Com","action":"tunnel"}]}`,
 		status: http.StatusBadRequest,
 		code:   "bad_rule",
 		text:   []string{"2", "Bad.Com"},
 	}, {
 		name:   "адрес под видом домена",
-		body:   `{"policy":"only","sets":[],"rules":[{"kind":"domain","value":"1.2.3.4","action":"tunnel"}]}`,
+		body:   `{"policy":"direct","sets":[],"rules":[{"kind":"domain","value":"1.2.3.4","action":"tunnel"}]}`,
 		status: http.StatusBadRequest,
 		code:   "bad_rule",
 		text:   []string{"cidr"},
 	}, {
 		name:   "подсеть с битами хоста",
-		body:   `{"policy":"only","sets":[],"rules":[{"kind":"cidr","value":"100.64.1.0/10","action":"direct"}]}`,
+		body:   `{"policy":"direct","sets":[],"rules":[{"kind":"cidr","value":"100.64.1.0/10","action":"direct"}]}`,
 		status: http.StatusBadRequest,
 		code:   "bad_rule",
 		text:   []string{"100.64.0.0/10"},
 	}, {
 		name:   "дубль своего правила",
-		body:   `{"policy":"only","sets":[],"rules":[{"kind":"suffix","value":"x.com","action":"tunnel"},{"kind":"suffix","value":"x.com","action":"direct"}]}`,
+		body:   `{"policy":"direct","sets":[],"rules":[{"kind":"suffix","value":"x.com","action":"tunnel"},{"kind":"suffix","value":"x.com","action":"direct"}]}`,
 		status: http.StatusBadRequest,
 		code:   "bad_rule",
 		text:   []string{"x.com", "дважды"},
 	}, {
 		name:   "неизвестный вид правила",
-		body:   `{"policy":"only","sets":[],"rules":[{"kind":"glob","value":"x.com","action":"tunnel"}]}`,
+		body:   `{"policy":"direct","sets":[],"rules":[{"kind":"glob","value":"x.com","action":"tunnel"}]}`,
 		status: http.StatusBadRequest,
 		code:   "bad_rule",
 		text:   []string{"glob"},
 	}, {
 		name:   "неизвестное действие правила",
-		body:   `{"policy":"only","sets":[],"rules":[{"kind":"suffix","value":"x.com","action":"reject"}]}`,
+		body:   `{"policy":"direct","sets":[],"rules":[{"kind":"suffix","value":"x.com","action":"reject"}]}`,
 		status: http.StatusBadRequest,
 		code:   "bad_rule",
 		text:   []string{"reject"},
@@ -1062,7 +1127,7 @@ func TestRulesetsPutRefusesBeforeAnyWrite(t *testing.T) {
 		code:   "bad_rule",
 	}, {
 		name: "комментарий длиннее 80",
-		body: `{"policy":"only","sets":[],"rules":[{"kind":"suffix","value":"x.com","action":"tunnel"},` +
+		body: `{"policy":"direct","sets":[],"rules":[{"kind":"suffix","value":"x.com","action":"tunnel"},` +
 			`{"kind":"cidr","value":"10.0.0.0/8","action":"direct","comment":"` + strings.Repeat("ё", 81) + `"}]}`,
 		status: http.StatusBadRequest,
 		code:   "bad_rule",
@@ -1075,7 +1140,7 @@ func TestRulesetsPutRefusesBeforeAnyWrite(t *testing.T) {
 		setup: func(t *testing.T, s *Server, f *executor.Fake) {
 			s.catalog = &geosite.Client{BaseURL: newCatalogStand(t, http.StatusInternalServerError).URL, Logf: s.logf}
 		},
-		body:   `{"policy":"only","sets":["openai"],"rules":[{"kind":"suffix","value":"Bad.Com","action":"tunnel"}]}`,
+		body:   `{"policy":"direct","sets":[{"name":"openai","action":"tunnel"}],"rules":[{"kind":"suffix","value":"Bad.Com","action":"tunnel"}]}`,
 		status: http.StatusBadRequest,
 		code:   "bad_rule",
 	}, {
@@ -1083,12 +1148,12 @@ func TestRulesetsPutRefusesBeforeAnyWrite(t *testing.T) {
 		setup: func(t *testing.T, s *Server, f *executor.Fake) {
 			f.Staged["nikki"] = "nikki.mixin.mixin_file_content='0'\n"
 		},
-		body:   `{"policy":"only","sets":["youtube"]}`,
+		body:   `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`,
 		status: http.StatusConflict,
 		code:   "foreign_staged_changes",
 	}, {
 		name:    "отпечаток разошёлся",
-		body:    `{"policy":"only","sets":["youtube"]}`,
+		body:    `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`,
 		ifMatch: "sha256:0000000000000000",
 		status:  http.StatusConflict,
 		code:    "stale_rulesets",
@@ -1097,7 +1162,7 @@ func TestRulesetsPutRefusesBeforeAnyWrite(t *testing.T) {
 		setup: func(t *testing.T, s *Server, f *executor.Fake) {
 			writeMixin(t, s, []byte("dns:\n  enable: true\n"))
 		},
-		body:   `{"policy":"only","sets":["youtube"]}`,
+		body:   `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`,
 		status: http.StatusConflict,
 		code:   "foreign_mixin",
 	}, {
@@ -1105,7 +1170,7 @@ func TestRulesetsPutRefusesBeforeAnyWrite(t *testing.T) {
 		setup: func(t *testing.T, s *Server, f *executor.Fake) {
 			s.catalog = &geosite.Client{BaseURL: newCatalogStand(t, http.StatusInternalServerError).URL, Logf: s.logf}
 		},
-		body:   `{"policy":"only","sets":["openai"]}`,
+		body:   `{"policy":"direct","sets":[{"name":"openai","action":"tunnel"}]}`,
 		status: http.StatusServiceUnavailable,
 		code:   "catalog_unavailable",
 	}, {
@@ -1113,7 +1178,7 @@ func TestRulesetsPutRefusesBeforeAnyWrite(t *testing.T) {
 		setup: func(t *testing.T, s *Server, f *executor.Fake) {
 			delete(nikkiFake(t, s).all, rulesets.TunnelGroup)
 		},
-		body:   `{"policy":"only","sets":["youtube"]}`,
+		body:   `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`,
 		status: http.StatusServiceUnavailable,
 		code:   "group_missing",
 		text:   []string{rulesets.TunnelGroup},
@@ -1176,15 +1241,15 @@ func TestRulesetsPutRefusesBeforeAnyWrite(t *testing.T) {
 func TestRulesetsPutAcceptsAppliedNameWithoutCatalog(t *testing.T) {
 	s, _ := newServer(t)
 	addBypass(t, s)
-	applied := rulesets.Set{Name: "telegram", IP: true}
+	applied := rulesets.Set{Name: "telegram", IP: true, Action: rulesets.ActionTunnel}
 	writeMixin(t, s, rulesets.Render(rulesets.Config{
-		Policy: rulesets.PolicyOnly, Download: rulesets.DownloadDirect,
+		Policy: rulesets.PolicyDirect, Download: rulesets.DownloadDirect,
 		Sets: []rulesets.Set{applied},
 	}))
 	s.catalog = &geosite.Client{BaseURL: newCatalogStand(t, http.StatusInternalServerError).URL, Logf: s.logf}
 	nikkiFake(t, s).ruleProviders = loadedProviders(applied)
 
-	rec := putRulesets(t, s, `{"policy":"except","sets":["telegram"]}`, rulesetsFP(t, s))
+	rec := putRulesets(t, s, `{"policy":"tunnel","sets":[{"name":"telegram","action":"direct"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
 	}
@@ -1192,9 +1257,10 @@ func TestRulesetsPutAcceptsAppliedNameWithoutCatalog(t *testing.T) {
 		t.Fatalf("джоб %s: %s", state, msg)
 	}
 
+	// Направление сменилось вместе с хвостом, признак подсетей — из файла.
 	want := rulesets.Render(rulesets.Config{
-		Policy: rulesets.PolicyExcept, Download: rulesets.DownloadDirect,
-		Sets: []rulesets.Set{applied},
+		Policy: rulesets.PolicyTunnel, Download: rulesets.DownloadDirect,
+		Sets: []rulesets.Set{{Name: applied.Name, IP: applied.IP, Action: rulesets.ActionDirect}},
 	})
 	got, _ := mixinBytes(t, s)
 	if string(got) != string(want) {
@@ -1213,7 +1279,7 @@ func TestRulesetsPutKeepsFileWhenRestartFails(t *testing.T) {
 	addBypass(t, s)
 	f.ApplyExitCodes["nikki"] = 5
 
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesetsFP(t, s))
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
 	}
@@ -1245,7 +1311,7 @@ func TestRulesetsPutRevertsFlagWhenCommitFails(t *testing.T) {
 	addBypass(t, s)
 	f.Errors["commit nikki"] = errors.New("uci: I/O error")
 
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesetsFP(t, s))
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
 	}
@@ -1273,7 +1339,7 @@ func TestRulesetsPutFailsWhenNothingLoaded(t *testing.T) {
 	addBypass(t, s)
 	// ruleProviders не заданы: движок отвечает, но провайдеров у него нет.
 
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, rulesetsFP(t, s))
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
 	}
@@ -1296,9 +1362,9 @@ func TestRulesetsPutFailsWhenNothingLoaded(t *testing.T) {
 func TestRulesetsPutDoneWhenPartlyLoaded(t *testing.T) {
 	s, _ := newServer(t)
 	addBypass(t, s)
-	nikkiFake(t, s).ruleProviders = loadedProviders(rulesets.Set{Name: "youtube"})
+	nikkiFake(t, s).ruleProviders = loadedProviders(rulesets.Set{Name: "youtube", Action: rulesets.ActionTunnel})
 
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube","openai"]}`, rulesetsFP(t, s))
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"},{"name":"openai","action":"tunnel"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
 	}
@@ -1364,7 +1430,7 @@ func TestRulesetsPutJobBusy(t *testing.T) {
 	}
 	<-started
 
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, fp)
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, fp)
 	close(release)
 
 	if rec.Code != http.StatusConflict {
@@ -1407,12 +1473,12 @@ func TestRulesetsPutRewritesCorruptFile(t *testing.T) {
 		addBypass(t, s)
 		writeMixin(t, s, corruptMixin())
 		want := rulesets.Config{
-			Policy: rulesets.PolicyOnly, Download: rulesets.DownloadDirect,
-			Sets: []rulesets.Set{{Name: "youtube"}},
+			Policy: rulesets.PolicyDirect, Download: rulesets.DownloadDirect,
+			Sets: []rulesets.Set{{Name: "youtube", Action: rulesets.ActionTunnel}},
 		}
 		nikkiFake(t, s).ruleProviders = loadedProviders(want.Sets...)
 
-		rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, "")
+		rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, "")
 		if rec.Code != http.StatusAccepted {
 			t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
 		}
@@ -1434,7 +1500,7 @@ func TestRulesetsPutRewritesCorruptFile(t *testing.T) {
 		// применённым — оно проехало бы мимо каталога, и в mixin.yaml
 		// уехал бы набор, которого в репозитории нет: провайдер с битой
 		// ссылкой и вечное «не загрузился» в панели.
-		rec := putRulesets(t, s, `{"policy":"only","sets":["imaginaryset"]}`, "")
+		rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"imaginaryset","action":"tunnel"}]}`, "")
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("код %d, ожидался 400; тело %s", rec.Code, rec.Body.String())
 		}
@@ -1462,7 +1528,7 @@ func TestRulesetsPutOnUnreadableFile(t *testing.T) {
 		t.Fatalf("подготовка: %v", err)
 	}
 
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, "sha256:0000000000000000")
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, "sha256:0000000000000000")
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("код %d, ожидался 500; тело %s", rec.Code, rec.Body.String())
 	}
@@ -1486,7 +1552,7 @@ func TestRulesetsPutWithoutFingerprint(t *testing.T) {
 	writeMixin(t, s, onlyMixin())
 	before, _ := mixinBytes(t, s)
 
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, "")
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, "")
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("код %d, ожидался 409; тело %s", rec.Code, rec.Body.String())
 	}
@@ -1529,11 +1595,11 @@ func TestRulesetsPutWaitsForDownloads(t *testing.T) {
 	// Первый ответ пустой: API уже отвечает, .mrs ещё качаются.
 	f.onRuleProviders = func(n int) {
 		if n >= 2 {
-			f.ruleProviders = loadedProviders(rulesets.Set{Name: "youtube"})
+			f.ruleProviders = loadedProviders(rulesets.Set{Name: "youtube", Action: rulesets.ActionTunnel})
 		}
 	}
 
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, fp)
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, fp)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
 	}
@@ -1565,7 +1631,7 @@ func TestRulesetsPutNamesWhyEngineIsSilent(t *testing.T) {
 	fp := rulesetsFP(t, s)
 	nikkiFake(t, s).ruleProvidersErr = errors.New("401 Unauthorized")
 
-	rec := putRulesets(t, s, `{"policy":"only","sets":["youtube"]}`, fp)
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, fp)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d, ожидался 202; тело %s", rec.Code, rec.Body.String())
 	}

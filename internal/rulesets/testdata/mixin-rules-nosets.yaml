@@ -1,6 +1,6 @@
 # netmoded: файл пишет панель (раздел «Узлы Nikki» → «Что в туннель · наборы»).
 # Не правьте руками — при следующем применении он переписывается целиком.
-# netmoded-rulesets: policy=except download=tunnel sets= rules=suffix:netbird.io>direct
+# netmoded-rulesets: policy=tunnel download=tunnel sets= rules=suffix:netbird.io>direct
 nikki-rules:
   - 'DOMAIN-SUFFIX,netbird.io,DIRECT'
   - 'GEOIP,PRIVATE,DIRECT,no-resolve'

@@ -1,6 +1,6 @@
 # netmoded: файл пишет панель (раздел «Узлы Nikki» → «Что в туннель · наборы»).
 # Не правьте руками — при следующем применении он переписывается целиком.
-# netmoded-rulesets: policy=except download=tunnel sets=github,telegram+ip
+# netmoded-rulesets: policy=tunnel download=tunnel sets=github>direct,telegram+ip>direct
 rule-providers:
   nm-geosite-github:
     type: http

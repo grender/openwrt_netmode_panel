@@ -1,6 +1,6 @@
 # netmoded: файл пишет панель (раздел «Узлы Nikki» → «Что в туннель · наборы»).
 # Не правьте руками — при следующем применении он переписывается целиком.
-# netmoded-rulesets: policy=only download=direct sets=netflix@ads,category-ai-!cn+ip
+# netmoded-rulesets: policy=direct download=direct sets=netflix@ads>tunnel,category-ai-!cn+ip>tunnel
 rule-providers:
   nm-geosite-netflix@ads:
     type: http

@@ -1,9 +1,9 @@
 {
   "download": "direct",
-  "fingerprint": "sha256:12ea3ff496c5eb47",
+  "fingerprint": "sha256:b1b3ff3e2147320e",
   "foreign": false,
   "live": true,
-  "policy": "only",
+  "policy": "direct",
   "rules": [
     {
       "action": "tunnel",
@@ -20,6 +20,7 @@
   ],
   "sets": [
     {
+      "action": "tunnel",
       "ip": false,
       "loaded": true,
       "name": "youtube",

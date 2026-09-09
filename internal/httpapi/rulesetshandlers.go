@@ -117,8 +117,9 @@ func (s *Server) rulesetsBody(ctx context.Context, cfg rulesets.Config, foreign 
 	sets := make([]map[string]any, 0, len(cfg.Sets))
 	for _, set := range cfg.Sets {
 		item := map[string]any{
-			"name": set.Name,
-			"ip":   set.IP,
+			"name":   set.Name,
+			"ip":     set.IP,
+			"action": string(set.Action),
 			// Ключи присутствуют ВСЕГДА, пусть и с null: отсутствие ключа
 			// панель не отличила бы от отсутствия набора.
 			"loaded":     nil,
@@ -363,9 +364,12 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 	// его клиенту — вкладка, открытая до обновления каталога, теряла бы
 	// половину набора молча.
 	var in struct {
-		Policy   string   `json:"policy"`
-		Download string   `json:"download"`
-		Sets     []string `json:"sets"`
+		Policy   string `json:"policy"`
+		Download string `json:"download"`
+		// Наборы — объекты {name, action}. Сырой JSON, а не структура:
+		// панель прежней версии слала массив строк, и её запись обязана
+		// отбиться понятным текстом, а не «не разбирается как JSON».
+		Sets []json.RawMessage `json:"sets"`
 		// Свои правила владельца. Необязательны: клиент прежней версии их
 		// не шлёт, и его запись значит «правил нет», а не «поле забыто».
 		Rules []struct {
@@ -385,6 +389,15 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 		// помнить его ради одного случая из ста.
 		in.Download = string(rulesets.DownloadDirect)
 	}
+	// Форма до ADR-0041: политика only/except и наборы строками. Отбить с
+	// подсказкой, а не общим «неизвестная политика»: владелец с curl или
+	// старой вкладкой должен понять, что изменилось, а не что он опечатался.
+	if in.Policy == "only" || in.Policy == "except" {
+		writeErr(w, http.StatusBadRequest, "bad_request",
+			"Политика "+in.Policy+" переименована: направление теперь у каждого набора "+
+				"(sets — объекты {name, action}), а policy — куда идёт остальное: direct, tunnel или profile.")
+		return
+	}
 	want := rulesets.Config{
 		Policy:   rulesets.Policy(in.Policy),
 		Download: rulesets.Download(in.Download),
@@ -392,8 +405,21 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 		// разница «наборов нет» / «поле не пришло» там ничего не значит.
 		Sets: make([]rulesets.Set, 0, len(in.Sets)),
 	}
-	for _, name := range in.Sets {
-		want.Sets = append(want.Sets, rulesets.Set{Name: name})
+	for _, raw := range in.Sets {
+		var set struct {
+			Name   string `json:"name"`
+			Action string `json:"action"`
+		}
+		if len(raw) > 0 && raw[0] == '"' {
+			writeErr(w, http.StatusBadRequest, "bad_request",
+				"Наборы теперь с направлением: sets — объекты {\"name\": …, \"action\": \"tunnel\"|\"direct\"}, а не строки.")
+			return
+		}
+		if err := json.Unmarshal(raw, &set); err != nil {
+			writeErr(w, http.StatusBadRequest, "bad_request", "Набор в sets не разбирается: ожидается объект {name, action}")
+			return
+		}
+		want.Sets = append(want.Sets, rulesets.Set{Name: set.Name, Action: rulesets.RuleAction(set.Action)})
 	}
 	for _, rule := range in.Rules {
 		want.Rules = append(want.Rules, rulesets.Rule{
