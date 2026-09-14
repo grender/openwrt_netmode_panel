@@ -67,7 +67,13 @@ for l in $lits; do
 		# вспоминать по памяти. Ошибка в любом из них проявится не у
 		# нас, а на роутере: пустым списком в панели или наборами,
 		# которые mihomo молча не скачает.
-		/api/*|/ui*|/cgi-bin/*|/sys/class/leds/*|network.wireless|network.interface.*|iwinfo|/proxies*|/providers/*|/version|/delay*|*api.github.com*|/repos/*|*raw.githubusercontent.com*)
+		# /connections и /logs добавлены 2026-09-14 вместе с наблюдателем
+		# трафика устройства (ADR-0043). Их литералы лежали в evidence.json
+		# с самой разведки RQ-09, а шаблон их не видел: два пути Clash API
+		# снова читались бы по памяти автора. Форма строки журнала при этом
+		# не охраняется ничем и охраняться не может — она чужая и без
+		# контракта; о её смене говорит счётчик unparsed на живом роутере.
+		/api/*|/ui*|/cgi-bin/*|/sys/class/leds/*|network.wireless|network.interface.*|iwinfo|/proxies*|/providers/*|/version|/delay*|/connections*|/logs*|*api.github.com*|/repos/*|*raw.githubusercontent.com*)
 			if ! grep -qF "$l" "$EV"; then
 				missing="$missing $l"
 			fi

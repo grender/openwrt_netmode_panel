@@ -1,8 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"sync"
+	"time"
 
 	"netmoded/internal/nikki"
 )
@@ -10,6 +14,17 @@ import (
 // fakeNikkiClient повторяет раскладку с живого роутера: PROXY типа
 // URLTest, то есть ручной выбор невозможен.
 type fakeNikkiClient struct {
+	// snapshots — очередь ответов Connections, последний повторяется.
+	snapshots     []nikki.Snapshot
+	snapshotErr   error
+	snapshotCalls int
+	// logLines — что отдаёт LogStream. streamCalls считает переподключения:
+	// «поток переоткрыли» и «поток не рвали» по одному результату
+	// неразличимы.
+	logLines    []nikki.LogLine
+	streamErr   error
+	streamCalls int
+
 	// mu защищает all, delayed и reloaded: ProbeAll зовёт Delay из нескольких
 	// горутин сразу, и без замка тест ловил бы не поведение обработчика,
 	// а гонку в собственной подделке (go test -race).
@@ -106,6 +121,46 @@ func (f *fakeNikkiClient) Select(_ context.Context, group, member string) error 
 
 // PanelAlive повторяет пробу /ui/: по умолчанию панель на месте.
 func (f *fakeNikkiClient) PanelAlive(context.Context) error { return f.panelErr }
+
+// Connections отдаёт снимки по очереди, а последний повторяет: сессия
+// наблюдения берёт снимок каждую секунду, и сценарий «один тик и всё»
+// проверял бы не её, а первую итерацию цикла. snapshotErr сильнее очереди —
+// им изображается молчащий движок.
+func (f *fakeNikkiClient) Connections(context.Context) (nikki.Snapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snapshotCalls++
+	if f.snapshotErr != nil {
+		return nikki.Snapshot{}, f.snapshotErr
+	}
+	if len(f.snapshots) == 0 {
+		return nikki.Snapshot{At: time.Now()}, nil
+	}
+	i := f.snapshotCalls - 1
+	if i >= len(f.snapshots) {
+		i = len(f.snapshots) - 1
+	}
+	return f.snapshots[i], nil
+}
+
+// LogStream отдаёт поток поверх заранее записанных строк. Пустой logLines
+// даёт поток, который сразу кончается чистым EOF: так выглядит движок,
+// который поднял Clash API и пока молчит.
+func (f *fakeNikkiClient) LogStream(context.Context, string) (*nikki.LogStream, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.streamCalls++
+	if f.streamErr != nil {
+		return nil, f.streamErr
+	}
+	var buf bytes.Buffer
+	for _, l := range f.logLines {
+		b, _ := json.Marshal(l)
+		buf.Write(b)
+		buf.WriteByte('\n')
+	}
+	return nikki.NewLogStreamFromReader(io.NopCloser(&buf)), nil
+}
 
 // Delay повторяет пробу задержки: живой узел отвечает, мёртвый — нет.
 //

@@ -24,6 +24,23 @@ import (
 const (
 	probeTimeout = 2 * time.Second
 	callTimeout  = 5 * time.Second
+	// snapshotTimeout — бюджет снимка /connections. Меньше callTimeout
+	// намеренно: снимок берётся раз в секунду, и пятисекундное ожидание
+	// внутри секундного цикла молча превратило бы частоту в 0,2 Гц.
+	snapshotTimeout = 3 * time.Second
+)
+
+const (
+	// defaultBodyLimit — потолок тела обычного ответа Clash API (ADR-0022).
+	// Самый толстый из них — /proxies с полным списком узлов, это десятки
+	// килобайт.
+	defaultBodyLimit = 1 << 20
+	// connectionsBodyLimit — потолок снимка /connections. Наблюдалось
+	// 107 154 Б на 150 соединений (docs/recon/raw/91); запас на порядок.
+	//
+	// К потоку /logs этот потолок НЕ применяется: там он резал бы не ответ,
+	// а сессию — см. logstream.go.
+	connectionsBodyLimit = 4 << 20
 )
 
 // ErrUnavailable — Clash API не отвечает или отвергает секрет.
@@ -165,6 +182,16 @@ type Client interface {
 	// подменённом клиенте, и единственный путь, отдающий секрет наружу,
 	// остался бы без теста.
 	PanelAlive(ctx context.Context) error
+	// Connections — снимок соединений. В интерфейсе, потому что наблюдатель
+	// (internal/watch) считает по нему скорости и живость, и проверять это
+	// на живом роутере значило бы не проверять никогда: снимок там меняется
+	// каждую секунду и дважды одинаковым не бывает.
+	Connections(ctx context.Context) (Snapshot, error)
+	// LogStream — поток журнала. В интерфейсе по той же причине и ещё по
+	// одной: только в журнале есть неудавшийся дозвон, соединением он не
+	// стал и в снимке не появится вовсе. Без подмены вердикт «не отвечает»
+	// нечем было бы проверить.
+	LogStream(ctx context.Context, level string) (*LogStream, error)
 }
 
 // HTTP — реальный клиент.
@@ -172,6 +199,11 @@ type HTTP struct {
 	BaseURL string
 	Secret  string
 	client  *http.Client
+	// stream — отдельный клиент под поток журнала: у него другие сроки и
+	// другое отношение к пулу соединений (logstream.go). Заводится лениво,
+	// потому что нужен только на время сессии наблюдения.
+	streamOnce sync.Once
+	stream     *http.Client
 }
 
 func New(baseURL, secret string) *HTTP {
@@ -198,6 +230,16 @@ func New(baseURL, secret string) *HTTP {
 // (docs/recon/nikki.md). Он предназначен веб-морде LuCI, которая уже сама
 // кладёт значение в заголовок.
 func (c *HTTP) do(ctx context.Context, method, path string, body, out any, timeout time.Duration) error {
+	return c.doLimited(ctx, method, path, body, out, timeout, defaultBodyLimit)
+}
+
+// doLimited — то же, но с потолком тела (ADR-0022).
+//
+// Отдельная форма появилась ради снимка /connections: он единственный
+// ответ Clash API, который меряется мегабайтами, а остальные — килобайтами,
+// и один потолок на всех пришлось бы ставить по самому толстому. Потока
+// /logs это не касается вовсе: см. logstream.go.
+func (c *HTTP) doLimited(ctx context.Context, method, path string, body, out any, timeout time.Duration, limit int64) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -253,8 +295,19 @@ func (c *HTTP) do(ctx context.Context, method, path string, body, out any, timeo
 	if out == nil {
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	// Читаем на байт больше потолка: если этот байт пришёл, тело в потолок
+	// не уложилось. io.LimitReader об обрыве не сообщает, и усечённое тело
+	// пришло бы декодеру как «неожиданный конец» — то есть неотличимо от
+	// оборванного соединения.
+	lr := &io.LimitedReader{R: resp.Body, N: limit + 1}
+	if err := json.NewDecoder(lr).Decode(out); err != nil {
+		if lr.N == 0 {
+			return fmt.Errorf("nikki: тело ответа %s превысило потолок %d Б", path, limit)
+		}
 		return fmt.Errorf("nikki: разбор ответа %s: %w", path, err)
+	}
+	if lr.N == 0 {
+		return fmt.Errorf("nikki: тело ответа %s превысило потолок %d Б", path, limit)
 	}
 	return nil
 }

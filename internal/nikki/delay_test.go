@@ -111,6 +111,12 @@ func (p *probeClient) RuleProviders(context.Context) (map[string]RuleProvider, e
 	return nil, nil
 }
 func (p *probeClient) PanelAlive(context.Context) error { return nil }
+func (p *probeClient) Connections(context.Context) (Snapshot, error) {
+	return Snapshot{}, ErrUnavailable
+}
+func (p *probeClient) LogStream(context.Context, string) (*LogStream, error) {
+	return nil, ErrUnavailable
+}
 
 func (p *probeClient) Delay(ctx context.Context, name string) (int, error) {
 	n := atomic.AddInt32(&p.inFlyht, 1)
