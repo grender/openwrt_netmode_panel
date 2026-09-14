@@ -266,15 +266,19 @@ func IfnameForSection(st map[string]Radio, section string) string {
 // захода на роутер (RQ-05).
 func ParseAssocList(b []byte) []string {
 	var wrap struct {
-		Results []struct {
+		// УКАЗАТЕЛЬ на срез: отсутствие ключа results и пустой список — это
+		// разные ответы. Первое значит «форма не та, мы не поняли», второе —
+		// «точка ответила, клиентов нет». Слив их, мы показали бы «0
+		// устройств» там, где спросить не удалось.
+		Results *[]struct {
 			MAC string `json:"mac"`
 		} `json:"results"`
 	}
-	if json.Unmarshal(b, &wrap) != nil {
+	if json.Unmarshal(b, &wrap) != nil || wrap.Results == nil {
 		return nil
 	}
-	out := make([]string, 0, len(wrap.Results))
-	for _, r := range wrap.Results {
+	out := make([]string, 0, len(*wrap.Results))
+	for _, r := range *wrap.Results {
 		if r.MAC != "" {
 			out = append(out, r.MAC)
 		}

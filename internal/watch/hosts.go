@@ -77,6 +77,9 @@ func ParseLeases(b []byte) []Lease {
 
 // MergeHosts склеивает три источника в один список.
 //
+// wifiMACs == nil означает «точка доступа не ответила» и отличается от
+// пустого списка: во втором случае она ответила, и по воздуху никого нет.
+//
 // MAC сравниваются без учёта регистра: assoclist пишет их прописными, а
 // dnsmasq строчными, и прямое сравнение развело бы Wi-Fi и кабель наугад.
 func MergeHosts(leases []Lease, wifiMACs []string, activeIPs []string) []Host {
@@ -103,10 +106,14 @@ func MergeHosts(leases []Lease, wifiMACs []string, activeIPs []string) []Host {
 
 	for _, l := range leases {
 		kind := KindWired
-		if len(wifiMACs) == 0 {
+		if wifiMACs == nil {
 			// Точка доступа не ответила: про способ подключения не известно
 			// НИЧЕГО. Записать всех в кабель значило бы соврать про каждое
 			// устройство сразу.
+			//
+			// Проверяется именно nil, а не длина: пустой НЕ-nil список —
+			// это «точка ответила, по воздуху никого», и тогда все аренды
+			// честно кабельные.
 			kind = KindUnknown
 		} else if wifi[l.MAC] {
 			kind = KindWireless

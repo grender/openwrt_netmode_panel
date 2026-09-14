@@ -133,3 +133,17 @@ func TestMergeHostsWithoutAssoclist(t *testing.T) {
 		t.Fatalf("без assoclist получилось %+v", hosts)
 	}
 }
+
+// TestMergeHostsWithEmptyAssocList: точка ОТВЕТИЛА, по воздуху никого.
+//
+// Отличается от отказа: там про способ подключения не известно ничего, а
+// здесь известно всё — аренды кабельные. Слив эти два случая по длине
+// списка, мы показали бы «неизвестно» у проводного ПК каждый раз, когда
+// дома нет ни одного телефона.
+func TestMergeHostsWithEmptyAssocList(t *testing.T) {
+	leases := []Lease{{MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.9.10", Name: "x"}}
+	hosts := MergeHosts(leases, []string{}, nil)
+	if len(hosts) != 1 || hosts[0].Kind != KindWired {
+		t.Fatalf("при пустом, но полученном assoclist получилось %+v", hosts)
+	}
+}

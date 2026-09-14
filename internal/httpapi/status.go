@@ -49,6 +49,7 @@ const (
 	srcWirelessCfg   = "uci show wireless"
 	srcWirelessState = "ubus network.wireless status"
 	srcIwinfo        = "ubus iwinfo info"
+	srcAPClients     = "ubus iwinfo assoclist"
 	srcUpstream      = "ubus network.interface." + upstreamIf + " status"
 	srcNikki         = "nikki"
 	srcB4            = "b4"
@@ -133,9 +134,11 @@ type WatchSummary struct {
 }
 
 type APStatus struct {
-	SSID    string `json:"ssid"`
-	Band    string `json:"band"`
-	Clients *int   `json:"clients"` // null, пока RQ-05 не отвечён
+	SSID string `json:"ssid"`
+	Band string `json:"band"`
+	// Clients — сколько клиентов у домашней точки. null означает «спросить
+	// не смогли», а не «клиентов нет»: ноль — тоже ответ.
+	Clients *int `json:"clients"`
 }
 
 type OnlineStatus struct {
@@ -480,15 +483,33 @@ func (r *StatusReader) build(ctx context.Context) *Status {
 		s.SelectionState = string(wireless.Empty)
 	}
 
-	// Домашняя точка: имя из конфигурации, диапазон из разрешения. Имя её
-	// интерфейса не выводится и не нужно: число клиентов остаётся null,
-	// пока не отвечён RQ-05.
+	// Домашняя точка: имя из конфигурации, диапазон из разрешения.
 	if cfg != nil {
 		if ap := apSection(cfg, radios.AP); ap != nil {
 			s.AP.SSID = ap.Options["ssid"]
 		}
 	}
 	s.AP.Band = radios.APBand
+
+	// Число клиентов точки — из assoclist, и только когда он ответил
+	// РАЗБОРЧИВО.
+	//
+	// null и ноль здесь разные утверждения: ноль означает «точка ответила,
+	// клиентов нет», а null — «спросить не смогли». Подмена первого вторым
+	// показала бы «0 устройств» на исправной точке с пятью телефонами.
+	// Поэтому поле заполняется только при удачном разборе, а он терпимый:
+	// форма ответа assoclist в разведке снята через grep и целиком не
+	// наблюдалась (raw/91:83).
+	if apIf := wireless.IfnameForMode(st, radios.AP, "ap"); apIf != "" {
+		b, err := r.ex.UbusCall(ctx, "iwinfo", "assoclist", map[string]any{"device": apIf})
+		if err == nil {
+			if macs := wireless.ParseAssocList(b); macs != nil {
+				n := len(macs)
+				s.AP.Clients = &n
+			}
+		}
+		r.noteLocked(srcAPClients, err)
+	}
 
 	// Имя станционного интерфейса — по выведенному радио, а не по константе.
 	// Пусто, если радио не выяснено или станция не поднята.
