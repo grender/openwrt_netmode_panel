@@ -371,6 +371,74 @@
         "source_tree": "https://github.com/MetaCubeX/mihomo/blob/Alpha/hub/route/provider.go (ветка Alpha, снято 2026-09-07)",
         "src": "hub/route/provider.go:113-138 (GET / у роутера правил → {providers: {...}}, PUT /{name} → provider.Update()); rules/provider/provider.go:107-118 (MarshalJSON: behavior, format, name, ruleCount, type, updatedAt, vehicleType); неудача первой загрузки не останавливает mihomo — hub/executor/executor.go:327-336",
         "status_note": "На живом роутере НЕ снималось: роутер недоступен 2026-09-07. При первом доступе положить ответ в raw/9x-providers-rules.json и повысить статус до verified"
+      },
+      {
+        "method": "GET",
+        "path": "/connections",
+        "status": "verified",
+        "purpose": "разовый снимок всех соединений движка для наблюдателя трафика устройства (ADR-0043). Без заголовка Upgrade: websocket отвечает одним JSON; параметр interval действует только у WebSocket",
+        "response_keys": [
+          "downloadTotal",
+          "uploadTotal",
+          "connections",
+          "memory"
+        ],
+        "connection_keys": [
+          "id",
+          "metadata",
+          "upload",
+          "download",
+          "start",
+          "chains",
+          "providerChains",
+          "rule",
+          "rulePayload"
+        ],
+        "metadata_keys_used": [
+          "network",
+          "sourceIP",
+          "sourcePort",
+          "host",
+          "sniffHost",
+          "destinationIP",
+          "remoteDestination",
+          "destinationPort",
+          "destinationGeoIP",
+          "destinationIPASN",
+          "dnsMode"
+        ],
+        "observed": "107 154 байта на 150 соединений; destinationIP пуст у 141 (fake-ip), remoteDestination заполнен у всех, destinationGeoIP null у 146, destinationIPASN пуст у всех, process пуст у всех (TProxy). chains — от узла к группе: [\"🇫🇷⚡Франция\",\"PROXY\",\"BYPASS\"]. destinationPort — строка",
+        "geo_asn_note": "DstGeoIP пишется только при проверке правила GEOIP (rules/common/geoip.go:59-91), DstIPASN — только при проверке IP-ASN (rules/common/ipasn.go:35). Правила, до которого соединение не дошло, нет и метки — пустота не поломка",
+        "no_server_filter": "фильтра по источнику у mihomo нет — отбор по sourceIP делает клиент",
+        "source_tree": "https://github.com/MetaCubeX/mihomo/blob/v1.19.27 (та же версия, что снята живьём в nikki.version)",
+        "src": "hub/route/server.go:130 (r.Mount(\"/connections\", connectionRouter())); hub/route/connections.go:24-29 (getConnections: без апгрейда render.JSON(Snapshot()))",
+        "raw": "raw/91-watch-logs-connections-hosts.txt"
+      },
+      {
+        "method": "GET",
+        "path": "/logs",
+        "status": "verified",
+        "purpose": "поток событий движка: строка на каждое установленное соединение и на каждый неудавшийся дозвон (ADR-0043)",
+        "query": "level=debug|info|warning|error|silent (по умолчанию info; не зависит от log-level конфига — на роутере warning, поток ?level=info отдаёт info); format=structured меняет только обёртку",
+        "transport": "HTTP/1.1 200, Content-Type: application/json, Transfer-Encoding: chunked; по JSON-объекту {type, payload} на строку, Flush после каждого. Заголовки не приходят до первого события. HEAD → 405. WebSocket не обязателен",
+        "drop_on_overflow": "канал подписчика на 1024 события, при переполнении событие выбрасывается молча (select … default в getLogs)",
+        "line_forms": {
+          "match_with_payload": "[NET] SRC --> DST match TYPE(PAYLOAD) using CHAIN — tunnel/tunnel.go:639",
+          "match_without_payload": "[NET] SRC --> DST match TYPE using CHAIN — tunnel/tunnel.go:641",
+          "dial_error": "[NET] dial PROXY (match TYPE/PAYLOAD) SRC --> DST error: ERR — tunnel/tunnel.go:629 (уровень warning)",
+          "other": "… using GLOBAL / using DIRECT / doesn't match any rule using … — tunnel/tunnel.go:636-648, на роутере не наблюдались",
+          "SRC": "Metadata.SourceDetail(): ip:port, при известном процессе или uid — ip:port(proc, uid=N) (constant/metadata.go:228-243)",
+          "DST": "Metadata.RemoteAddress(): JoinHostPort(домен-если-известен-иначе-IP, порт) (constant/metadata.go:216)",
+          "CHAIN": "Chain.String(): одно звено как есть, несколько — последнее[первое], то есть группа[узел] (constant/adapters.go:75-84)",
+          "NET": "TCP|UDP; строк UDP на роутере не снято — форма по исходнику"
+        },
+        "when_emitted": "info — после удачного дозвона (logMetadata после dial), warning dial — вместо него (logMetadataErr): рукопожатие с целью или узлом не удалось",
+        "join_with_connections": "id соединения в строку не попадает; склейка со снимком /connections — по sourceIP+sourcePort",
+        "observed": "20 с на info: 23 строки (14 info, 9 warning), максимум 161 символ; debug за 3 с — 17 строк против 3 на info",
+        "source_tree": "https://github.com/MetaCubeX/mihomo/blob/v1.19.27 (та же версия, что снята живьём в nikki.version)",
+        "src": "hub/route/server.go:474-560 (getLogs); :122 r.Get(\"/logs\", getLogs)",
+        "open": "поведение потока при перезапуске nikki (EOF или зависание) не снималось — RQ-09",
+        "raw": "raw/91-watch-logs-connections-hosts.txt"
       }
     ],
     "delay_zero_means_no_probe": "в history значение delay:0 — это НЕ ноль миллисекунд, а несостоявшаяся проба. Наружу обязано уходить как null, иначе мёртвый узел покажется самым быстрым.",
@@ -573,6 +641,38 @@
       "severity": "средняя — реализация написана и покрыта тестами, но ни одно утверждение о поведении на железе не измерено",
       "resolve_with": "uci show nikki | grep -v api_secret; grep -n 'nikki-rules\\|MIXIN_FILE_PATH' /etc/init.d/nikki /etc/nikki/scripts/include.sh; cat /etc/nikki/mixin.yaml; grep -n -A3 '^rules:' /etc/nikki/run/config.yaml | head; ls -la /etc/nikki/run/rules/; S=$(uci get nikki.mixin.api_secret); curl -s -H \"Authorization: Bearer $S\" http://127.0.0.1:9090/providers/rules; mihomo -v; apk info nikki | head -3; df -h /overlay; curl -sI https://api.github.com/repos/MetaCubeX/meta-rules-dat/git/trees/meta | head -5",
       "answer": null
+    },
+    {
+      "id": "RQ-09",
+      "text": "Наблюдатель трафика устройства: что отдаёт Clash API об одном устройстве и где взять список устройств",
+      "blocks": [],
+      "severity": "средняя — снимок и поток сняты и сверены по исходникам, но поведение потока при перезапуске движка и нагрузка разбора не измерены",
+      "resolve_with": "S=$(uci get nikki.mixin.api_secret); (curl -sN -m 60 -H \"Authorization: Bearer $S\" 'http://127.0.0.1:9090/logs?level=info' | tail -3; echo \"rc=$?\") & sleep 5; /etc/init.d/nikki restart; wait   # ТОЛЬКО с разрешения владельца: рвёт обход на секунды",
+      "answer": "ЧАСТИЧНО. /logs льётся chunked-HTTP без WebSocket, строки info/dial разобраны по tunnel/tunnel.go; /connections — разовый снимок 107 КБ на 150 записей, geo и ASN пусты по устройству mihomo (метки ставят только правила GEOIP/IP-ASN); склейка по sourceIP+sourcePort; устройства — /tmp/dhcp.leases + iwinfo assoclist. Не снято: EOF потока при перезапуске nikki, строки UDP, стоимость разбора снимка на Cortex-A53, соединения с IPv6-источником. raw/91, docs/recon/nikki-watch.md"
     }
-  ]
+  ],
+  "lan_hosts": {
+    "status": "verified",
+    "raw": "raw/91-watch-logs-connections-hosts.txt",
+    "doc": "docs/recon/nikki-watch.md, раздел «Устройства в LAN»",
+    "dhcp_leases": {
+      "path": "/tmp/dhcp.leases",
+      "line": "истечение(unix) MAC IPv4 имя client-id — через пробел; имя * если клиент его не прислал",
+      "observed": "7 аренд, у 4 имя *"
+    },
+    "wifi_clients": {
+      "call": "ubus call iwinfo assoclist '{\"device\":\"phy0.1-ap0\"}'",
+      "note": "MAC в верхнем регистре, в арендах — в нижнем; сравнивать без учёта регистра. Объект iwinfo уже в белом списке Executor (RQ-05)",
+      "observed": "5 клиентов, все пятеро есть в арендах"
+    },
+    "neighbours": {
+      "call": "ip -4 neigh show dev br-lan",
+      "note": "состояния REACHABLE/STALE/FAILED; для списка устройств не обязателен, глагола Executor нет"
+    },
+    "host_hints": {
+      "call": "ubus call luci-rpc getHostHints",
+      "note": "MAC → ipaddrs, ip6addrs, name; объекта luci-rpc в белом списке Executor нет. Единственный из источников, дающий IPv6 устройства"
+    },
+    "wired_vs_wifi": "прямого признака нет: в аренде, но не в assoclist домашней точки — значит не Wi-Fi этой точки"
+  }
 }

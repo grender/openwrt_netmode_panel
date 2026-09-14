@@ -1,0 +1,156 @@
+# 2026-09-14, grenderRouter. Разведка к наблюдателю трафика устройства
+# (ADR-0043, разбор — docs/recon/nikki-watch.md). Режим nikki, sniffer
+# включён (raw/89), mihomo v1.19.27. Всё только на чтение; единственное
+# действие — три исходящих curl с самого роутера во второй части, чтобы в
+# журнал попали строки RuleSet.
+#
+# Секрет Clash API взят из uci nikki.mixin.api_secret и в вывод не попадает.
+# Редактирование по docs/recon/README.md: MAC клиентов → 02:00:00:00:00:0N
+# (одинаковые MAC заменены одинаково во всех разделах), client-id аренды —
+# тот же MAC с префиксом 01:, имя одного устройства, совпадающее с именем
+# человека → Air-Guest, ULA-префикс → fdxx:xxxx:xxxx, link-local от MAC →
+# fe80::xxxx:xxxx:xxxx:xxxx. Остальное дословно, включая пустые разделы.
+#
+# Из /connections взяты три записи и свёртки: полный ответ весит 107 КБ и
+# превысил бы потолок фикстуры (TestLimitCoversRealRouterOutput).
+
+######## Часть 1 — 02:10 UTC
+## date; uci get netmode.main.mode; pidof mihomo; GET /version
+2026-09-14T02:10:02Z
+nikki
+31956
+{"meta":true,"version":"v1.19.27"}
+
+## grep -n '^log-level' /etc/nikki/run/config.yaml
+3:log-level: warning
+## curl -si -m 2 GET /logs?level=info  (заголовки ответа без WebSocket-апгрейда)
+## curl -sN -m 20 GET /logs?level=info > /tmp/nm91.log; wc -l; cut по type
+23
+     14 "type":"info"
+      9 "type":"warning"
+## виды строк: первые 2 каждого вида (TCP match, UDP match, dial error, прочее)
+{"type":"info","payload":"[TCP] 192.168.9.219:50446 --\u003e www.google.com:443 match Match using DIRECT"}
+{"type":"info","payload":"[TCP] 192.168.9.219:50449 --\u003e www.google.com:443 match Match using DIRECT"}
+{"type":"warning","payload":"[TCP] dial DIRECT (match Match/) 192.168.9.219:50440 --\u003e 194.221.250.50:80 error: dial tcp 194.221.250.50:80: i/o timeout"}
+{"type":"warning","payload":"[TCP] dial DIRECT (match Match/) 192.168.9.219:50441 --\u003e 194.221.250.50:5222 error: dial tcp 194.221.250.50:5222: i/o timeout"}
+{"type":"warning","payload":"[TCP] dial DIRECT (match Match/) 192.168.9.219:50447 --\u003e 194.221.250.50:80 error: dial tcp 194.221.250.50:80: i/o timeout"}
+## свёртка: источник → число событий
+## максимальная длина строки
+161
+## curl -sN -m 3 GET /logs?level=info&format=structured | head -3
+{"time":"02:10:24","level":"info","message":"[TCP] 192.168.9.219:50468 --\u003e www.google.com:443 match Match using DIRECT","fields":[]}
+{"time":"02:10:24","level":"info","message":"[TCP] 192.168.9.219:50469 --\u003e www.google.com:443 match Match using DIRECT","fields":[]}
+## curl -sN -m 3 GET /logs?level=debug | wc -l ; и для сравнения info за те же 3 с
+17
+3
+## GET /connections: байт, число, ключи верхнего уровня
+107154
+150
+{"downloadTotal":26887948512,"uploadTotal":9866090047,"connections":[…],"memory":73535488}
+
+## одна запись fake-ip и одна normal (как есть)
+{"id":"3f10a1d4-4913-4793-82a4-f63b664e7808","metadata":{"network":"tcp","type":"TProxy","sourceIP":"192.168.9.219","destinationIP":"","sourceGeoIP":null,"destinationGeoIP":null,"sourceIPASN":"","destinationIPASN":"","sourcePort":"50317","destinationPort":"443","inboundIP":"::","inboundPort":"7892","inboundName":"DEFAULT-TPROXY","inboundUser":"","host":"api.anthropic.com","dnsMode":"fake-ip","uid":0,"process":"","processPath":"","specialProxy":"","specialRules":"","remoteDestination":"154.222.132.99","dscp":0,"sniffHost":""},"upload":3456,"download":4953,"start":"2026-09-14T02:08:26.799495937Z","chains":["🇫🇷⚡Франция","PROXY","BYPASS"],"providerChains":["sub","",""],"rule":"RuleSet","rulePayload":"nm-geosite-anthropic"}
+{"id":"f26ddbd2-639b-4729-b30c-cca96279102f","metadata":{"network":"tcp","type":"TProxy","sourceIP":"192.168.9.163","destinationIP":"13.222.111.224","sourceGeoIP":null,"destinationGeoIP":["us"],"sourceIPASN":"","destinationIPASN":"","sourcePort":"54094","destinationPort":"554","inboundIP":"::","inboundPort":"7892","inboundName":"DEFAULT-TPROXY","inboundUser":"","host":"","dnsMode":"normal","uid":0,"process":"","processPath":"","specialProxy":"","specialRules":"","remoteDestination":"13.222.111.224","dscp":0,"sniffHost":""},"upload":29689,"download":38576,"start":"2026-09-14T01:39:54.041347515Z","chains":["DIRECT"],"providerChains":[""],"rule":"Match","rulePayload":""}
+## свёртка: источник dnsMode network цепочка правило
+     69 192.168.9.219 fake-ip tcp 🇫🇷⚡Франция RuleSet
+     56 192.168.9.219 fake-ip tcp DIRECT Match
+      4 192.168.9.219 normal tcp DIRECT Match
+      4 192.168.9.142 fake-ip tcp DIRECT Match
+      4 192.168.9.124 fake-ip tcp DIRECT Match
+      3 192.168.9.124 normal tcp 🇫🇷⚡Франция RuleSet
+      2 192.168.9.226 normal tcp DIRECT Match
+      2 192.168.9.219 normal tcp 🇫🇷⚡Франция RuleSet
+      2 192.168.9.219 normal tcp DIRECT DomainSuffix
+      2 192.168.9.163 normal tcp DIRECT Match
+      1 192.168.9.163 fake-ip tcp 🇫🇷⚡Франция RuleSet
+      1 192.168.9.163 fake-ip tcp DIRECT Match
+## заполненность полей среди всех записей
+host пусто=9
+sniffHost пусто=144
+destinationIP пусто=141
+remoteDestination пусто=0
+destinationIPASN пусто=150
+process пусто=150
+destinationGeoIP null=146
+## cat /tmp/dhcp.leases
+1789370216 02:00:00:00:00:01 192.168.9.207 neural 01:02:00:00:00:00:01
+1789386146 02:00:00:00:00:02 192.168.9.219 * 01:02:00:00:00:00:02
+1789386678 02:00:00:00:00:03 192.168.9.124 Air-Guest 01:02:00:00:00:00:03
+1789378730 02:00:00:00:00:04 192.168.9.163 grender-Redmi-A5 01:02:00:00:00:00:04
+1789386081 02:00:00:00:00:05 192.168.9.142 * 01:02:00:00:00:00:05
+1789385838 02:00:00:00:00:06 192.168.9.226 * 01:02:00:00:00:00:06
+1789363410 02:00:00:00:00:07 192.168.9.238 * 01:02:00:00:00:00:07
+## ubus call iwinfo assoclist '{"device":"phy0.1-ap0"}' | grep mac
+			"mac": "02:00:00:00:00:03",
+			"mac": "02:00:00:00:00:04",
+			"mac": "02:00:00:00:00:02",
+			"mac": "02:00:00:00:00:06",
+			"mac": "02:00:00:00:00:05",
+## ip -4 neigh show dev br-lan
+192.168.9.226 lladdr 02:00:00:00:00:06 REACHABLE 
+192.168.9.163 lladdr 02:00:00:00:00:04 REACHABLE 
+192.168.9.207 FAILED 
+192.168.9.238 FAILED 
+192.168.9.219 lladdr 02:00:00:00:00:02 REACHABLE 
+192.168.9.124 lladdr 02:00:00:00:00:03 STALE 
+192.168.9.142 lladdr 02:00:00:00:00:05 REACHABLE 
+## ubus call luci-rpc getHostHints | head -12
+{
+	"02:00:00:00:00:01": {
+		"ipaddrs": [
+			"192.168.9.207"
+		],
+		"ip6addrs": [
+			"fdxx:xxxx:xxxx:0:7570:82e0:8a7b:a183",
+			"fdxx:xxxx:xxxx:0:7d11:2166:5443:5b37",
+			"fe80::xxxx:xxxx:xxxx:xxxx"
+		],
+		"name": "neural"
+	},
+## free
+              total        used        free      shared  buff/cache   available
+Mem:         498484      164780      148600        1312      185104      281804
+Swap:             0           0           0
+
+######## Часть 2 — 02:11 UTC. Три раздела части 1 вышли пустыми по ошибке
+######## пробы, а не роутера: «заголовки ответа» — curl -si -m 2 не дождался
+######## первого события, до него поток заголовков не отдаёт; «виды строк» —
+######## за 20 с не случилось ни RuleSet, ни UDP, и разметка разделов
+######## съехала (строки под «по type» — это TCP match и dial); «свёртка
+######## источник» — шаблон искал -->, а в JSON стрелка записана как >.
+######## Сняты заново здесь.
+## curl -sN -D /tmp/nm91.h -m 30 GET /logs?level=info  (в фоне), тем временем curl с роутера к api.anthropic.com и www.youtube.com
+anthropic http=404 ip=198.18.0.68
+youtube http=200 ip=198.18.0.63
+blocked? http=000 ip=194.221.250.50
+194.221.250.50: curl rc=52
+## заголовки ответа /logs
+HTTP/1.1 200 OK
+Content-Type: application/json
+Vary: Origin
+Date: Mon, 14 Sep 2026 02:11:11 GMT
+Transfer-Encoding: chunked
+
+## всего строк; по type
+33
+     22 "type":"info"
+     11 "type":"warning"
+## строки с RuleSet / DomainSuffix / не-DIRECT
+{"type":"info","payload":"[TCP] 192.168.0.234:37984 --\u003e api.anthropic.com:443 match RuleSet(nm-geosite-anthropic) using BYPASS[🇫🇷⚡Франция]"}
+{"type":"info","payload":"[TCP] 192.168.0.234:42740 --\u003e www.youtube.com:443 match RuleSet(nm-geosite-youtube) using BYPASS[🇫🇷⚡Франция]"}
+{"type":"info","payload":"[TCP] 192.168.9.219:50526 --\u003e www.youtube.com:443 match RuleSet(nm-geosite-youtube) using BYPASS[🇫🇷⚡Франция]"}
+{"type":"info","payload":"[TCP] 192.168.0.234:37984 --\u003e api.anthropic.com:443 match RuleSet(nm-geosite-anthropic) using BYPASS[🇫🇷⚡Франция]"}
+{"type":"info","payload":"[TCP] 192.168.0.234:42740 --\u003e www.youtube.com:443 match RuleSet(nm-geosite-youtube) using BYPASS[🇫🇷⚡Франция]"}
+{"type":"info","payload":"[TCP] 192.168.9.219:50526 --\u003e www.youtube.com:443 match RuleSet(nm-geosite-youtube) using BYPASS[🇫🇷⚡Франция]"}
+## строки UDP
+## строки dial (ошибки)
+{"type":"warning","payload":"[TCP] dial DIRECT (match Match/) 192.168.9.219:50516 --\u003e 194.221.250.50:80 error: dial tcp 194.221.250.50:80: i/o timeout"}
+{"type":"warning","payload":"[TCP] dial DIRECT (match Match/) 192.168.9.219:50517 --\u003e 194.221.250.50:5222 error: dial tcp 194.221.250.50:5222: i/o timeout"}
+{"type":"warning","payload":"[TCP] dial DIRECT (match Match/) 192.168.9.219:50522 --\u003e 194.221.250.50:5222 error: dial tcp 194.221.250.50:5222: i/o timeout"}
+## строки с источником 198.18 / 127 (трафик самого роутера)
+## прочие строки (не [TCP]/[UDP])
+## свёртка: источник → число событий
+     28 192.168.9.219
+      3 192.168.0.234
+      1 192.168.9.226
+      1 192.168.9.142
