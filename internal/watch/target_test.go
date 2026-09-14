@@ -44,6 +44,9 @@ func find(t *testing.T, tb *table, name string, now time.Time) Target {
 // что скачал сто мегабайт и закрылся, в таблице стоял бы ноль.
 func TestVanishedConnectionKeepsItsBytes(t *testing.T) {
 	tb := newTable()
+	// Первый снимок пустой: соединение рождается уже при наблюдении, и
+	// его байты — байты сессии целиком.
+	tb.applySnapshot(snap(), devIP, time.Second, t0.Add(-time.Second))
 	c := conn("a", "cdn.example.com", "1.2.3.4", 443, 100, 1000, t0.Add(-time.Minute))
 	tb.applySnapshot(snap(c), devIP, time.Second, t0)
 
@@ -225,6 +228,7 @@ func TestEvictsOldestBeyondCap(t *testing.T) {
 // самую картину, ради которой он и нажал «Применить».
 func TestZeroLiveKeepsCounters(t *testing.T) {
 	tb := newTable()
+	tb.applySnapshot(snap(), devIP, time.Second, t0.Add(-time.Second))
 	tb.applySnapshot(snap(conn("a", "x.example.com", "1.2.3.4", 443, 500, 900, t0)), devIP, time.Second, t0)
 	tb.zeroLive()
 
@@ -256,5 +260,33 @@ func TestSnapshotNamesTargetByFallback(t *testing.T) {
 	sniffed := find(t, tb, "sniffed.example.com", t0)
 	if sniffed.IsIP {
 		t.Error("адресат с именем от sniffer помечен адресом")
+	}
+}
+
+// TestFirstSnapshotIsBaseline — соединение, открытое ДО наблюдения, не
+// приносит в «за сессию» свою прошлую жизнь.
+//
+// Найдено на живом роутере 2026-09-14: через полторы минуты после старта у
+// давно открытого соединения к api.anthropic.com стояло 35 МБ «за сессию»,
+// а скорость первого тика равнялась всему его прошлому трафику.
+func TestFirstSnapshotIsBaseline(t *testing.T) {
+	tb := newTable()
+	c := conn("a", "api.example.com", "1.2.3.4", 443, 35_000_000, 800_000, t0.Add(-time.Hour))
+	tb.applySnapshot(snap(c), devIP, time.Second, t0)
+
+	got := find(t, tb, "api.example.com", t0)
+	if got.Up != 0 || got.Down != 0 || got.RateUp != 0 || got.RateDown != 0 {
+		t.Fatalf("после первого снимка ↑%d ↓%d, скорость ↑%d ↓%d — ожидались нули: это прошлое соединения, а не сессия",
+			got.Up, got.Down, got.RateUp, got.RateDown)
+	}
+	if got.Live != 1 || got.Count != 1 {
+		t.Errorf("живых %d, всего %d — соединение при этом видно", got.Live, got.Count)
+	}
+
+	c.Upload += 500
+	tb.applySnapshot(snap(c), devIP, time.Second, t0.Add(time.Second))
+	got = find(t, tb, "api.example.com", t0.Add(time.Second))
+	if got.Up != 500 || got.RateUp != 500 {
+		t.Errorf("после второго снимка ↑%d, скорость ↑%d — ожидались 500 и 500", got.Up, got.RateUp)
 	}
 }

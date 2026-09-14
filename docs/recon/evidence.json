@@ -663,7 +663,10 @@
     "wifi_clients": {
       "call": "ubus call iwinfo assoclist '{\"device\":\"phy0.1-ap0\"}'",
       "note": "MAC в верхнем регистре, в арендах — в нижнем; сравнивать без учёта регистра. Объект iwinfo уже в белом списке Executor (RQ-05)",
-      "observed": "5 клиентов, все пятеро есть в арендах"
+      "observed": "5 клиентов, все пятеро есть в арендах",
+      "raw": "raw/92-ubus-iwinfo-assoclist.json",
+      "shape": "{\"results\": [{\"mac\", \"signal\", \"signal_avg\", \"noise\", \"inactive\", \"connected_time\", \"thr\", \"authorized\", …, \"rx\": {…}, \"tx\": {…}}]} — снято целиком 2026-09-14, догадка по отступам из raw/91 подтвердилась",
+      "observed_2026_09_14": "4 клиента; 3484 Б; MAC отредактированы в 02:00:00:00:00:0N по порядку появления, нумерация НЕ совпадает с raw/91"
     },
     "neighbours": {
       "call": "ip -4 neigh show dev br-lan",

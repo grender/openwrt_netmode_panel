@@ -28,24 +28,21 @@ func apClients(t *testing.T, s *Server) (*int, int) {
 	return st.AP.Clients, rec.Code
 }
 
-// TestAPClientsCountsAssocList: пять MAC — пять клиентов.
+// TestAPClientsCountsAssocList: четыре клиента в записанном выводе — четыре
+// в статусе.
 //
-// Тело фикстуры СИНТЕТИЧЕСКОЕ: в разведке команда прошла через grep mac
-// (raw/91:83), и обёртка {"results": […]} выведена по отступам и по
-// соседнему raw/23, а не наблюдалась. MAC внутри — настоящие из той выдачи.
+// Тело — raw/92, снятое с роутера 2026-09-14 целиком, а не выведенное по
+// отступам: живой демон на том же выводе ответил clients: 4.
 func TestAPClientsCountsAssocList(t *testing.T) {
-	s, f := newServer(t)
+	s, _ := newServer(t)
 	defer s.Close()
-	f.Fixtures["ubus iwinfo assoclist"] = []byte(`{"results":[
-		{"mac":"02:00:00:00:00:03"},{"mac":"02:00:00:00:00:04"},{"mac":"02:00:00:00:00:02"},
-		{"mac":"02:00:00:00:00:06"},{"mac":"02:00:00:00:00:05"}]}`)
 
 	got, code := apClients(t, s)
 	if code != http.StatusOK {
 		t.Fatalf("код = %d", code)
 	}
-	if got == nil || *got != 5 {
-		t.Fatalf("клиентов = %v, ожидалось 5", got)
+	if got == nil || *got != 4 {
+		t.Fatalf("клиентов = %v, в raw/92 их 4", got)
 	}
 }
 
@@ -74,9 +71,9 @@ func TestAPClientsNullWhenNotAsked(t *testing.T) {
 
 // TestAPClientsNullOnUnknownShape: форма ответа не та — тоже null.
 //
-// Обёртка assoclist не снята целиком, и это единственная защита от того,
-// что догадка окажется неверной: панель покажет прочерк, а не выдуманное
-// число. Уберут разборчивость — тест покраснеет.
+// Форма снята (raw/92), но она чужая и без контракта: следующая сборка
+// iwinfo вправе её поменять. Тогда панель обязана показать прочерк, а не
+// выдуманное число. Уберут разборчивость — тест покраснеет.
 func TestAPClientsNullOnUnknownShape(t *testing.T) {
 	s, f := newServer(t)
 	defer s.Close()

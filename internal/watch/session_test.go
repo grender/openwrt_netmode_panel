@@ -179,8 +179,12 @@ func TestSingleSnapshotFailureIsNotRestart(t *testing.T) {
 // TestRestartKeepsTargetsZeroesLive — строки на месте, живых нет.
 func TestRestartKeepsTargetsZeroesLive(t *testing.T) {
 	now := t0
-	src := &fakeSource{snaps: []nikki.Snapshot{snap(conn("a", "x.example.com", "1.2.3.4", 443, 500, 900, t0))}}
+	// Первый снимок пустой: он задаёт точку отсчёта, а байты второго —
+	// байты сессии целиком.
+	src := &fakeSource{snaps: []nikki.Snapshot{snap(), snap(conn("a", "x.example.com", "1.2.3.4", 443, 500, 900, t0))}}
 	s := newSession(src, &now, nil)
+	s.tick(context.Background(), now)
+	now = t0.Add(500 * time.Millisecond)
 	s.tick(context.Background(), now)
 
 	src.setErr(errors.New("нет связи"))

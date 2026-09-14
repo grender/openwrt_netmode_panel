@@ -198,21 +198,23 @@ func TestServerCloseStopsSession(t *testing.T) {
 
 // TestWatchHostsMergesSources: список устройств из трёх источников.
 func TestWatchHostsMergesSources(t *testing.T) {
-	s, f := newServer(t)
+	s, _ := newServer(t)
 	defer s.Close()
 
 	dir := t.TempDir()
 	leases := filepath.Join(dir, "dhcp.leases")
 	if err := os.WriteFile(leases, []byte(
-		"1789370216 02:00:00:00:00:01 192.168.9.207 neural 01:02\n"+
+		"1789370216 02:00:00:00:00:09 192.168.9.207 neural 01:02\n"+
 			"1789386146 02:00:00:00:00:02 192.168.9.219 * 01:02\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s.cfg.LeasesPath = leases
-	// Форма ответа assoclist в разведке НЕ снята целиком (raw/91 прошёл через
-	// grep mac), поэтому здесь она синтетическая — и ровно поэтому же
-	// разборщик терпимый: см. TestWatchHostsSurvivesUnknownAssocList.
-	f.Fixtures["ubus iwinfo assoclist"] = []byte(`{"results":[{"mac":"02:00:00:00:00:02"}]}`)
+	// assoclist — записанный с роутера raw/92, без подмены: 02:00:00:00:00:02
+	// в нём есть, 02:00:00:00:00:09 нет. neural говорит по снимку: в аренде,
+	// не в assoclist И говорит — значит по проводу.
+	fake := newFakeNikkiClient()
+	fake.snapshots = []nikki.Snapshot{{Connections: []nikki.Conn{{ID: "a", Net: "tcp", SourceIP: "192.168.9.207", SourcePort: 1}}}}
+	s.SetNikkiClient(fake)
 
 	rec := watchReq(t, s, "GET", "/api/watch/hosts", "")
 	if rec.Code != http.StatusOK {
@@ -229,8 +231,8 @@ func TestWatchHostsMergesSources(t *testing.T) {
 	if got := byIP["192.168.9.219"]; got.Kind != watch.KindWireless {
 		t.Errorf("устройство из assoclist = %+v, ожидалось беспроводное", got)
 	}
-	if got := byIP["192.168.9.207"]; got.Kind != watch.KindWired || got.Name != "neural" {
-		t.Errorf("устройство вне assoclist = %+v, ожидался кабель", got)
+	if got := byIP["192.168.9.207"]; got.Kind != watch.KindWired || got.Name != "neural" || !got.Active {
+		t.Errorf("говорящее устройство вне assoclist = %+v, ожидался кабель", got)
 	}
 }
 
@@ -284,7 +286,9 @@ func TestWatchSessionReadsEngine(t *testing.T) {
 	defer s.Close()
 
 	fake := newFakeNikkiClient()
-	fake.snapshots = []nikki.Snapshot{{
+	// Первый снимок пустой: он только точка отсчёта, и соединение, открытое
+	// до наблюдения, свою прошлую жизнь в «за сессию» не приносит.
+	fake.snapshots = []nikki.Snapshot{{UploadTotal: 900}, {
 		UploadTotal: 1000,
 		Connections: []nikki.Conn{{
 			ID: "a", Net: "tcp", SourceIP: "192.168.9.219", SourcePort: 50317,

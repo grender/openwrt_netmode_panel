@@ -94,7 +94,7 @@ func TestMergeHostsFromRaw91(t *testing.T) {
 		wifi[i] = strings.ToUpper(wifi[i])
 	}
 
-	hosts := MergeHosts(leases, wifi, []string{"192.168.9.219", "192.168.9.99"})
+	hosts := MergeHosts(leases, wifi, []string{"192.168.9.219", "192.168.9.207", "192.168.9.99"})
 	byIP := map[string]Host{}
 	for _, h := range hosts {
 		byIP[h.IP] = h
@@ -103,7 +103,11 @@ func TestMergeHostsFromRaw91(t *testing.T) {
 		t.Fatalf("устройств %d, ожидалось 8 (семь аренд плюс говорящий без аренды)", len(hosts))
 	}
 	if got := byIP["192.168.9.207"]; got.Kind != KindWired || got.Name != "neural" {
-		t.Errorf("neural = %+v, ожидался кабель", got)
+		t.Errorf("neural = %+v, ожидался кабель: говорит, а в assoclist его нет", got)
+	}
+	// Аренда пережила устройство: в assoclist нет, и молчит. Это НЕ кабель.
+	if got := byIP["192.168.9.238"]; got.Kind != KindUnknown {
+		t.Errorf("молчащий без ассоциации = %+v, ожидалось «неизвестно»", got)
 	}
 	if got := byIP["192.168.9.219"]; got.Kind != KindWireless || !got.Active || got.Name != "" {
 		t.Errorf("192.168.9.219 = %+v, ожидался Wi-Fi, говорит, без имени", got)
@@ -142,8 +146,22 @@ func TestMergeHostsWithoutAssoclist(t *testing.T) {
 // дома нет ни одного телефона.
 func TestMergeHostsWithEmptyAssocList(t *testing.T) {
 	leases := []Lease{{MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.9.10", Name: "x"}}
-	hosts := MergeHosts(leases, []string{}, nil)
+	hosts := MergeHosts(leases, []string{}, []string{"192.168.9.10"})
 	if len(hosts) != 1 || hosts[0].Kind != KindWired {
 		t.Fatalf("при пустом, но полученном assoclist получилось %+v", hosts)
+	}
+}
+
+// TestMergeHostsQuietLeaseIsNotCable — найдено на живом роутере 2026-09-14.
+//
+// Телефон с живой арендой ушёл из зоны: в assoclist его нет, в снимке
+// соединений тоже. Прежнее вычитание называло его «кабель». Аренда живёт
+// часами дольше ассоциации, и молчащему без ассоциации честный ответ —
+// «неизвестно».
+func TestMergeHostsQuietLeaseIsNotCable(t *testing.T) {
+	leases := []Lease{{MAC: "02:00:00:00:00:04", IP: "192.168.9.163", Name: "phone"}}
+	hosts := MergeHosts(leases, []string{"02:00:00:00:00:03"}, nil)
+	if len(hosts) != 1 || hosts[0].Kind != KindUnknown {
+		t.Fatalf("молчащая аренда без ассоциации = %+v, ожидалось «неизвестно»", hosts)
 	}
 }

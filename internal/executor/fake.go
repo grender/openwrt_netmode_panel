@@ -192,6 +192,7 @@ var fixtureFiles = map[string]string{
 	"ubus network.wireless status":          "21-ubus-network-wireless-status.json",
 	"ubus iwinfo scan":                      "23-ubus-iwinfo-scan.json",
 	"ubus iwinfo info":                      "24-ubus-iwinfo-info.json",
+	"ubus iwinfo assoclist":                 "92-ubus-iwinfo-assoclist.json",
 	"ubus network.interface.wwan status":    "26-ubus-network-interface-wwan.json",
 }
 

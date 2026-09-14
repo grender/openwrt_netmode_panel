@@ -241,10 +241,11 @@ func TestStatusFromRealFixtures(t *testing.T) {
 	if s.AP.SSID != "grenderNet" || s.AP.Band != "5g" {
 		t.Errorf("ap = %+v", s.AP)
 	}
-	// Число клиентов не подтверждено разведкой (RQ-05) — честный null,
-	// а не выдуманный ноль: неверный ноль хуже честного «не знаю».
-	if s.AP.Clients != nil {
-		t.Errorf("ap.clients = %v, ожидался null до ответа на RQ-05", *s.AP.Clients)
+	// Число клиентов — из assoclist, снятого целиком (raw/92, RQ-05): четыре.
+	// До этой фикстуры здесь стоял честный null — неверный ноль хуже честного
+	// «не знаю», — и живой демон на том же выводе ответил ровно 4.
+	if s.AP.Clients == nil || *s.AP.Clients != 4 {
+		t.Errorf("ap.clients = %v, в raw/92 клиентов 4", s.AP.Clients)
 	}
 	if !s.Online.OK {
 		t.Error("в фикстуре wwan поднят, есть адрес и маршрут по умолчанию")
