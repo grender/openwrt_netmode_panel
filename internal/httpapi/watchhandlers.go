@@ -253,3 +253,26 @@ func (s *Server) stopWatch() {
 		sess.Stop()
 	}
 }
+
+// watchSummary — строка полки главной. nil, когда сессии нет.
+//
+// Зовёт State, а не Poll: это чтение ради показа, а не признак того, что
+// за наблюдением следят. Продлевай оно TTL, поток к движку жил бы, пока
+// открыта любая вкладка панели.
+func (s *Server) watchSummary() *WatchSummary {
+	sess := s.currentWatch()
+	if sess == nil {
+		return nil
+	}
+	st := sess.State()
+	if !st.Active {
+		return nil
+	}
+	bad := 0
+	for _, t := range st.Targets {
+		if t.Verdict != watch.VerdictOK {
+			bad++
+		}
+	}
+	return &WatchSummary{IP: st.IP, Since: st.Since, Engine: st.Engine, Problems: bad}
+}

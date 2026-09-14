@@ -26,6 +26,7 @@
     "b4": "http://192.168.9.1:7000/",
     "luci": "http://192.168.9.1/cgi-bin/luci"
   },
+  "watch": null,
   "job": null,
   "subscription": {
     "configured": true,

@@ -104,6 +104,14 @@ const STATES = [
 	// #bridge с ADR-0042 ведёт на экран настроек, у которого нет баннера; на
 	// главной раскрытый раздел проверяется на карточке движка.
 	{ key: 'acc-engine', scenario: 'bridge-on', hash: 'engine', rm: false },
+	// Наблюдатель (ADR-0043). Третий экран, и баннера у него нет — значит из
+	// восьми критериев к нему относятся два: C2 (горизонтальной прокрутки
+	// нет) и C7 (пустых областей не бывает). Именно C2 здесь и нужен: это
+	// единственная в панели таблица, у которой на широком экране бывает своя
+	// прокрутка, и утечка её наружу уносит вбок весь документ.
+	{ key: 'watch', scenario: 'watch-session', hash: 'watch', rm: false },
+	{ key: 'watch-pick', scenario: 'watch-pick', hash: 'watch', rm: false },
+	{ key: 'watch-rm', scenario: 'watch-session', hash: 'watch', rm: true },
 ];
 
 const REST = 'calm';
@@ -162,29 +170,43 @@ const MEASURE = `(() => {
 	const q = (s) => document.querySelector(s);
 	const qa = (s) => Array.from(document.querySelectorAll(s));
 
+	// Экран наблюдателя (ADR-0043) баннера не имеет, и это не дефект: он
+	// отвечает не на «что сейчас с роутером», а на «с кем говорит
+	// устройство». Поэтому структурные утверждения главной к нему не
+	// применяются, а из критериев остаются те два, что от баннера не
+	// зависят, — C2 и C7. Признак — сама разметка, а не поле в STATES:
+	// состояние, забывшее объявить свой экран, молча мерило бы не то.
+	const watch = q('[data-part="watch"]');
+
 	const hero = q('[data-part="hero"]');
-	if (!hero) return { ok: false, why: 'нет баннера [data-part=hero]' };
+	if (!watch && !hero) return { ok: false, why: 'нет баннера [data-part=hero]' };
 
 	const slot = q('[data-part="hero-status"]');
-	if (!slot) return { ok: false, why: 'нет слота [data-part=hero-status]' };
-	const st = slot.dataset.status;
-	if (!['busy', 'result', 'calm'].includes(st)) {
+	if (!watch && !slot) return { ok: false, why: 'нет слота [data-part=hero-status]' };
+	const st = slot ? slot.dataset.status : 'calm';
+	if (!watch && !['busy', 'result', 'calm'].includes(st)) {
 		return { ok: false, why: 'у слота неизвестное состояние: ' + JSON.stringify(st) };
 	}
 
 	const grid = q('[data-part="grid"]');
-	if (!grid) return { ok: false, why: 'нет сетки [data-part=grid]' };
+	if (!watch && !grid) return { ok: false, why: 'нет сетки [data-part=grid]' };
 
 	const cards = qa('[data-part="card"]');
-	if (cards.length < 1) return { ok: false, why: 'в сетке нет ни одной карточки' };
+	if (!watch && cards.length < 1) return { ok: false, why: 'в сетке нет ни одной карточки' };
 
 	// Разложено, но не оформлено — новая опасность, которую внесла сборка.
 	// CSS теперь отдельным файлом, и кадр может быть структурно готов, а
 	// стилей ещё нет: settle() с его двумя одинаковыми снимками вернул бы
 	// такой кадр не поморщившись, а числа с неоформленной страницы — мусор.
-	const heroBg = getComputedStyle(hero).backgroundColor;
-	if (!heroBg || heroBg === 'rgba(0, 0, 0, 0)' || heroBg === 'transparent') {
+	const painted = watch || hero;
+	const heroBg = getComputedStyle(painted).backgroundColor;
+	if (!watch && (!heroBg || heroBg === 'rgba(0, 0, 0, 0)' || heroBg === 'transparent')) {
 		return { ok: false, why: 'стили ещё не применились (фон баннера прозрачен)' };
+	}
+	// У наблюдателя фон красит не он сам, а оболочка; доказательством
+	// оформления служит собственный отступ экрана — он задан только в CSS.
+	if (watch && parseFloat(getComputedStyle(watch).paddingTop) === 0) {
+		return { ok: false, why: 'стили ещё не применились (у экрана наблюдателя нет отступа)' };
 	}
 
 	// C7 — пустых областей не бывает.
@@ -202,7 +224,18 @@ const MEASURE = `(() => {
 		}) || (el.getBoundingClientRect().height > 0);
 	};
 	const empties = [];
-	if (!filled(slot.querySelector(':scope > *:not(.ghost)'))) empties.push('hero-status');
+	if (slot && !filled(slot.querySelector(':scope > *:not(.ghost)'))) empties.push('hero-status');
+	// У наблюдателя пустой обязана не быть каждая из его собственных
+	// областей: таблица, полоса новых и шапка сессии. Пустая таблица здесь —
+	// не «устройство молчит», а несработавший экран: молчание показывается
+	// отдельным блоком с текстом.
+	if (watch) {
+		for (const part of ['watch-session', 'watch-table', 'watch-fresh', 'watch-devices']) {
+			const el = q('[data-part="' + part + '"]');
+			if (el && !filled(el)) empties.push(part);
+		}
+		if (!filled(watch)) empties.push('watch');
+	}
 	// Список проблем живёт за колокольчиком (ADR-0042) и раскрыт только по
 	// нажатию; раскрытый обязан быть заполнен так же, как карточка.
 	const alerts = q('[data-part="alerts"]');
@@ -230,7 +263,7 @@ const MEASURE = `(() => {
 		id: el.getAttribute('data-anchor'),
 		top: top(el),
 	}));
-	if (anchors.length < 2) {
+	if (!watch && anchors.length < 2) {
 		return { ok: false, why: 'якорей [data-anchor] нашлось ' + anchors.length + ', ожидалось не меньше двух' };
 	}
 
@@ -287,18 +320,19 @@ const MEASURE = `(() => {
 
 	return {
 		ok: true,
+		screen: watch ? 'watch' : 'main',
 		slotStatus: st,
 		anchors,
 		card1Top: cards[0] ? top(cards[0]) : null,
-		gridBottom: grid.getBoundingClientRect().bottom,
+		gridBottom: grid ? grid.getBoundingClientRect().bottom : 0,
 		// Высота БАННЕРА, а не слота: резервируется теперь именно она, и
 		// только под «занята» (C5′).
-		heroH: hero.getBoundingClientRect().height,
-		slotH: slot.getBoundingClientRect().height,
+		heroH: hero ? hero.getBoundingClientRect().height : 0,
+		slotH: slot ? slot.getBoundingClientRect().height : 0,
 		scrollH: document.documentElement.scrollHeight,
 		// Сколько дорожек в сетке — так проверяется, что перелом раскладки
 		// вообще что-то делает (C8). Прежде этого не доказывало ничто.
-		gridTracks: getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length,
+		gridTracks: grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length : 1,
 		accordions: accHeads.length,
 		accLies,
 		empties,

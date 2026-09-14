@@ -22,6 +22,7 @@
     "b4": null,
     "luci": null
   },
+  "watch": null,
   "job": null,
   "subscription": {
     "configured": false,

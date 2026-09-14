@@ -374,6 +374,12 @@ export function Rulesets(p: RulesetsProps) {
 				{step === 'custom' ? (
 					<>
 						<p class="hint">{t('rules.custom.hint')}</p>
+						{/* Вход в наблюдатель стоит здесь, а не только на полке главной:
+						    трудно не добавить правило, а понять, КАКОЕ именно нужно, — и
+						    вопрос этот возникает ровно тут. */}
+						<a class="linkbtn" href="#watch">
+							{t('rules.custom.peek')}
+						</a>
 						{eff.rules.length > 0 ? (
 							<div class="rows">
 								{eff.rules.map((r, i) => (

@@ -750,3 +750,281 @@ button.row { cursor: pointer; }
 
 .chip .dir { font: 10px var(--mono); font-style: normal; color: var(--muted-2); }
 .chip .dir-tunnel { color: var(--link); }
+
+/* ─────────── наблюдатель трафика устройства (ADR-0043) ─────────── */
+
+/* Экран целиком: одна колонка при любой ширине. Сравнивать глазами тут
+   нечего, а таблица и так широкая. */
+.watch { display: flex; flex-direction: column; gap: 11px; padding: 22px; }
+
+/* Шапка сессии. Адрес — моноширинный и с табличными цифрами: он стоит
+   рядом с числами, которые меняются раз в секунду. */
+.w-sess {
+	display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+	padding: 12px 14px; border-radius: var(--r-lg);
+	background: var(--card); border: 1px solid var(--line);
+}
+.w-ip { font: 600 14.5px var(--mono); font-variant-numeric: tabular-nums; }
+.w-meta { font: 12.5px var(--sans); color: var(--muted); }
+.w-acts { display: flex; gap: 8px; margin-left: auto; }
+
+/* ── выбор устройства ── */
+
+.w-devs {
+	display: flex; flex-direction: column; gap: 1px;
+	background: var(--line); border: 1px solid var(--line);
+	border-radius: var(--r-lg); overflow: hidden;
+}
+.w-dev {
+	display: grid; gap: 10px; align-items: center;
+	grid-template-columns: minmax(0, 1fr) 118px;
+	padding: 10px 14px; min-height: 48px; background: var(--card);
+}
+.w-dev-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; font: 13.5px var(--sans); }
+.w-noname { font: 13px var(--mono); font-style: normal; color: var(--muted); }
+.w-dev-sub { font: 11.5px var(--mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }
+/* На узком адрес и связь живут ПОД именем; на широком у них свои колонки. */
+.w-dev-ip, .w-dev-kind, .w-dev-talk { display: none; }
+.w-dev button { width: auto; padding: 0 14px; }
+.w-dev-talk.on { color: var(--ok); }
+
+/* ── управление таблицей ── */
+
+.w-ctl { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+/* Пять сегментов на 390 в строку не влезают: переносим в два ряда, а не
+   отдаём нативную полосу прокрутки — её в палитре панели нет. */
+.w-modes { flex-wrap: wrap; flex: 1 1 100%; }
+.w-modes button { flex: 1 1 30%; white-space: nowrap; }
+.w-sort { flex: 1 1 260px; }
+.w-find {
+	flex: 1 1 200px; min-width: 0; min-height: 50px; padding: 0 14px;
+	border-radius: var(--r); background: var(--page); border: 1px solid #2a3138;
+	color: var(--fg); font: 16px var(--mono);
+}
+
+/* ── полоса новых ── */
+
+/* Стоит ВСЕГДА, даже пустая: так таблица под ней не прыгает в тот момент,
+   когда адресат появляется. Новые не входят в общий порядок, пока владелец
+   не согласится, — иначе строка переставляется под пальцем. */
+.w-fresh {
+	display: flex; align-items: center; gap: 10px; padding: 0 14px;
+	min-height: 46px; border-radius: var(--r);
+	background: var(--card); border: 1px solid var(--line);
+}
+.w-fresh.has { background: var(--sel-bg); border-color: var(--nikki); }
+.w-fresh-head {
+	flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px;
+	min-height: 46px; padding: 0; border: 0; background: none;
+	color: var(--muted-2); font: 600 13px var(--sans); text-align: left;
+}
+.w-fresh.has .w-fresh-head { color: var(--fg); }
+.w-fresh-head .dot { width: 7px; height: 7px; border-radius: 50%; background: #3a4249; flex: none; }
+.w-fresh.has .w-fresh-head .dot { background: var(--link); animation: blink 1.6s infinite; }
+.w-fresh-head .chev { margin-left: auto; color: var(--link); transform: none; }
+.w-fresh-head:disabled { cursor: default; }
+
+/* ── таблица ── */
+
+.w-table {
+	display: flex; flex-direction: column;
+	background: var(--line); border: 1px solid var(--line);
+	border-radius: var(--r-lg); overflow: hidden;
+}
+.w-table.fresh { border-color: var(--nikki); }
+.w-head { display: none; }
+
+.w-row {
+	display: flex; flex-direction: column; gap: 5px;
+	padding: 11px 14px; background: var(--card); border-top: 1px solid var(--line);
+}
+.w-row:first-child { border-top: 0; }
+.w-row.open { background: var(--row); }
+.w-row.fresh { background: var(--row-2); }
+
+.w-name {
+	display: flex; align-items: center; gap: 8px; min-width: 0;
+	padding: 0; border: 0; background: none; color: var(--fg);
+	text-align: left; min-height: 26px; font: 13px var(--mono);
+}
+/* Длинное имя вроде rr1---sn-5hne6n6z.googlevideo.com не ломает строку на
+   390: оно режется многоточием, а целиком показывается в раскрытии. */
+.w-name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.w-row.open .w-name-text { white-space: normal; overflow-wrap: anywhere; }
+.w-name .tag { flex: none; font: 10.5px var(--mono); color: var(--link); }
+.w-name .tag-live { color: var(--ok); }
+.w-name .tag-draft { color: var(--warn); }
+.w-vsmall { flex: none; margin-left: auto; font: 12.5px var(--sans); white-space: nowrap; }
+
+/* Вердикт различается ЗНАЧКОМ и СЛОВОМ: рядом «молчит» и «не отвечает»
+   обязаны читаться без цвета. Цвет здесь — второй план, а не носитель
+   смысла. */
+.v-ok { color: var(--ok); }
+.v-mute { color: var(--warn); }
+.v-dead { color: var(--bad); }
+
+/* Широкие колонки на узком экране не показываются вовсе: вместо них две
+   сводные ячейки одной строкой. */
+.w-cell, .w-chev { display: none; }
+.w-narrow {
+	display: flex; gap: 12px; flex-wrap: wrap;
+	font: 11.5px var(--mono); color: var(--muted-2);
+	font-variant-numeric: tabular-nums;
+}
+.w-narrow > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── раскрытая строка ── */
+
+.w-det { display: flex; flex-direction: column; gap: 11px; padding-top: 4px; }
+.w-det .diags {
+	display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+	gap: 4px 18px;
+}
+.w-det .diag > b { color: var(--fg-2); font-weight: 400; text-align: right; min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.w-err {
+	margin: 0; padding: 11px 13px; border-radius: var(--r);
+	background: var(--bad-bg); color: var(--bad-fg);
+	font: 11.5px var(--mono); overflow-wrap: anywhere;
+}
+.w-cov {
+	margin: 0; padding: 11px 13px; border-radius: var(--r); background: var(--row);
+	font: 12.5px var(--mono); color: var(--fg-2); overflow-wrap: anywhere;
+}
+
+/* ── форма правила ── */
+
+/* Форма живёт в РАСКРЫТИИ, а не кнопками в строке: так видно, на что именно
+   встанет правило, и в таблице из полутора сотен строк не появляется трёхсот
+   кнопок. */
+.w-form {
+	display: flex; flex-direction: column; gap: 9px;
+	padding: 13px 14px; border-radius: var(--r);
+	background: var(--row); border: 1px solid #2a3138;
+}
+.w-form > b { font: 600 13.5px var(--sans); }
+.w-form input.note { min-height: 50px; padding: 0 14px; border-radius: var(--r); background: var(--page); border: 1px solid #2a3138; color: var(--fg); font: 16px var(--sans); }
+.w-form-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.w-form-acts button { flex: 1 1 140px; width: auto; }
+/* Части имени стоят ВПЛОТНУЮ — они складываются в домен; маски независимы,
+   и между ними нужен зазор. */
+.w-parts {
+	display: flex; flex-wrap: wrap; align-items: center;
+	background: var(--page); border: 1px solid #2a3138; border-radius: var(--r); padding: 4px;
+}
+.w-parts button {
+	min-height: 40px; max-width: 100%; padding: 0 3px; border: 0; border-radius: 7px;
+	background: transparent; color: var(--muted-3);
+	font: 13px var(--mono); text-align: left; overflow-wrap: anywhere;
+}
+.w-parts button.on { background: var(--sel-bg); color: var(--fg); }
+.w-masks button { font: 13px var(--mono); }
+.w-result { font: 12.5px var(--mono); color: var(--fg-2); overflow-wrap: anywhere; }
+
+/* ── полоса черновика ── */
+
+.w-draft { background: var(--warn-bg); border-color: #4a3f26; }
+.w-draft-head {
+	display: flex; align-items: center; gap: 10px; width: 100%;
+	padding: 0; border: 0; background: none; text-align: left; color: var(--warn-fg);
+}
+.w-draft-head > b { font: 600 13.5px var(--sans); flex: none; }
+.w-draft-list {
+	flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+	white-space: nowrap; font: 11.5px var(--mono); color: var(--fg-2);
+}
+.w-draft-rows { display: flex; flex-direction: column; gap: 8px; }
+.w-draft-row {
+	display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+	padding: 11px 13px; border-radius: var(--r); background: #1d1a15;
+}
+.w-draft-row > span { flex: 1 1 190px; min-width: 0; display: flex; flex-direction: column; gap: 2px; font: 12.5px var(--mono); color: var(--fg); overflow-wrap: anywhere; }
+.w-draft-row i { font: 11.5px var(--sans); font-style: normal; color: var(--muted); }
+.w-draft-row .mini.danger { width: auto; padding: 0 12px; }
+
+/* ── широкий экран ── */
+
+/* Перелом 900px, и за ним ДРУГАЯ вёрстка, а не та же в увеличенном виде:
+   строки-карточки становятся строками таблицы. */
+@media (min-width: 900px) {
+	.w-dev { grid-template-columns: minmax(120px, 1fr) 132px 108px 124px 128px; }
+	.w-dev-sub { display: none; }
+	.w-dev-ip { display: inline; font: 12.5px var(--mono); color: var(--fg-2); font-variant-numeric: tabular-nums; }
+	.w-dev-kind { display: inline; font: 12.5px var(--sans); color: var(--muted); }
+	.w-dev-talk { display: inline; font: 12.5px var(--sans); color: var(--muted-2); }
+
+	.w-modes { flex: 0 0 auto; flex-wrap: nowrap; }
+	.w-modes button { flex: 0 0 auto; padding: 0 14px; }
+
+	.w-head {
+		display: grid; grid-template-columns: var(--w-grid); gap: 12px;
+		align-items: center; padding: 9px 16px; background: #14181c;
+		font: 11.5px var(--mono); color: var(--muted-2);
+	}
+	.w-row {
+		display: grid; grid-template-columns: var(--w-grid); gap: 12px;
+		align-items: center; padding: 0 16px; min-height: 48px;
+	}
+	.w-name { min-height: 44px; }
+	.w-vsmall { display: none; }
+	.w-narrow { display: none; }
+	.w-cell {
+		display: flex; flex-direction: column; gap: 2px; justify-content: center;
+		min-width: 0; font: 12.5px var(--sans); color: var(--fg-2);
+		font-variant-numeric: tabular-nums;
+	}
+	.w-cell.mono { font-family: var(--mono); }
+	.w-cell.muted { color: var(--muted-2); }
+	.w-cell-main, .w-cell-sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.w-cell-sub { font: 11.5px var(--mono); color: var(--muted-2); }
+	.w-chev {
+		display: block; padding: 0; border: 0; background: none;
+		color: var(--muted-3); font-size: 16px; min-width: 0;
+	}
+	.w-row.open .w-chev { transform: rotate(90deg); }
+	/* Раскрытие занимает всю ширину грида и стоит под строкой. */
+	.w-det { grid-column: 1 / -1; padding: 2px 0 14px; }
+	/* Режим «Всё» — единственный, где таблица шире экрана. Прокрутка у него
+	   своя, внутри карточки: горизонтальной прокрутки страницы не бывает
+	   нигде (критерий C2). */
+	.w-table.wide { overflow-x: auto; }
+	.w-table.wide .w-head, .w-table.wide .w-row { min-width: 1500px; }
+	/* Имя закреплено ТОЛЬКО там, где таблица правда уезжает: в остальных
+	   режимах sticky без прокрутки — лишний слой без единого следствия.
+	   Уехавшее за край имя оставило бы владельца перед девятью колонками
+	   чисел, не говорящими, чьи они. */
+	.w-table.wide .w-name,
+	.w-table.wide .w-head > span:first-child {
+		position: sticky; left: 0; z-index: 1;
+		background: inherit; padding-right: 10px;
+	}
+	.w-table.wide .w-head > span:first-child { background: #14181c; }
+	.w-table.wide .w-row.open .w-name { background: var(--row); }
+	.w-table.wide .w-row.fresh .w-name { background: var(--row-2); }
+	.w-table.wide .w-row:not(.open):not(.fresh) .w-name { background: var(--card); }
+	/* Раскрытие не уезжает вместе с прокруткой: подробности читают на месте. */
+	.w-table.wide .w-det { position: sticky; left: 0; }
+}
+
+/* Движение убирается, индикация — нет: пульсирующая точка новых заменяется
+   постоянной, а не исчезает. Иначе полоса «есть новые» стала бы неотличима
+   от полосы «новых нет». */
+@media (prefers-reduced-motion: reduce) {
+	.w-fresh.has .w-fresh-head .dot { animation: none; opacity: 1; }
+	.w-row.open .w-chev { transition: none; }
+}
+
+/* Состояние движка стоит в шапке сессии, а не в шапке экрана: оно про
+   наблюдение, а не про панель, и уходит вместе с сессией. */
+.w-eng { display: inline-flex; align-items: center; gap: 7px; font: 12px var(--mono); color: var(--ok); }
+.w-eng .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+.w-eng-restarting { color: var(--warn); }
+.w-eng-restarting .dot { animation: blink 1.1s infinite; }
+.w-eng-off { color: var(--bad); }
+
+/* Ссылка на форму правила прижата влево: растянутая по карточке она
+   читалась бы как кнопка «Применить», которой здесь нет. */
+.w-det > .linkbtn { align-self: flex-start; }
+
+@media (prefers-reduced-motion: reduce) {
+	.w-eng-restarting .dot { animation: none; opacity: .75; }
+}

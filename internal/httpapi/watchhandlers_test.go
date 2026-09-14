@@ -324,3 +324,73 @@ func TestWatchSessionReadsEngine(t *testing.T) {
 		t.Errorf("байты = ↑%d ↓%d", got.Up, got.Down)
 	}
 }
+
+// TestStatusCarriesWatchSummary: строка полки главной берётся из статуса.
+//
+// Отдельным запросом она была бы снимком на момент открытия главной и врала
+// бы всё остальное время: «не отвечают: 2» осталось бы на экране после того,
+// как всё ожило.
+func TestStatusCarriesWatchSummary(t *testing.T) {
+	s, _ := newServer(t)
+	defer s.Close()
+
+	rec := watchReq(t, s, "GET", "/api/status", "")
+	var before struct {
+		Watch *WatchSummary `json:"watch"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &before); err != nil {
+		t.Fatalf("статус не разобран: %v", err)
+	}
+	if before.Watch != nil {
+		t.Fatalf("без сессии сводка = %+v, ожидался null", before.Watch)
+	}
+
+	watchReq(t, s, "POST", "/api/watch", `{"ip":"192.168.9.219"}`)
+	rec = watchReq(t, s, "GET", "/api/status", "")
+	var after struct {
+		Watch *WatchSummary `json:"watch"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &after)
+	if after.Watch == nil || after.Watch.IP != "192.168.9.219" {
+		t.Fatalf("сводка = %+v", after.Watch)
+	}
+	if after.Watch.Engine != "running" || after.Watch.Since == "" {
+		t.Errorf("сводка неполна: %+v", after.Watch)
+	}
+}
+
+// TestStatusDoesNotRefreshWatchTTL: статус сводку ЧИТАЕТ, но сессию не
+// продлевает.
+//
+// Это условие, на котором сводка вообще попала в статус. Опрашивается он раз
+// в секунду с любого экрана, и продлевай он TTL — «закрыл вкладку, через
+// минуту погасло» отменилось бы для всякого, кто просто ушёл на главную.
+func TestStatusDoesNotRefreshWatchTTL(t *testing.T) {
+	s, _ := newServer(t)
+	defer s.Close()
+
+	watchReq(t, s, "POST", "/api/watch", `{"ip":"192.168.9.219"}`)
+	sess := s.currentWatch()
+	if sess == nil {
+		t.Fatal("сессия не завелась")
+	}
+
+	// Две отметки: до чтения статуса и после. Продлевай статус TTL, вторая
+	// была бы новее.
+	before := sess.LastPoll()
+
+	watchReq(t, s, "GET", "/api/status", "")
+
+	after := sess.LastPoll()
+	if !after.Equal(before) {
+		t.Errorf("статус продлил TTL сессии: было %v, стало %v", before, after)
+	}
+
+	// А GET /api/watch — продлевает, иначе экран наблюдателя гас бы под
+	// собственным опросом.
+	watchReq(t, s, "GET", "/api/watch", "")
+	polled := sess.LastPoll()
+	if !polled.After(before) {
+		t.Errorf("GET /api/watch не продлил TTL: было %v, стало %v", before, polled)
+	}
+}

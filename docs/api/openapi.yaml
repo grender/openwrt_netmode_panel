@@ -2059,6 +2059,38 @@ components:
       properties:
         job: { $ref: "#/components/schemas/Job" }
 
+    WatchSummary:
+      type: object
+      description: |
+        Сводка наблюдения за устройством для строки полки на главной
+        (ADR-0043). `null` — сессии нет.
+
+        Живёт в статусе, а не в отдельном запросе, потому что строка полки
+        обязана называть СОСТОЯНИЕ и быть верной каждую секунду; побочный
+        список отдал бы снимок на момент открытия главной и врал бы всё
+        остальное время. Взамен — жёсткое условие: собирается она чтением,
+        которое **не продлевает TTL** сессии. Иначе «закрыл вкладку — через
+        минуту погасло» отменилось бы для всякого, кто просто ушёл с экрана
+        наблюдателя на главную.
+
+        Таблицы адресатов здесь нет и не будет: статус опрашивается раз в
+        секунду, и пятьсот строк ездили бы в нём на каждом экране, включая
+        те, где их никто не смотрит.
+      required: [ip, since, engine, problems]
+      properties:
+        ip: { type: string, examples: ["192.168.9.219"] }
+        since:
+          type: string
+          format: date-time
+          description: |
+            Начало наблюдения по часам роутера. Минуты считает панель от
+            своего локального момента: часы роутера и браузера расходятся,
+            и разность двух router-меток тут ничего не измеряет.
+        engine: { type: string, enum: [running, restarting, off] }
+        problems:
+          type: integer
+          description: Сколько адресатов не в порядке — «молчит» плюс «не отвечает».
+
     Status:
       type: object
       description: |
@@ -2080,6 +2112,7 @@ components:
         - ap
         - online
         - links
+        - watch
         - job
         - subscription
         - last_fail
@@ -2174,6 +2207,11 @@ components:
           $ref: "#/components/schemas/Online"
         links:
           $ref: "#/components/schemas/Links"
+        watch:
+          oneOf:
+            - $ref: "#/components/schemas/WatchSummary"
+            - type: "null"
+          description: Сводка наблюдения за устройством; `null` — сессии нет.
         job:
           oneOf:
             - $ref: "#/components/schemas/Job"

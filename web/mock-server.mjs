@@ -166,6 +166,26 @@ const SCENARIOS = {
 	'rulesets-down': 'status-single.json',
 	'rulesets-nocatalog': 'status-single.json',
 	'rulesets-custom': 'status-single.json',
+	// Наблюдатель (ADR-0043). Статус общий — status-single.json, режим nikki:
+	// ломается не роутер, а то, что показывает третий экран. Исход решает
+	// WATCH ниже. Единственное исключение — watch-off: там наблюдать нечего
+	// именно потому, что режим другой, и это состояние статуса.
+	'watch-session': 'status-single.json',
+	'watch-pick': 'status-single.json',
+	'watch-quiet': 'status-single.json',
+	'watch-restart': 'status-single.json',
+	'watch-unparsed': 'status-single.json',
+	'watch-off': 'status-all-disabled.json',
+};
+
+// Что показывает сценарий наблюдателя. null — сессии нет, и экран обязан
+// показать выбор устройства; во всех остальных сессия заводится сразу при
+// переключении сценария, иначе половину экрана видно только после нажатия.
+const WATCH = {
+	'watch-session': { engine: 'running', unparsed: 0, quiet: false },
+	'watch-restart': { engine: 'restarting', unparsed: 0, quiet: false },
+	'watch-unparsed': { engine: 'running', unparsed: 7, quiet: false },
+	'watch-quiet': { engine: 'running', unparsed: 0, quiet: true },
 };
 
 // Какой файл списка сетей отдаётся в сценарии. Умолчание — wifi-networks.json.
@@ -208,6 +228,16 @@ const RULESETS = {
 	// напрямую — по одному на каждый вид отказа демона, который панель
 	// обязана предупреждать сама (ruleProblem).
 	'rulesets-custom': 'nikki-rulesets-rules.json',
+	// У наблюдателя своё правило владельца обязано быть ПРИМЕНЁННЫМ: только
+	// тогда строка netbird.io называется «своё правило», а не сырым
+	// DomainSuffix от mihomo, и только тогда виден зелёный тег «правило»
+	// рядом с жёлтым «в черновике». Без этого половина разметки строки
+	// проверяется лишь на роутере.
+	'watch-session': 'nikki-rulesets-watch.json',
+	'watch-restart': 'nikki-rulesets-watch.json',
+	'watch-unparsed': 'nikki-rulesets-watch.json',
+	'watch-quiet': 'nikki-rulesets-watch.json',
+	'watch-pick': 'nikki-rulesets-watch.json',
 };
 
 // Зеркало серверной проверки своих правил (rulesets.ValidateRules) в той
@@ -378,6 +408,10 @@ const state = {
 	upAt: 0,
 	// Докуда показывается провалившийся джоб из фикстуры. Ноль — бессрочно.
 	jobUntil: 0,
+	// Сессия наблюдения: null — её нет. since нужен, чтобы числа РОСЛИ:
+	// экран, у которого главное свойство «числа меняются раз в секунду, а
+	// раскладка не прыгает», на застывшей фикстуре не проверяется вовсе.
+	watch: null,
 };
 
 const MIME = {
@@ -849,6 +883,18 @@ async function handleAPI(req, res, u) {
 				? state.sub.configured
 				: state.scenario !== 'sub-unset',
 		};
+		// Сводка наблюдения едет в статусе (ADR-0043): строка полки обязана
+		// быть верной каждую секунду. TTL она НЕ продлевает — здесь это
+		// видно прямо: watchState() своих сроков не трогает вовсе.
+		const w = await watchState();
+		s.watch = w.active
+			? {
+				ip: w.ip,
+				since: w.since,
+				engine: w.engine,
+				problems: (w.targets || []).filter((x) => x.verdict !== 'ok').length,
+			}
+			: null;
 		if (state.job) s.job = state.job;
 		if (s.online) s.online = { ...s.online, checked_at: s.generated_at };
 		// Движки: инвариант роутера плюс окно молчания. mode здесь уже новый
@@ -1451,7 +1497,83 @@ async function handleAPI(req, res, u) {
 		return send(res, 200, d);
 	}
 
+	// --- наблюдатель трафика устройства (ADR-0043) ---
+
+	if (p === '/api/watch/hosts' && method === 'GET') {
+		// Список устройств отвечает при ЛЮБОМ режиме, в том числе при
+		// выключенном движке: он нужен панели ровно затем, чтобы объяснить
+		// владельцу, почему наблюдать нечего.
+		return send(res, 200, await readJSON('watch-hosts.json'));
+	}
+
+	if (p === '/api/watch' && method === 'GET') {
+		return send(res, 200, await watchState());
+	}
+
+	if (p === '/api/watch' && method === 'POST') {
+		const body = await readBody(req);
+		const ip = String(body.ip || '');
+		if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
+			return fail(res, 400, 'bad_ip', 'Нужен адрес IPv4 устройства из локальной сети');
+		}
+		if (!ip.startsWith('192.168.9.')) {
+			return fail(res, 400, 'bad_ip', 'Адрес не из локальной сети 192.168.9.0/24');
+		}
+		const mode = (await currentStatus()).mode;
+		if ((state.overlay.mode || mode) !== 'nikki') {
+			return fail(res, 409, 'engine_off', 'Наблюдатель читает решения движка Nikki; сейчас режим другой');
+		}
+		state.watch = { ip, since: Date.now(), engine: 'running', unparsed: 0, quiet: state.scenario === 'watch-quiet' };
+		return send(res, 200, await watchState());
+	}
+
+	if (p === '/api/watch' && method === 'DELETE') {
+		state.watch = null;
+		res.writeHead(204, { 'Cache-Control': 'no-store' });
+		return res.end();
+	}
+
 	return fail(res, 404, 'not_found', `Нет обработчика для ${method} ${p}`);
+}
+
+// watchState собирает состояние сессии из golden-фикстуры, наращивая числа
+// от момента старта.
+//
+// Растут они не для красоты: экран обязан переживать смену чисел раз в
+// секунду, не двигая раскладку, а на застывшем ответе это свойство
+// непроверяемо. Пометка «новый» гаснет сама через 30 секунд — её считает
+// демон, и мок обязан вести себя так же.
+async function watchState() {
+	const w = state.watch;
+	if (!w) return { active: false, unparsed: 0, dropped: 0 };
+	const secs = Math.max(0, Math.floor((Date.now() - w.since) / 1000));
+	const base = await readJSON('watch.json');
+	const restarting = w.engine === 'restarting';
+	const targets = w.quiet ? [] : base.targets.map((x, i) => {
+		const up = x.rate_up * secs;
+		const down = x.rate_down * secs;
+		return {
+			...x,
+			up: x.up + up,
+			down: x.down + down,
+			// При перезагрузке движка живых соединений нет, а счётчики
+			// остаются на прежних числах: они продолжатся, а не начнутся
+			// заново.
+			live: restarting ? 0 : x.live,
+			rate_up: restarting ? 0 : x.rate_up,
+			rate_down: restarting ? 0 : x.rate_down,
+			new: i === 1 && secs < 30,
+		};
+	});
+	return {
+		active: true,
+		ip: w.ip,
+		since: new Date(w.since).toISOString(),
+		engine: w.engine,
+		unparsed: w.unparsed,
+		dropped: 0,
+		targets,
+	};
 }
 
 const server = http.createServer(async (req, res) => {
@@ -1480,6 +1602,10 @@ const server = http.createServer(async (req, res) => {
 			// с самого начала. Пересмотреть — переключить сценарий заново.
 			arm(PREARM[name] || '');
 			state.jobUntil = name === 'job-fail-vanish' ? Date.now() + JOB_KEEP_MS : 0;
+			// Сессия наблюдения заводится вместе со сценарием: ждать нажатия
+			// значило бы прятать за кликом весь экран, ради которого сценарий
+			// и выбран.
+			state.watch = WATCH[name] ? { ip: '192.168.9.219', since: Date.now(), ...WATCH[name] } : null;
 		}
 		return send(res, 200, { scenario: state.scenario, available: Object.keys(SCENARIOS) });
 	}

@@ -1,0 +1,26 @@
+{
+  "download": "direct",
+  "fingerprint": "sha256:b1b3ff3e2147320e",
+  "foreign": false,
+  "live": true,
+  "policy": "direct",
+  "rules": [
+    {
+      "kind": "suffix",
+      "value": "netbird.io",
+      "action": "direct",
+      "comment": "своя сеть netbird, туннель ей мешает"
+    }
+  ],
+  "sets": [
+    {
+      "action": "tunnel",
+      "ip": false,
+      "loaded": true,
+      "name": "youtube",
+      "rules": 1284,
+      "updated_at": "2026-09-07T04:12:33Z"
+    }
+  ],
+  "tunnel_group": "BYPASS"
+}

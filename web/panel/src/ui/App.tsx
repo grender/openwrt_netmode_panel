@@ -16,6 +16,8 @@ import type {
 	SetsResponse,
 	Status,
 	SubscriptionURL,
+	WatchHosts,
+	WatchState,
 } from '../api/types';
 import { bridgeReason, upstreamReason } from '../api/reasons.gen';
 import { fmtTime, loadLang, makeT, saveLang, type Lang } from '../i18n';
@@ -24,6 +26,7 @@ import { resolveJob, useSvc } from '../state/job';
 import { useLock } from '../state/lock';
 import { usePoll } from '../state/poll';
 import { useSide } from '../state/side';
+import { useWatchPoll } from '../state/watch';
 import { Section, Skel, Spin, useMedia } from './bits';
 import { bridgeProblem, bridgeSummary } from './Bridge';
 import { Engine, engineSummary, engineTitle } from './Engine';
@@ -33,6 +36,7 @@ import { BridgeForm, NetworkForm, type BridgeBody, type NetBody, type NetSeed } 
 import { Shelf } from './Shelf';
 import { subSummary } from './Subscription';
 import { Uplink } from './Uplink';
+import { Watch, watchSummary } from './Watch';
 
 const MODES: Mode[] = ['nikki', 'b4', 'off'];
 
@@ -42,10 +46,14 @@ const MODES: Mode[] = ['nikki', 'b4', 'off'];
  * закладок — тоже подписка), #settings — настройки с первым разделом; всё
  * остальное — главная, где хеш по-прежнему раскрывает аккордеон (fromHash).
  */
-type Route = { screen: 'main' } | { screen: 'settings'; row: SettingsRow };
+type Route = { screen: 'main' } | { screen: 'settings'; row: SettingsRow } | { screen: 'watch' };
 
 function routeOf(hash: string): Route {
 	const h = hash.replace(/^#/, '');
+	// Наблюдатель — третий экран, и хеш у него свой (ADR-0043). Стоит РАНЬШЕ
+	// разбора настроек: иначе #watch уехал бы в ветку «всё остальное», то
+	// есть на главную, где раскрыл бы несуществующий раздел аккордеона.
+	if (h === 'watch') return { screen: 'watch' };
 	if (h === 'settings') return { screen: 'settings', row: 'routes' };
 	if (h === 'subscription') return { screen: 'settings', row: 'sub' };
 	if ((SETTINGS_ROWS as string[]).includes(h)) return { screen: 'settings', row: h as SettingsRow };
@@ -87,6 +95,12 @@ export function App() {
 	// не помнит.
 	const [rulesDraft, setRulesDraft] = useState<RulesDraft | null>(null);
 	const [bridgeForm, setBridgeForm] = useState(false);
+	// Наблюдатель опрашивается СВОИМ циклом и только пока его экран открыт:
+	// состояние сессии велико, а нужно оно ровно здесь. И только этот опрос
+	// продлевает TTL сессии — иначе «закрыл вкладку, через минуту погасло»
+	// перестало бы работать у всякого, кто просто ушёл на главную.
+	const watch = useWatchPoll(route.screen === 'watch');
+	const watchHosts = useSide<WatchHosts>('watchHosts');
 	// Скрытые провалы помнятся ПО СОБЫТИЮ, а не флагом «больше не показывать»:
 	// крестик значит «я прочитал это», а не «отключить сообщения».
 	const [failHidden, setFailHidden] = useState('');
@@ -167,6 +181,14 @@ export function App() {
 	useEffect(() => {
 		if (status && rulesets.value === undefined) void rulesets.load();
 	}, [status, rulesets]);
+
+	// Список устройств грузится при заходе на экран и после остановки
+	// наблюдения: между этими моментами он не меняется настолько, чтобы
+	// платить за него запросом каждую секунду.
+	useEffect(() => {
+		if (route.screen !== 'watch') return;
+		if (watchHosts.value === undefined) void watchHosts.load();
+	}, [route.screen, watchHosts]);
 
 	// Уход из режима nikki уносит черновик: раздел принадлежит режиму, и
 	// вернувшийся владелец не должен обнаружить непринятые правки для
@@ -453,6 +475,36 @@ export function App() {
 			},
 		);
 
+	const onWatchStart = (ip: string) =>
+		void lock.act(
+			`watch:${ip}`,
+			async () => {
+				watch.put(
+					await api<WatchState>('watch', {
+						method: 'POST',
+						body: JSON.stringify({ ip }),
+						timeoutMs: BUDGET.SIDE,
+					}),
+				);
+			},
+			async () => {},
+		);
+
+	const onWatchStop = () =>
+		void lock.act(
+			'watch',
+			async () => {
+				await api<void>('watch', { method: 'DELETE', timeoutMs: BUDGET.SIDE });
+				watch.put({ active: false, unparsed: 0, dropped: 0 });
+			},
+			// Список устройств перечитывается ПОСЛЕ остановки: «говорит
+			// сейчас» за время сессии успевает измениться, а выбирать
+			// владелец будет по нему же.
+			async () => {
+				await watchHosts.load();
+			},
+		);
+
 	const onApplyRules = (d: RulesDraft) =>
 		void lock.act(
 			'rulesets',
@@ -575,6 +627,8 @@ export function App() {
 		setRoute({ screen: 'settings', row: (next || 'routes') as SettingsRow });
 		history.replaceState(null, '', `#${next || 'settings'}`);
 	};
+	const w = watchSummary(status.watch, t);
+	const watchRow = { id: 'watch' as const, title: t('shelf.watch'), summary: w.text, warn: w.warn };
 	const upFail = status.last_fail;
 	const upFailKey = upFail ? `${upFail.reason}:${upFail.at}` : '';
 	const brFail = bridge.value?.last_fail ?? status.bridge_last_fail ?? null;
@@ -628,6 +682,46 @@ export function App() {
 				{brFail.detail ? <p class="detail">{brFail.detail}</p> : null}
 			</div>
 		) : null;
+
+	// ─── экран наблюдателя ───
+	//
+	// Шапка своя, как у настроек: ссылка назад и имя экрана. Кнопка «назад»
+	// браузера работает сама — экран берётся из хеша и только из него.
+	if (route.screen === 'watch') {
+		return (
+			<div class="page">
+				<div class="shell">
+					<header class="top settings-top" data-part="top">
+						<div class="top-id">
+							<a class="toplink" href="#">
+								‹ {t('watch.back')}
+							</a>
+							<span class="host">{t('watch.title')}</span>
+							<span class="ap-meta">{t('watch.sub')}</span>
+						</div>
+						<div class="top-links">{langSwitch}</div>
+					</header>
+					<Watch
+						state={watch.value}
+						stale={watch.stale}
+						hosts={watchHosts.value}
+						mode={mode}
+						applied={rulesets.value}
+						draft={rulesDraft}
+						setDraft={setRulesDraft}
+						onStart={onWatchStart}
+						onStop={onWatchStop}
+						onApplyRules={onApplyRules}
+						lock={lock}
+						locked={locked}
+						t={t}
+						lang={lang}
+					/>
+					{foot}
+				</div>
+			</div>
+		);
+	}
 
 	// ─── экран настроек ───
 	if (route.screen === 'settings') {
@@ -964,6 +1058,13 @@ export function App() {
 							{ id: 'routes', title: t('shelf.rules'), summary: rulesSummary(rulesets.value, rulesDraft, t) },
 							{ id: 'sub', title: t('shelf.sub'), summary: subSummary(status, lang, t) },
 							{ id: 'bridge', title: t('shelf.bridge'), summary: bridgeSummary(bridge.value, t), warn: !!problem },
+							// Сводка наблюдателя называет СОСТОЯНИЕ: «выключен» — это
+							// тоже состояние, и оно честнее, чем «перейти к
+							// наблюдателю». Строки нет в режимах, где наблюдать
+							// нечего, — но она остаётся, пока жива сессия: режим
+							// могли сменить прямо при открытом наблюдателе, и
+							// накопленное ещё можно дочитать.
+							...(mode === 'nikki' || status.watch ? [watchRow] : []),
 						]}
 					/>
 
