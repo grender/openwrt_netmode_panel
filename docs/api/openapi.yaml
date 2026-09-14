@@ -1427,6 +1427,135 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/watch/hosts:
+    get:
+      tags: [watch]
+      summary: Устройства LAN
+      description: |
+        Список устройств для выбора в наблюдателе. Склеен из трёх источников,
+        и ни один не требует новых пакетов OpenWrt (ADR-0043,
+        `docs/recon/nikki-watch.md`):
+
+        1. `/tmp/dhcp.leases` — адрес и имя; имени нет у большинства
+           устройств, dnsmasq пишет `*`, и наружу это уходит пустой строкой;
+        2. `ubus call iwinfo assoclist` домашней точки — кто подключён по
+           воздуху;
+        3. снимок `/connections` Clash API — кто говорит прямо сейчас.
+
+        Кабель от беспроводного отличается только вычитанием: есть в аренде,
+        нет в `assoclist`. Точка доступа не ответила — вид связи у ВСЕХ
+        становится `unknown`, а не `wired`: «неизвестно» и «по проводу» —
+        разные утверждения, и второе было бы ложью про каждое устройство
+        сразу.
+
+        Отвечает `200` при любом режиме обхода, в том числе при выключенном
+        движке: список нужен панели ровно затем, чтобы объяснить владельцу,
+        почему наблюдать нечего. Недостающий источник просто убирает свою
+        часть данных.
+      responses:
+        "200":
+          description: Устройства
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WatchHosts" }
+              examples:
+                Hosts: { $ref: "#/components/examples/WatchHosts" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/watch:
+    get:
+      tags: [watch]
+      summary: Состояние наблюдения
+      description: |
+        Отдаёт накопленное сессией и **продлевает её жизнь**: без запроса
+        дольше 60 секунд сессия гаснет сама, поток к движку закрывается,
+        память отдаётся. Закрыл вкладку — через минуту ничего не осталось.
+
+        Сессии нет — `{"active": false}` и `200`. Это не ошибка: «наблюдение
+        не запущено» — нормальное состояние экрана.
+      responses:
+        "200":
+          description: "Состояние сессии либо `{\"active\": false}`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WatchState" }
+              examples:
+                Session: { $ref: "#/components/examples/WatchSession" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [watch]
+      summary: Начать наблюдение за устройством
+      description: |
+        Заводит сессию наблюдения за одним адресом IPv4. Сессия на процесс
+        одна: выбор другого устройства ЗАМЕНЯЕТ текущую, а не встаёт в
+        очередь.
+
+        Адрес обязан быть из подсети LAN. Подсеть читается из `network.lan`;
+        вывести её не удалось — `503 lan_unknown`, потому что догадка о
+        чужой подсети хуже отказа (ADR-0019).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ip]
+              properties:
+                ip:
+                  type: string
+                  description: IPv4 устройства из подсети LAN.
+                  example: "192.168.9.219"
+      responses:
+        "200":
+          description: Сессия заведена
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WatchState" }
+        "400":
+          description: |
+            `bad_ip` — адрес не разобрался, не IPv4 или не из подсети LAN.
+            Отдельный код, а не общий `bad_request`: панель подсвечивает поле
+            адреса и предлагает список устройств.
+
+            `bad_request` — тело не разобралось.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: |
+            `engine_off` — режим обхода не `nikki`. Наблюдатель читает решения
+            движка: какое правило сработало и куда ушёл трафик. Движок
+            остановлен — решений нет вовсе.
+
+            `409`, а не `503`: движок не сломан, владелец сам его выключил, и
+            чинится это сменой режима на главной.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: |
+            `lan_unknown` — подсеть LAN не вывелась из конфигурации.
+            `uci_unavailable` — режим не прочитался.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [watch]
+      summary: Остановить наблюдение
+      description: |
+        Гасит сессию и закрывает поток к движку. Идемпотентен: сессии не было
+        — всё равно `204`.
+
+        Единственный `204` в этом контракте. Тела нет намеренно: правило
+        «тело есть всегда» из `docs/contracts/errors.md` — про тела ОШИБОК, а
+        отдавать `{"active": false}` здесь значило бы описывать состояние,
+        которое запрос только что и сделал невозможным.
+      responses:
+        "204":
+          description: Наблюдение остановлено
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
 components:
 
   securitySchemes:
@@ -1637,6 +1766,173 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
+
+    WatchHosts:
+      type: object
+      required: [hosts]
+      properties:
+        hosts:
+          type: array
+          items: { $ref: "#/components/schemas/WatchHost" }
+
+    WatchHost:
+      type: object
+      required: [ip, mac, name, kind, active]
+      properties:
+        ip:
+          type: string
+          description: IPv4 устройства.
+          example: "192.168.9.219"
+        mac:
+          type: string
+          description: |
+            MAC из аренды DHCP, строчными буквами. Пуст у устройства без
+            аренды — статики или виртуалки за relayd.
+          example: "02:00:00:00:00:02"
+        name:
+          type: string
+          description: |
+            Имя из аренды. Пусто, если клиент его не прислал (dnsmasq пишет
+            `*`) — это больше половины устройств, и панель показывает их по
+            адресу.
+          example: ""
+        kind:
+          type: string
+          enum: [wireless, wired, unknown]
+          description: |
+            `wireless` — MAC нашёлся в `assoclist` домашней точки; `wired` —
+            аренда есть, в `assoclist` его нет; `unknown` — аренды нет вовсе
+            либо точка доступа не ответила.
+
+            Называется `wireless`, а не `wifi`, потому что литерал `"wifi"` в
+            Go запрещён гейтом `scripts/check-wireless-write.sh`: команда
+            `wifi` целиком измеренно роняет домашнюю точку (ADR-0025).
+        active:
+          type: boolean
+          description: Говорит прямо сейчас — есть в снимке соединений.
+
+    WatchState:
+      type: object
+      required: [active, unparsed, dropped]
+      properties:
+        active:
+          type: boolean
+          description: Идёт ли наблюдение. `false` — остальных полей нет.
+        ip: { type: string, example: "192.168.9.219" }
+        since:
+          type: string
+          format: date-time
+          description: Когда началось наблюдение, по часам роутера.
+        engine:
+          type: string
+          enum: [running, restarting, off]
+          description: |
+            `restarting` — движок перезагружает конфигурацию (обычно после
+            «Применить»): строки на месте, живых соединений нет, счётчики
+            продолжатся с прежних чисел. `off` — режим обхода сменился, и
+            наблюдать нечего; сессия при этом живёт до TTL, чтобы накопленное
+            можно было дочитать.
+        unparsed:
+          type: integer
+          description: |
+            Строки журнала ПРО СОЕДИНЕНИЕ, которые разборщик не узнал. Больше
+            нуля значит, что mihomo сменил формат строки: снимки при этом
+            работают, а у части адресатов нет правила и вердикта.
+
+            Собственные строки движка и чужие подсистемы (`[DNS]`,
+            `[Process]`) сюда НЕ попадают: движок пишет их после каждого
+            перезапуска, и считай мы их, предупреждение загоралось бы после
+            первого же «Применить».
+        dropped:
+          type: integer
+          description: Адресаты, вытесненные сверх потолка в 500.
+        targets:
+          type: array
+          items: { $ref: "#/components/schemas/WatchTarget" }
+
+    WatchTarget:
+      type: object
+      description: |
+        Строка экрана — **адресат**, а не соединение: одно приложение
+        открывает десятки соединений к одному имени, и таблица соединений
+        читалась бы хуже, чем сырой JSON из ssh.
+      required:
+        [key, name, is_ip, net, addr, rule, payload, chain, first, last,
+         count, live, up, down, rate_up, rate_down, dial_errors, last_error,
+         error_chain, verdict, new]
+      properties:
+        key:
+          type: string
+          description: Имя и протокол через `|`. 443/tcp и 443/udp у одного домена — TLS и QUIC, то есть разные вещи.
+        name: { type: string, example: "rr1---sn-5hne6n6z.googlevideo.com" }
+        is_ip:
+          type: boolean
+          description: Имени нет; своё правило для такого адресата будет `cidr`.
+        net: { type: string, enum: [tcp, udp] }
+        ports:
+          type: array
+          items: { type: integer }
+          description: До трёх разных, по частоте.
+        addr:
+          type: string
+          description: |
+            Последний `remoteDestination` — реальный адрес, куда ушло
+            соединение. Заполнен у всех записей снимка, в отличие от
+            `destinationIP`.
+          example: "154.222.132.99"
+        geo:
+          type: array
+          items: { type: string }
+          description: |
+            Метка страны, если движок её поставил. Отсутствует примерно у
+            97 записей из 100, и это НЕ «страна неизвестна» — mihomo пишет
+            метку только в момент проверки правила `GEOIP`, до которого
+            доходят немногие. Ключа при этом нет вовсе.
+        rule: { type: string, example: "RuleSet" }
+        payload: { type: string, example: "nm-geosite-youtube" }
+        chain:
+          type: string
+          description: "Куда ушло: `DIRECT` либо `группа[узел]`."
+          example: "BYPASS[🇫🇷⚡Франция]"
+        first: { type: string, format: date-time }
+        last: { type: string, format: date-time }
+        count: { type: integer, description: Соединений за сессию. }
+        live: { type: integer, description: Живых прямо сейчас. }
+        up: { type: integer, format: int64 }
+        down: { type: integer, format: int64 }
+        rate_up: { type: integer, format: int64, description: Байт в секунду по последнему тику. }
+        rate_down: { type: integer, format: int64 }
+        dial_errors: { type: integer }
+        last_error:
+          type: string
+          description: Текст последней неудачи дозвона, дословно от движка.
+          example: "dial tcp 194.221.250.50:5222: i/o timeout"
+        error_chain:
+          type: string
+          description: |
+            Цепочка, через которую НЕ дозвонились. Отдельным полем, потому что
+            у неудачи через туннель подсказка другая: правило не поможет, там
+            либо мёртв узел, либо адресат закрыт с той стороны. Искать
+            квадратные скобки в `chain` значило бы программировать на форме
+            имени узла.
+        verdict:
+          type: string
+          enum: [ok, silent, unreachable]
+          description: |
+            `unreachable` — за последние 60 секунд был неудачный дозвон и
+            после него не было удачного соединения: рукопожатие с целью или с
+            узлом туннеля не прошло. `silent` — живое соединение старше пяти
+            секунд отправило запрос и не получило ответа, и ушло оно напрямую:
+            типичная блокировка по имени сайта. Порог ложный у долгого запроса
+            без ответа, поэтому это подсказка, а не приговор — правило
+            добавляет человек.
+        new:
+          type: boolean
+          description: |
+            Появился после старта наблюдения. Гаснет сам через 30 секунд, и
+            считает это демон, а не панель: пометка обязана гаснуть, даже
+            если на экран никто не смотрит. Адресатам из первого снимка не
+            ставится — иначе новой была бы вся таблица в нулевую секунду.
 
     Error:
       type: object
@@ -3431,6 +3727,12 @@ components:
                   него не знал». Не `null` — поле всегда строка.
 
   examples:
+    WatchHosts:
+      summary: Семь аренд плюс говорящий без аренды — виртуалка за relayd
+      externalValue: examples/watch-hosts.json
+    WatchSession:
+      summary: Сессия 12 минут — два «не отвечает», один «молчит», остальное ок
+      externalValue: examples/watch.json
     StatusSingle:
       summary: Состояние снимка разведки — John24 активна, ATOM сохранена, режим nikki
       externalValue: examples/status-single.json

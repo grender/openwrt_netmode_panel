@@ -26,6 +26,8 @@ export const ROUTES = {
 	subscription: '/api/subscription',
 	subscriptionUpdate: '/api/subscription/update',
 	upstream: '/api/upstream',
+	watch: '/api/watch',
+	watchHosts: '/api/watch/hosts',
 	wifiNetworks: '/api/wifi/networks',
 	wifiNetworksById: '/api/wifi/networks/{id}',
 	wifiScan: '/api/wifi/scan',

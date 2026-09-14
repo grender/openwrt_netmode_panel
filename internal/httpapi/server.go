@@ -27,6 +27,7 @@ import (
 	"netmoded/internal/sched"
 	"netmoded/internal/subs"
 	"netmoded/internal/uci"
+	"netmoded/internal/watch"
 	"netmoded/internal/wireless"
 )
 
@@ -84,6 +85,11 @@ type Config struct {
 	SubscriptionFetch func(ctx context.Context, url string) ([]byte, error)
 	// LEDRoot — каталог светодиодов. Пусто → /sys/class/leds.
 	LEDRoot string
+	// LeasesPath — аренды dnsmasq. Пусто → leasesPath. Тоже НЕ настройка
+	// владельца: путь назначает dnsmasq. Поле есть ради тестов, которые
+	// уводят чтение в t.TempDir(): /tmp/dhcp.leases на машине разработчика
+	// либо чужой, либо его нет.
+	LeasesPath string
 	// Logf — журнал демона. Пусто → тишина.
 	Logf func(string, ...any)
 }
@@ -154,6 +160,12 @@ type Server struct {
 	// Обычный Mutex, а не RWMutex: под замком не чтение поля, а решение
 	// «собрать заново или отдать готовое», и писателем оказывается любой
 	// первый запрос после обновления каталога.
+	// watch — сессия наблюдения за устройством. ОДНА на процесс, как
+	// job.Manager держит одну операцию: два потока к журналу движка
+	// подписались бы оба, а mihomo молча выбрасывает события при
+	// переполнении канала подписчика.
+	watchMu     sync.Mutex
+	watch       *watch.Session
 	catalogBody struct {
 		mu  sync.Mutex
 		key string
@@ -422,6 +434,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/logs", s.handleLogs)
 	s.mux.HandleFunc("GET /api/b4/sets", s.handleB4Sets)
 	s.mux.HandleFunc("POST /api/b4/set", s.handleB4Set)
+	s.mux.HandleFunc("GET /api/watch/hosts", s.handleWatchHosts)
+	s.mux.HandleFunc("GET /api/watch", s.handleWatchGet)
+	s.mux.HandleFunc("POST /api/watch", s.handleWatchStart)
+	s.mux.HandleFunc("DELETE /api/watch", s.handleWatchStop)
 
 	s.mux.Handle("GET /", s.panelHandler())
 }
@@ -521,6 +537,10 @@ func (s *Server) SetNikkiClient(c nikki.Client) { s.nikki = c; s.status.nikki = 
 
 // Close останавливает отложенные таймеры индикации.
 func (s *Server) Close() {
+	// Сессия наблюдения гасится раньше индикации: она держит поток к
+	// движку и две горутины, и оставить их дочитывать после ухода демона
+	// значило бы остановиться не до конца.
+	s.stopWatch()
 	if s.led != nil {
 		s.led.Close()
 	}

@@ -1,0 +1,60 @@
+{
+  "hosts": [
+    {
+      "ip": "192.168.9.124",
+      "mac": "02:00:00:00:00:03",
+      "name": "Air-Guest",
+      "kind": "wireless",
+      "active": true
+    },
+    {
+      "ip": "192.168.9.142",
+      "mac": "02:00:00:00:00:05",
+      "name": "",
+      "kind": "wireless",
+      "active": true
+    },
+    {
+      "ip": "192.168.9.163",
+      "mac": "02:00:00:00:00:04",
+      "name": "grender-Redmi-A5",
+      "kind": "wireless",
+      "active": true
+    },
+    {
+      "ip": "192.168.9.207",
+      "mac": "02:00:00:00:00:01",
+      "name": "neural",
+      "kind": "wired",
+      "active": false
+    },
+    {
+      "ip": "192.168.9.219",
+      "mac": "02:00:00:00:00:02",
+      "name": "",
+      "kind": "wireless",
+      "active": true
+    },
+    {
+      "ip": "192.168.9.226",
+      "mac": "02:00:00:00:00:06",
+      "name": "",
+      "kind": "wireless",
+      "active": true
+    },
+    {
+      "ip": "192.168.9.238",
+      "mac": "02:00:00:00:00:07",
+      "name": "",
+      "kind": "wired",
+      "active": false
+    },
+    {
+      "ip": "192.168.9.99",
+      "mac": "",
+      "name": "",
+      "kind": "unknown",
+      "active": true
+    }
+  ]
+}

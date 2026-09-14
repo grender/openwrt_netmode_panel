@@ -693,7 +693,20 @@ func (s *Server) handleBridgeEnable(w http.ResponseWriter, r *http.Request) {
 // lanSubnet — CIDR подсети LAN из network.lan (ipaddr бывает и с маской
 // внутри — '192.168.9.1/24', живой конфиг, — и с отдельным netmask).
 func (s *Server) lanSubnet(c *bridgeConfig) string {
-	lan, ok := c.netCfg.Section("lan")
+	return lanSubnetFrom(c.netCfg)
+}
+
+// lanSubnetFrom — та же подсеть, но от голого конфига.
+//
+// Свободная функция, потому что читателей теперь двое: проброс и
+// наблюдатель, который сверяет по ней адрес устройства. Вторая копия этих
+// двадцати строк разъехалась бы при первой же правке — а обе формы записи
+// ipaddr сняты с живого роутера, и сочинить их заново по памяти не выйдет.
+func lanSubnetFrom(netCfg *uci.Config) string {
+	if netCfg == nil {
+		return ""
+	}
+	lan, ok := netCfg.Section("lan")
 	if !ok {
 		return ""
 	}

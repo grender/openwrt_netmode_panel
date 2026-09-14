@@ -254,6 +254,34 @@ func IfnameForSection(st map[string]Radio, section string) string {
 }
 
 // IfnameForMode возвращает имя интерфейса по радио и режиму (`ap`, `sta`).
+// ParseAssocList — MAC клиентов домашней точки из ubus call iwinfo assoclist.
+//
+// ОСТОРОЖНО: обёртка ответа НЕ СНЯТА. В разведке команда прошла через
+// `| grep mac` (docs/recon/raw/91-watch-logs-connections-hosts.txt:83), и
+// форма `{"results": [{"mac": "…"}]}` выведена из отступов той выдачи и из
+// соседнего `iwinfo scan` (raw/23), а не наблюдалась целиком. Поэтому
+// разбор терпимый: не разобралось — пустой список, и список устройств
+// честно скажет «вид связи неизвестен» вместо того, чтобы соврать «кабель»
+// про каждый телефон сразу. Снять её одной командой — работа следующего
+// захода на роутер (RQ-05).
+func ParseAssocList(b []byte) []string {
+	var wrap struct {
+		Results []struct {
+			MAC string `json:"mac"`
+		} `json:"results"`
+	}
+	if json.Unmarshal(b, &wrap) != nil {
+		return nil
+	}
+	out := make([]string, 0, len(wrap.Results))
+	for _, r := range wrap.Results {
+		if r.MAC != "" {
+			out = append(out, r.MAC)
+		}
+	}
+	return out
+}
+
 func IfnameForMode(st map[string]Radio, radio, mode string) string {
 	r, ok := st[radio]
 	if !ok {
