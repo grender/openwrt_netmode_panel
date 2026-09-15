@@ -184,6 +184,22 @@ YAML провайдера нет вовсе. Для них
   годится ключом; дедупликация нужна как страховка от будущего провайдера, а
   не как ответ на сегодняшние данные.
 
+### Дополнение 2026-09-15: shadowsocks
+
+Провайдер добавил записи на протоколе, которого в снятой подписке не было:
+на `User-Agent: Happ` теперь **40 записей**, из них три — shadowsocks
+(`🇨🇦Канада SS`, `🇮🇹Италия SS`, `🇬🇧Англия SS`). Снято с роутера, адреса и
+пароли отредактированы с сохранением формы —
+[`raw/93-happ-shadowsocks.json`](raw/93-happ-shadowsocks.json).
+
+| Форма | Сколько | Как выглядит в Xray-JSON |
+|---|---|---|
+| shadowsocks без плагинов и транспорта | 3 | `protocol: "shadowsocks"`, `settings.servers[{address, port, password (32 знака), method: "chacha20-ietf-poly1305", uot: false, UoTVersion: 1}]`, `streamSettings{network: tcp, security: none}` |
+
+**Эталона от провайдера нет.** Его Clash-профиль (UA `clash-verge/2.0`)
+SS-узлов не содержит вовсе — только vless 25 и hysteria2 4, — поэтому
+перевод сверен с исходником, а не с готовым профилем, как у vless.
+
 ## Соответствие mihomo — взято из документации, не с железа
 
 Роутер несёт mihomo **v1.19.27** (снято, [`nikki.md`](nikki.md)). Всё
@@ -193,6 +209,7 @@ YAML провайдера нет вовсе. Для них
 |---|---|---|
 | vless + xhttp | транспорт `xhttp` поддержан **только для vless**, настраивается ключом `xhttp-opts` с полями `path`, `host`, `mode` (значения `auto`, `stream-one`, `stream-up`, `packet-up`) | [transport](https://wiki.metacubex.one/en/config/proxies/transport/), [vless](https://wiki.metacubex.one/en/config/proxies/vless/) |
 | hysteria 2 | отдельный тип `hysteria2` с полями `server`, `port`, `password`, `sni`, `alpn` | [hysteria2](https://wiki.metacubex.one/en/config/proxies/hysteria2/) |
+| shadowsocks | тип `ss`: `server`, `port`, `password`, `cipher`, `udp`, `udp-over-tcp`, `udp-over-tcp-version` (`ShadowSocksOption`); шифр проверяет `shadowsocks.CreateMethod` из sing-shadowsocks2 v0.2.7, неизвестный шифр — отказ **всему** провайдеру | `adapter/outbound/shadowsocks.go` mihomo v1.19.27; `shadowaead/method.go`, `shadowaead_2022/method.go` sing-shadowsocks2 v0.2.7 — исходник, не замер |
 
 **На живом роутере это не проверено** — ssh на момент разведки отсутствовал.
 Поэтому поддержка `xhttp` в конвертере заведена под единственный выключатель:

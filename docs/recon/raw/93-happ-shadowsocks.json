@@ -1,0 +1,497 @@
+[
+  {
+    "dns": {
+      "servers": [
+        "https://8.8.8.8/dns-query",
+        "https://8.8.4.4/dns-query"
+      ],
+      "queryStrategy": "UseIP"
+    },
+    "inbounds": [
+      {
+        "listen": "127.0.0.1",
+        "port": 10808,
+        "protocol": "socks",
+        "settings": {
+          "auth": "noauth",
+          "udp": true,
+          "userLevel": 8
+        },
+        "sniffing": {
+          "destOverride": [
+            "http",
+            "tls"
+          ],
+          "enabled": true,
+          "routeOnly": false
+        },
+        "tag": "socks"
+      },
+      {
+        "listen": "127.0.0.1",
+        "port": 10809,
+        "protocol": "http",
+        "settings": {
+          "userLevel": 8
+        },
+        "tag": "http"
+      }
+    ],
+    "log": {
+      "loglevel": "info"
+    },
+    "outbounds": [
+      {
+        "tag": "proxy",
+        "protocol": "shadowsocks",
+        "settings": {
+          "servers": [
+            {
+              "address": "203.0.113.101",
+              "port": 2030,
+              "password": "PLACEHOLDERpasswordNOTREALPLACE2",
+              "method": "chacha20-ietf-poly1305",
+              "uot": false,
+              "UoTVersion": 1
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "tcpSettings": {},
+          "security": "none"
+        }
+      },
+      {
+        "tag": "direct",
+        "protocol": "freedom"
+      },
+      {
+        "tag": "block",
+        "protocol": "blackhole"
+      }
+    ],
+    "remarks": "🇨🇦Канада SS",
+    "routing": {
+      "domainStrategy": "IPIfNonMatch",
+      "domainMatcher": "hybrid",
+      "rules": [
+        {
+          "type": "field",
+          "network": "udp",
+          "port": "443",
+          "outboundTag": "block"
+        },
+        {
+          "type": "field",
+          "outboundTag": "direct",
+          "domain": [
+            "domain:ru",
+            "domain:xn--p1ai",
+            "geosite:category-ru",
+            "domain:1cfresh.com",
+            "domain:2gis.by",
+            "domain:2gis.com",
+            "domain:2gis.com.cy",
+            "domain:alfa-bank.com",
+            "domain:alfabank.com",
+            "domain:alfafinance.biz",
+            "domain:alfafx.com",
+            "domain:alfaprivate.com",
+            "domain:beta-bank.com",
+            "domain:gazprombank.tech",
+            "domain:investalfabank.com",
+            "domain:moex.com",
+            "domain:tbank-online.com",
+            "domain:tochka.com",
+            "domain:tochka-tech.com",
+            "domain:vtb.com",
+            "domain:vtb.digital",
+            "domain:vtb.promo",
+            "domain:vtb24.com",
+            "domain:vtbrussia.com",
+            "domain:avito.st",
+            "domain:lenta.com",
+            "domain:megamarket.tech",
+            "domain:okko.tv",
+            "domain:ozonusercontent.com",
+            "domain:premier.one",
+            "domain:wildberries.by",
+            "domain:wbstatic.net",
+            "domain:youla.io",
+            "domain:userapi.com",
+            "domain:vk.com",
+            "domain:vk-portal.net",
+            "domain:yads.tech",
+            "domain:yandex",
+            "domain:yandex-bank.net",
+            "domain:yandex.aero",
+            "domain:yandex.az",
+            "domain:yandex.by",
+            "domain:yandex.cloud",
+            "domain:yandex.co.il",
+            "domain:yandex.com",
+            "domain:yandex.com.ge",
+            "domain:yandex.eu",
+            "domain:yandex.fr",
+            "domain:yandex.jobs",
+            "domain:yandex.kg",
+            "domain:yandex.kz",
+            "domain:yandex.net",
+            "domain:yandex.org",
+            "domain:yandexadexchange.net",
+            "domain:yandexcloud.net",
+            "domain:yandexcom.net",
+            "domain:yandexmetrica.com",
+            "domain:yandexwebcache.net",
+            "domain:yandexwebcache.org",
+            "domain:yastat.net",
+            "domain:yastatic.net",
+            "domain:gismeteo.com",
+            "domain:lmru.tech",
+            "domain:mradx.net",
+            "domain:tildaapi.com",
+            "domain:kontur.host"
+          ]
+        },
+        {
+          "type": "field",
+          "protocol": [
+            "bittorrent"
+          ],
+          "outboundTag": "direct"
+        }
+      ]
+    }
+  },
+  {
+    "dns": {
+      "servers": [
+        "https://8.8.8.8/dns-query",
+        "https://8.8.4.4/dns-query"
+      ],
+      "queryStrategy": "UseIP"
+    },
+    "inbounds": [
+      {
+        "listen": "127.0.0.1",
+        "port": 10808,
+        "protocol": "socks",
+        "settings": {
+          "auth": "noauth",
+          "udp": true,
+          "userLevel": 8
+        },
+        "sniffing": {
+          "destOverride": [
+            "http",
+            "tls"
+          ],
+          "enabled": true,
+          "routeOnly": false
+        },
+        "tag": "socks"
+      },
+      {
+        "listen": "127.0.0.1",
+        "port": 10809,
+        "protocol": "http",
+        "settings": {
+          "userLevel": 8
+        },
+        "tag": "http"
+      }
+    ],
+    "log": {
+      "loglevel": "info"
+    },
+    "outbounds": [
+      {
+        "tag": "proxy",
+        "protocol": "shadowsocks",
+        "settings": {
+          "servers": [
+            {
+              "address": "203.0.113.102",
+              "port": 2030,
+              "password": "PLACEHOLDERpasswordNOTREALPLACE4",
+              "method": "chacha20-ietf-poly1305",
+              "uot": false,
+              "UoTVersion": 1
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "tcpSettings": {},
+          "security": "none"
+        }
+      },
+      {
+        "tag": "direct",
+        "protocol": "freedom"
+      },
+      {
+        "tag": "block",
+        "protocol": "blackhole"
+      }
+    ],
+    "remarks": "🇮🇹Италия SS",
+    "routing": {
+      "domainStrategy": "IPIfNonMatch",
+      "domainMatcher": "hybrid",
+      "rules": [
+        {
+          "type": "field",
+          "network": "udp",
+          "port": "443",
+          "outboundTag": "block"
+        },
+        {
+          "type": "field",
+          "outboundTag": "direct",
+          "domain": [
+            "domain:ru",
+            "domain:xn--p1ai",
+            "geosite:category-ru",
+            "domain:1cfresh.com",
+            "domain:2gis.by",
+            "domain:2gis.com",
+            "domain:2gis.com.cy",
+            "domain:alfa-bank.com",
+            "domain:alfabank.com",
+            "domain:alfafinance.biz",
+            "domain:alfafx.com",
+            "domain:alfaprivate.com",
+            "domain:beta-bank.com",
+            "domain:gazprombank.tech",
+            "domain:investalfabank.com",
+            "domain:moex.com",
+            "domain:tbank-online.com",
+            "domain:tochka.com",
+            "domain:tochka-tech.com",
+            "domain:vtb.com",
+            "domain:vtb.digital",
+            "domain:vtb.promo",
+            "domain:vtb24.com",
+            "domain:vtbrussia.com",
+            "domain:avito.st",
+            "domain:lenta.com",
+            "domain:megamarket.tech",
+            "domain:okko.tv",
+            "domain:ozonusercontent.com",
+            "domain:premier.one",
+            "domain:wildberries.by",
+            "domain:wbstatic.net",
+            "domain:youla.io",
+            "domain:userapi.com",
+            "domain:vk.com",
+            "domain:vk-portal.net",
+            "domain:yads.tech",
+            "domain:yandex",
+            "domain:yandex-bank.net",
+            "domain:yandex.aero",
+            "domain:yandex.az",
+            "domain:yandex.by",
+            "domain:yandex.cloud",
+            "domain:yandex.co.il",
+            "domain:yandex.com",
+            "domain:yandex.com.ge",
+            "domain:yandex.eu",
+            "domain:yandex.fr",
+            "domain:yandex.jobs",
+            "domain:yandex.kg",
+            "domain:yandex.kz",
+            "domain:yandex.net",
+            "domain:yandex.org",
+            "domain:yandexadexchange.net",
+            "domain:yandexcloud.net",
+            "domain:yandexcom.net",
+            "domain:yandexmetrica.com",
+            "domain:yandexwebcache.net",
+            "domain:yandexwebcache.org",
+            "domain:yastat.net",
+            "domain:yastatic.net",
+            "domain:gismeteo.com",
+            "domain:lmru.tech",
+            "domain:mradx.net",
+            "domain:tildaapi.com",
+            "domain:kontur.host"
+          ]
+        },
+        {
+          "type": "field",
+          "protocol": [
+            "bittorrent"
+          ],
+          "outboundTag": "direct"
+        }
+      ]
+    }
+  },
+  {
+    "dns": {
+      "servers": [
+        "https://8.8.8.8/dns-query",
+        "https://8.8.4.4/dns-query"
+      ],
+      "queryStrategy": "UseIP"
+    },
+    "inbounds": [
+      {
+        "listen": "127.0.0.1",
+        "port": 10808,
+        "protocol": "socks",
+        "settings": {
+          "auth": "noauth",
+          "udp": true,
+          "userLevel": 8
+        },
+        "sniffing": {
+          "destOverride": [
+            "http",
+            "tls"
+          ],
+          "enabled": true,
+          "routeOnly": false
+        },
+        "tag": "socks"
+      },
+      {
+        "listen": "127.0.0.1",
+        "port": 10809,
+        "protocol": "http",
+        "settings": {
+          "userLevel": 8
+        },
+        "tag": "http"
+      }
+    ],
+    "log": {
+      "loglevel": "info"
+    },
+    "outbounds": [
+      {
+        "tag": "proxy",
+        "protocol": "shadowsocks",
+        "settings": {
+          "servers": [
+            {
+              "address": "203.0.113.103",
+              "port": 2030,
+              "password": "PLACEHOLDERpasswordNOTREALPLACE6",
+              "method": "chacha20-ietf-poly1305",
+              "uot": false,
+              "UoTVersion": 1
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "tcpSettings": {},
+          "security": "none"
+        }
+      },
+      {
+        "tag": "direct",
+        "protocol": "freedom"
+      },
+      {
+        "tag": "block",
+        "protocol": "blackhole"
+      }
+    ],
+    "remarks": "🇬🇧Англия SS",
+    "routing": {
+      "domainStrategy": "IPIfNonMatch",
+      "domainMatcher": "hybrid",
+      "rules": [
+        {
+          "type": "field",
+          "network": "udp",
+          "port": "443",
+          "outboundTag": "block"
+        },
+        {
+          "type": "field",
+          "outboundTag": "direct",
+          "domain": [
+            "domain:ru",
+            "domain:xn--p1ai",
+            "geosite:category-ru",
+            "domain:1cfresh.com",
+            "domain:2gis.by",
+            "domain:2gis.com",
+            "domain:2gis.com.cy",
+            "domain:alfa-bank.com",
+            "domain:alfabank.com",
+            "domain:alfafinance.biz",
+            "domain:alfafx.com",
+            "domain:alfaprivate.com",
+            "domain:beta-bank.com",
+            "domain:gazprombank.tech",
+            "domain:investalfabank.com",
+            "domain:moex.com",
+            "domain:tbank-online.com",
+            "domain:tochka.com",
+            "domain:tochka-tech.com",
+            "domain:vtb.com",
+            "domain:vtb.digital",
+            "domain:vtb.promo",
+            "domain:vtb24.com",
+            "domain:vtbrussia.com",
+            "domain:avito.st",
+            "domain:lenta.com",
+            "domain:megamarket.tech",
+            "domain:okko.tv",
+            "domain:ozonusercontent.com",
+            "domain:premier.one",
+            "domain:wildberries.by",
+            "domain:wbstatic.net",
+            "domain:youla.io",
+            "domain:userapi.com",
+            "domain:vk.com",
+            "domain:vk-portal.net",
+            "domain:yads.tech",
+            "domain:yandex",
+            "domain:yandex-bank.net",
+            "domain:yandex.aero",
+            "domain:yandex.az",
+            "domain:yandex.by",
+            "domain:yandex.cloud",
+            "domain:yandex.co.il",
+            "domain:yandex.com",
+            "domain:yandex.com.ge",
+            "domain:yandex.eu",
+            "domain:yandex.fr",
+            "domain:yandex.jobs",
+            "domain:yandex.kg",
+            "domain:yandex.kz",
+            "domain:yandex.net",
+            "domain:yandex.org",
+            "domain:yandexadexchange.net",
+            "domain:yandexcloud.net",
+            "domain:yandexcom.net",
+            "domain:yandexmetrica.com",
+            "domain:yandexwebcache.net",
+            "domain:yandexwebcache.org",
+            "domain:yastat.net",
+            "domain:yastatic.net",
+            "domain:gismeteo.com",
+            "domain:lmru.tech",
+            "domain:mradx.net",
+            "domain:tildaapi.com",
+            "domain:kontur.host"
+          ]
+        },
+        {
+          "type": "field",
+          "protocol": [
+            "bittorrent"
+          ],
+          "outboundTag": "direct"
+        }
+      ]
+    }
+  }
+]

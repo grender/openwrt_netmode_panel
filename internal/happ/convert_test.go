@@ -1,6 +1,7 @@
 package happ
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -596,5 +597,217 @@ func TestConvertTLSWithoutFingerprintIsANode(t *testing.T) {
 	}
 	if _, has := e.Proxy["client-fingerprint"]; has {
 		t.Fatal("пустой отпечаток не должен создавать ключ client-fingerprint")
+	}
+}
+
+// ssRecorded — три SS-записи подписки, снятые с роутера 2026-09-15
+// (docs/recon/raw/93). Адреса и пароли отредактированы с сохранением формы,
+// остальное дословно.
+func ssRecorded(t *testing.T) []byte {
+	t.Helper()
+	b, err := os.ReadFile("../../docs/recon/raw/93-happ-shadowsocks.json")
+	if err != nil {
+		t.Fatalf("фикстура: %v", err)
+	}
+	return b
+}
+
+// TestConvertShadowsocksFromRecordedRecords: записанные SS-записи становятся
+// узлами.
+//
+// До этой проверки все три шли в «Строк не стали узлами» с причиной, которая
+// ещё и врала — «не переводится в узел mihomo», хотя mihomo shadowsocks
+// умеет, а не умел наш конвертер.
+func TestConvertShadowsocksFromRecordedRecords(t *testing.T) {
+	entries, err := Parse(ssRecorded(t))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("записей %d, в фикстуре 3", len(entries))
+	}
+	for _, e := range entries {
+		if e.Kind != KindNode {
+			t.Fatalf("%s: вид %q (%s), ожидался узел", e.Name, e.Kind, e.Reason)
+		}
+		if e.Type != "ss" {
+			t.Errorf("%s: тип %q, ожидался ss", e.Name, e.Type)
+		}
+		p := e.Proxy
+		if p["type"] != "ss" || p["cipher"] != "chacha20-ietf-poly1305" || p["port"] != 2030 {
+			t.Errorf("%s: узел %v", e.Name, p)
+		}
+		if s, _ := p["server"].(string); !strings.HasPrefix(s, "203.0.113.") {
+			t.Errorf("%s: server = %v", e.Name, p["server"])
+		}
+		if pw, _ := p["password"].(string); len(pw) != 32 {
+			t.Errorf("%s: пароль не перенесён: %v", e.Name, p["password"])
+		}
+		// UDP у shadowsocks клиент Xray шлёт сам; без udp: true mihomo
+		// пустил бы QUIC и игровой UDP мимо узла.
+		if p["udp"] != true {
+			t.Errorf("%s: udp = %v, ожидалось true", e.Name, p["udp"])
+		}
+		// uot: false в записи — это умолчание, и в узел оно не едет.
+		for _, k := range []string{"udp-over-tcp", "udp-over-tcp-version", "plugin", "uuid", "tls"} {
+			if _, ok := p[k]; ok {
+				t.Errorf("%s: лишний ключ %s", e.Name, k)
+			}
+		}
+	}
+}
+
+// TestConvertShadowsocksRendersForProvider: узел доезжает до файла провайдера
+// в том виде, в каком его читает ShadowSocksOption mihomo.
+func TestConvertShadowsocksRendersForProvider(t *testing.T) {
+	entries, err := Parse(ssRecorded(t))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	// Файл провайдера — JSON под именем .yaml (render.go), поэтому и
+	// разбираем его как JSON, а не ищем подстроки.
+	var f struct {
+		Proxies []map[string]any `json:"proxies"`
+	}
+	if err := json.Unmarshal(Render(entries), &f); err != nil {
+		t.Fatalf("файл провайдера не разбирается: %v", err)
+	}
+	if len(f.Proxies) != 3 {
+		t.Fatalf("узлов в файле %d, ожидалось 3", len(f.Proxies))
+	}
+	for _, p := range f.Proxies {
+		if p["type"] != "ss" || p["cipher"] != "chacha20-ietf-poly1305" || p["udp"] != true {
+			t.Errorf("узел в файле провайдера: %v", p)
+		}
+	}
+}
+
+func ssOutbound(server string) string {
+	return `{"tag":"proxy","protocol":"shadowsocks","settings":{"servers":[` + server + `]},
+	  "streamSettings":{"network":"tcp","security":"none"}}`
+}
+
+// TestConvertShadowsocksUoT: UDP поверх TCP переносится, только когда включён,
+// и только известной версии.
+func TestConvertShadowsocksUoT(t *testing.T) {
+	parseOne := func(server string) Entry {
+		t.Helper()
+		entries, err := Parse([]byte(`[{"remarks":"🇨🇦Тест","outbounds":[` + ssOutbound(server) + `]}]`))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		return entries[0]
+	}
+
+	e := parseOne(`{"address":"203.0.113.1","port":2030,"password":"p","method":"aes-256-gcm","uot":true,"UoTVersion":2}`)
+	if e.Kind != KindNode || e.Proxy["udp-over-tcp"] != true || e.Proxy["udp-over-tcp-version"] != 2 {
+		t.Errorf("uot версии 2: %+v", e)
+	}
+
+	e = parseOne(`{"address":"203.0.113.1","port":2030,"password":"p","method":"aes-256-gcm","uot":true,"UoTVersion":3}`)
+	if e.Kind != KindUnsupported || !strings.Contains(e.Reason, "udp-over-tcp") {
+		t.Errorf("неизвестная версия uot прошла: %+v", e)
+	}
+}
+
+// TestConvertShadowsocksUnsupported: всё, что роняло бы провайдер целиком,
+// остаётся видимой строкой с причиной — и причина называет НАШ конвертер.
+func TestConvertShadowsocksUnsupported(t *testing.T) {
+	cases := []struct {
+		name, outbound, want string
+	}{
+		{"шифр вне списка",
+			ssOutbound(`{"address":"203.0.113.1","port":2030,"password":"p","method":"rc4-md5"}`),
+			"шифр shadowsocks rc4-md5"},
+		{"без шифра",
+			ssOutbound(`{"address":"203.0.113.1","port":2030,"password":"p"}`),
+			"(не указан)"},
+		{"без пароля",
+			ssOutbound(`{"address":"203.0.113.1","port":2030,"method":"aes-256-gcm"}`),
+			"нет пароля"},
+		{"без адреса",
+			ssOutbound(`{"port":2030,"password":"p","method":"aes-256-gcm"}`),
+			"адрес или порт"},
+		{"без servers",
+			`{"tag":"proxy","protocol":"shadowsocks","settings":{},"streamSettings":{}}`,
+			"нет сервера"},
+		{"2022 с ключом не той длины",
+			ssOutbound(`{"address":"203.0.113.1","port":2030,"password":"c2hvcnQ=","method":"2022-blake3-aes-256-gcm"}`),
+			"32 байт"},
+		{"транспорт ws",
+			`{"tag":"proxy","protocol":"shadowsocks","settings":{"servers":[{"address":"203.0.113.1","port":2030,"password":"p","method":"aes-256-gcm"}]},
+			  "streamSettings":{"network":"ws","security":"none"}}`,
+			"транспорт ws"},
+		{"TLS поверх",
+			`{"tag":"proxy","protocol":"shadowsocks","settings":{"servers":[{"address":"203.0.113.1","port":2030,"password":"p","method":"aes-256-gcm"}]},
+			  "streamSettings":{"network":"tcp","security":"tls"}}`,
+			"tls"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			entries, err := Parse([]byte(`[{"remarks":"🇨🇦Тест","outbounds":[` + c.outbound + `]}]`))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			e := entries[0]
+			if e.Kind != KindUnsupported {
+				t.Fatalf("вид %q, ожидался %q", e.Kind, KindUnsupported)
+			}
+			if !strings.Contains(e.Reason, c.want) {
+				t.Errorf("причина %q не содержит %q", e.Reason, c.want)
+			}
+			if strings.Contains(e.Reason, "в узел mihomo") {
+				t.Errorf("причина %q снова винит движок", e.Reason)
+			}
+		})
+	}
+}
+
+// TestConvertShadowsocks2022ValidKey: ключ нужной длины принимается.
+func TestConvertShadowsocks2022ValidKey(t *testing.T) {
+	key := "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=" // 32 байта
+	entries, err := Parse([]byte(`[{"remarks":"🇨🇦Тест","outbounds":[` +
+		ssOutbound(`{"address":"203.0.113.1","port":2030,"password":"`+key+`","method":"2022-blake3-aes-256-gcm"}`) + `]}]`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if entries[0].Kind != KindNode {
+		t.Fatalf("2022 с верным ключом не стал узлом: %s", entries[0].Reason)
+	}
+}
+
+// TestUnknownProtocolBlamesConverter: незнакомый протокол — вина конвертера.
+func TestUnknownProtocolBlamesConverter(t *testing.T) {
+	entries, err := Parse([]byte(`[{"remarks":"🇩🇪Тест","outbounds":[{"tag":"proxy","protocol":"trojan","settings":{},"streamSettings":{}}]}]`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	r := entries[0].Reason
+	if !strings.Contains(r, "trojan") || !strings.Contains(r, "нашим конвертером") {
+		t.Errorf("причина %q", r)
+	}
+}
+
+// TestShadowsocksIdentity: отпечаток SS-узла не пуст и различает пароль.
+//
+// Без третьей формы в endpoint отпечаток был бы пустым, и правило
+// разделителей не нашло бы двойника у заголовка раздела на shadowsocks.
+func TestShadowsocksIdentity(t *testing.T) {
+	mk := func(pw string) xrayOutbound {
+		var o xrayOutbound
+		if err := json.Unmarshal([]byte(ssOutbound(`{"address":"203.0.113.1","port":2030,"password":"`+pw+`","method":"aes-256-gcm"}`)), &o); err != nil {
+			t.Fatal(err)
+		}
+		return o
+	}
+	a, b, c := mk("one").identity(), mk("one").identity(), mk("two").identity()
+	if a == "" {
+		t.Fatal("отпечаток SS-узла пуст")
+	}
+	if a != b {
+		t.Errorf("один сервер и пароль дали разные отпечатки: %q и %q", a, b)
+	}
+	if a == c {
+		t.Errorf("разные пароли дали один отпечаток %q", a)
 	}
 }

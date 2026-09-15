@@ -340,9 +340,9 @@ func (r xrayRecord) usefulOutbound() (xrayOutbound, bool) {
 
 // xrayOutbound — outbound Xray в объёме, который нужен переводу.
 //
-// settings у vless и у hysteria — разные объекты (vnext против плоских
-// address/port), но ключи не пересекаются, поэтому одна структура покрывает
-// обе формы без танцев с json.RawMessage.
+// settings у vless, hysteria и shadowsocks — разные объекты (vnext, плоские
+// address/port, servers), но ключи не пересекаются, поэтому одна структура
+// покрывает все три формы без танцев с json.RawMessage.
 type xrayOutbound struct {
 	Tag      string `json:"tag"`
 	Protocol string `json:"protocol"`
@@ -360,6 +360,18 @@ type xrayOutbound struct {
 		Address string `json:"address"`
 		Port    int    `json:"port"`
 		Version int    `json:"version"`
+
+		// Servers — форма shadowsocks (docs/recon/raw/93). Ключ не
+		// пересекается ни с vnext, ни с плоскими полями hysteria.
+		Servers []struct {
+			Address  string `json:"address"`
+			Port     int    `json:"port"`
+			Password string `json:"password"`
+			Method   string `json:"method"`
+			UoT      bool   `json:"uot"`
+			// UoTVersion — именно с прописными: так Xray пишет ключ.
+			UoTVersion int `json:"UoTVersion"`
+		} `json:"servers"`
 	} `json:"settings"`
 	StreamSettings struct {
 		Network         string `json:"network"`
@@ -397,7 +409,8 @@ type xrayOutbound struct {
 // identity — отпечаток сервера, по которому ищется двойник разделителя.
 //
 // Сравниваются ровно те поля, которые делают узел ТЕМ ЖЕ САМЫМ: протокол,
-// транспорт, адрес, порт и секрет (uuid у vless, auth у hysteria). Имя в
+// транспорт, адрес, порт и секрет (uuid у vless, пароль у shadowsocks, auth
+// у hysteria). Имя в
 // отпечаток не входит по определению задачи — разделитель от своего близнеца
 // только именем и отличается.
 //
@@ -414,7 +427,17 @@ func (o xrayOutbound) identity() string {
 }
 
 // endpoint возвращает адрес, порт и секрет outbound-а в единой форме.
+//
+// Форм три: vnext у vless (секрет — uuid), servers у shadowsocks (секрет —
+// пароль) и плоские поля у hysteria (секрет — auth). Пропусти здесь одну из
+// них, и отпечаток такой записи окажется пустым: правило разделителей не
+// увидело бы двойника, и заголовок раздела на этом протоколе остался бы
+// «узлом».
 func (o xrayOutbound) endpoint() (server string, port int, secret string) {
+	if len(o.Settings.Servers) > 0 {
+		v := o.Settings.Servers[0]
+		return v.Address, v.Port, v.Password
+	}
 	if len(o.Settings.VNext) > 0 {
 		v := o.Settings.VNext[0]
 		if len(v.Users) > 0 {

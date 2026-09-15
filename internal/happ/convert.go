@@ -1,6 +1,9 @@
 package happ
 
-import "fmt"
+import (
+	"encoding/base64"
+	"fmt"
+)
 
 // xhttpSupported — принимает ли mihomo этой сборки транспорт xhttp.
 //
@@ -39,10 +42,19 @@ func convert(name string, o xrayOutbound, xhttp bool) (proxy map[string]any, typ
 	case "hysteria":
 		p, t, r := convertHysteria(name, o)
 		return p, t, r, nil
+	case "shadowsocks":
+		p, t, r := convertShadowsocks(name, o)
+		return p, t, r, nil
 	case "":
 		return nil, "", "в outbound не указан протокол", nil
 	default:
-		return nil, "", fmt.Sprintf("протокол %s не переводится в узел mihomo", o.Protocol), nil
+		// «Нашим конвертером», а не «в узел mihomo»: движок умеет куда больше
+		// протоколов, чем мы переводим. Прежняя формулировка отправила
+		// владельца чинить mihomo, когда провайдер добавил shadowsocks, —
+		// а чинить надо было эту таблицу.
+		return nil, "", fmt.Sprintf(
+			"протокол %s не переводится нашим конвертером (движок его может уметь, перевода нет у нас)",
+			o.Protocol), nil
 	}
 }
 
@@ -190,6 +202,109 @@ func convertHysteria(name string, o xrayOutbound) (map[string]any, string, strin
 	// Clash-профиле его не ставит тоже, хотя в Xray-конфиге fingerprint
 	// есть. Эталон здесь весомее симметрии.
 	return p, "hysteria2", ""
+}
+
+// ssCiphers — шифры shadowsocks, которые переводятся в узел, и длина ключа
+// в байтах у шифров 2022 (у остальных пароль — произвольная строка, ноль).
+//
+// БЕЛЫЙ СПИСОК, а не «передать как есть», и это не осторожность вообще.
+// mihomo разбирает файл провайдера целиком: одна строка с шифром, которого
+// shadowsocks.CreateMethod не знает, роняет весь провайдер, и три узла на
+// экзотическом шифре уносят с собой остальные тридцать семь. Шифр вне списка
+// остаётся видимой строкой с причиной — дешёвый отказ вместо дорогого.
+//
+// Имена сверены с sing-shadowsocks2 v0.2.7 — той версией, которую тянет
+// mihomo v1.19.27 (shadowaead/method.go и shadowaead_2022/method.go). В
+// список взяты только распространённые AEAD и 2022: в подписке наблюдался
+// один chacha20-ietf-poly1305, и расширять таблицу на то, чего провайдер не
+// даёт, значит подписываться под формами, которых никто не проверял.
+var ssCiphers = map[string]int{
+	"aes-128-gcm":             0,
+	"aes-192-gcm":             0,
+	"aes-256-gcm":             0,
+	"chacha20-ietf-poly1305":  0,
+	"xchacha20-ietf-poly1305": 0,
+	// У 2022 пароль — base64-ключ фиксированной длины. Не той длины —
+	// CreateMethod отказывает, и опять целым провайдером.
+	"2022-blake3-aes-128-gcm":       16,
+	"2022-blake3-aes-256-gcm":       32,
+	"2022-blake3-chacha20-poly1305": 32,
+}
+
+// convertShadowsocks переводит outbound shadowsocks в узел mihomo типа ss.
+//
+// Эталона от провайдера здесь нет, в отличие от vless и hysteria2: его
+// собственный Clash-профиль (UA clash-verge/2.0) SS-узлов не содержит вовсе.
+// Поэтому таблица сверена с исходником — ShadowSocksOption в
+// adapter/outbound/shadowsocks.go mihomo v1.19.27: name, server, port,
+// password, cipher, udp, udp-over-tcp, udp-over-tcp-version. Форма записи —
+// docs/recon/raw/93-happ-shadowsocks.json.
+func convertShadowsocks(name string, o xrayOutbound) (map[string]any, string, string) {
+	if len(o.Settings.Servers) == 0 {
+		return nil, "", "у shadowsocks-outbound нет сервера"
+	}
+	v := o.Settings.Servers[0]
+	if v.Address == "" || v.Port == 0 {
+		return nil, "", "у shadowsocks-outbound не заполнен адрес или порт"
+	}
+	if v.Password == "" {
+		return nil, "", "у shadowsocks-outbound нет пароля"
+	}
+	keyLen, ok := ssCiphers[v.Method]
+	if !ok {
+		return nil, "", fmt.Sprintf("шифр shadowsocks %s не переводится нашим конвертером", orNone(v.Method))
+	}
+	if keyLen > 0 {
+		key, err := base64.StdEncoding.DecodeString(v.Password)
+		if err != nil || len(key) != keyLen {
+			return nil, "", fmt.Sprintf("у шифра %s ключ обязан быть base64 длиной %d байт", v.Method, keyLen)
+		}
+	}
+
+	// Поверх shadowsocks Xray умеет транспорты и TLS; в подписке их нет, и
+	// переводить нечего сверять. Формулировка — та же, что у vless: движок
+	// это умеет, не умеем мы.
+	ss := o.StreamSettings
+	if ss.Network != "" && ss.Network != "tcp" {
+		return nil, "", fmt.Sprintf(
+			"транспорт %s у shadowsocks не переводится нашим конвертером (движок его умеет, перевода нет у нас)",
+			ss.Network)
+	}
+	if ss.Security != "" && ss.Security != "none" {
+		return nil, "", fmt.Sprintf(
+			"шифрование %s поверх shadowsocks не переводится нашим конвертером", ss.Security)
+	}
+
+	p := map[string]any{
+		"name":     name,
+		"type":     "ss",
+		"server":   v.Address,
+		"port":     v.Port,
+		"cipher":   v.Method,
+		"password": v.Password,
+		// udp: true — потому что так ведёт себя клиент, под которого
+		// подписка написана: Xray у shadowsocks шлёт UDP сам. У mihomo же по
+		// умолчанию udp: false, и без этого ключа QUIC и игровой UDP молча
+		// шли бы мимо узла — тот самый класс поломок, что уже искали на
+		// серверах WSS, где режется именно UDP.
+		"udp": true,
+	}
+	if v.UoT {
+		// UDP поверх TCP переносим, только когда он включён: выключенный —
+		// это умолчание и у Xray, и у mihomo. Версий у протокола две;
+		// третья значила бы, что провайдер сменил формат, и собрать из неё
+		// узел вслепую нельзя — mihomo отказал бы целым провайдером.
+		switch v.UoTVersion {
+		case 0, 1, 2:
+		default:
+			return nil, "", fmt.Sprintf("версия udp-over-tcp %d у shadowsocks не переводится нашим конвертером", v.UoTVersion)
+		}
+		p["udp-over-tcp"] = true
+		if v.UoTVersion != 0 {
+			p["udp-over-tcp-version"] = v.UoTVersion
+		}
+	}
+	return p, "ss", ""
 }
 
 // orNone — подстановка для пустого значения в тексте причины.

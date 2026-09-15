@@ -46,7 +46,7 @@ const (
 type Entry struct {
 	Name string `json:"name"`
 	Kind Kind   `json:"kind"`
-	// Type — тип узла в терминах mihomo (vless, hysteria2). Пусто у всех
+	// Type — тип узла в терминах mihomo (vless, hysteria2, ss). Пусто у всех
 	// видов, кроме KindNode.
 	Type string `json:"type,omitempty"`
 	// Reason — почему запись непригодна. Заполнен только у
