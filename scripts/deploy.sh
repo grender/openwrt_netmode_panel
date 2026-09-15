@@ -197,7 +197,14 @@ fi
 say "Заливка"
 
 # Останавливаем прошлый экземпляр: поверх работающего файла не записать.
-sh_ "[ -x $INITD ] && $INITD stop >/dev/null 2>&1; killall netmoded 2>/dev/null; sleep 0.3; mkdir -p $(dirname $REMOTE)" || true
+#
+# Ждём, пока процесс ДЕЙСТВИТЕЛЬНО уйдёт, а не фиксированную паузу. Прежний
+# `sleep 0.3` на роутере не спал вовсе: busybox sleep дробных секунд не
+# принимает, ругался «invalid number» и отдавал управление сразу — то есть
+# запись шла поверх ещё живого процесса. pidof, в отличие от pgrep -f, свою же
+# удалённую команду не находит. Потолок — десять секунд: процесс, который не
+# ушёл и за них, дальше разберёт запись файла, а не бесконечное ожидание.
+sh_ "[ -x $INITD ] && $INITD stop >/dev/null 2>&1; killall netmoded 2>/dev/null; i=0; while pidof netmoded >/dev/null && [ \$i -lt 10 ]; do sleep 1; i=\$((i + 1)); done; mkdir -p $(dirname $REMOTE)" || true
 
 put - "$REMOTE" 0755 < "$BIN"
 echo "  ✓ $REMOTE"
