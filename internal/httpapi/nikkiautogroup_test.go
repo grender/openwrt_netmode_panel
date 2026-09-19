@@ -34,7 +34,7 @@ func readAuto(t *testing.T, body []byte) autoBody {
 // раскладки обязаны работать: и старая (PROXY — url-test, «Авто» это
 // снятие закрепления), и новая (PROXY — Selector с участником AUTO,
 // «Авто» это выбор участника). Живой движок на DELETE у селектора
-// отвечает 400 (raw/93), так что перепутать пути нельзя.
+// отвечает 400 (raw/95), так что перепутать пути нельзя.
 func TestAutoUsesSelectOnSelectorProfile(t *testing.T) {
 	s, _ := newServer(t)
 	fake := newFakeNikkiSelectorClient()

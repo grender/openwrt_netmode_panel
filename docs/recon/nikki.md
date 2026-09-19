@@ -54,7 +54,7 @@
 
 ### `/proxies` не содержит узлов провайдера
 
-Замер 19.09.2026, живой роутер, mihomo v1.19.29 — `raw/92-proxies-vs-providers.txt`.
+Замер 19.09.2026, живой роутер, mihomo v1.19.29 — `raw/94-proxies-vs-providers.txt`.
 
 `GET /proxies` отдаёт **только** группы и встроенные записи: на этом
 роутере девять ключей — `PROXY`, `BYPASS`, `GLOBAL`, `DIRECT`, `REJECT`,

@@ -115,7 +115,7 @@ func (f *fakeNikkiClient) Select(_ context.Context, group, member string) error 
 		return nikki.ErrNotFound
 	}
 	// У Selector поля fixed нет вовсе — проверено на живом движке
-	// (docs/recon/raw/93-autopool-spike.txt). Подделка обязана это
+	// (docs/recon/raw/95-autopool-spike.txt). Подделка обязана это
 	// повторять: иначе тест на признак закрепления прошёл бы на
 	// выдуманном поле, которого в ответе mihomo не бывает.
 	g.Now = member
