@@ -153,6 +153,10 @@ type Config struct {
 	Download Download
 	Sets     []Set
 	Rules    []Rule
+	// Auto — вторая, независимая секция того же файла: чем наполняется
+	// группа AUTO. С наборами её роднит только файл, поэтому у неё свой
+	// отпечаток и свои проверки (autopool.go).
+	Auto AutoConfig
 }
 
 const (
@@ -291,9 +295,15 @@ func Render(c Config) []byte {
 	b.WriteString(headerLine2 + "\n")
 	b.WriteString(stateLine(c) + "\n")
 
+	// Авто-пул — первым: рубрика proxy-providers логически старше
+	// rule-providers, а главное, она обязана пережить ранний выход ниже.
+	// При умолчательном пуле строка пустая, и файл байт-в-байт прежний.
+	b.WriteString(autoBody(c.Auto))
+
 	if c.Policy == PolicyProfile {
-		// Профиль — это «нас тут нет»: ни провайдеров, ни правил, чтобы
-		// склейка yq ничего не добавила к правилам профиля.
+		// Профиль — это «нас тут нет»: ни провайдеров правил, ни правил,
+		// чтобы склейка yq ничего не добавила к правилам профиля. Про
+		// авто-пул это не говорит ничего: он уже записан выше.
 		return []byte(b.String())
 	}
 
@@ -358,7 +368,10 @@ func writeProvider(b *strings.Builder, d Download, name, behavior, url string) {
 // что-то качать.
 func stateLine(c Config) string {
 	if c.Policy == PolicyProfile {
-		return stateMark + " policy=" + string(PolicyProfile)
+		// Авто-пул от политики наборов не зависит: «правила из профиля»
+		// и «чем наполнять AUTO» — разные решения, и профильная политика
+		// не вправе отменять второе.
+		return stateMark + " policy=" + string(PolicyProfile) + autoStateFields(c.Auto)
 	}
 	names := make([]string, 0, len(c.Sets))
 	for _, s := range c.Sets {
@@ -381,7 +394,10 @@ func stateLine(c Config) string {
 		}
 		line += " rules=" + strings.Join(tokens, ";")
 	}
-	return line
+	// Поля авто-пула — последними и по тому же правилу, что rules: только
+	// при не-умолчательном выборе. Старый демон отвергнет такой файл
+	// громко, а файл без авто-пула прочитает как раньше.
+	return line + autoStateFields(c.Auto)
 }
 
 // setToken — набор в строке состояния: «имя[+ip]>действие».
@@ -430,7 +446,7 @@ func Parse(b []byte) (Config, bool, error) {
 	}
 
 	state := ""
-	rules, custom := 0, 0
+	rules, custom, autoFilters := 0, 0, 0
 	for _, ln := range lines[1:] {
 		switch {
 		case state == "" && strings.HasPrefix(ln, stateMark):
@@ -440,6 +456,8 @@ func Parse(b []byte) (Config, bool, error) {
 		case strings.HasPrefix(ln, customSuffixPrefix), strings.HasPrefix(ln, customDomainPrefix),
 			strings.HasPrefix(ln, customCIDRPrefix), strings.HasPrefix(ln, customCIDR6Prefix):
 			custom++
+		case strings.HasPrefix(ln, autoFilterKey), strings.HasPrefix(ln, autoExcludeKey):
+			autoFilters++
 		}
 	}
 	if state == "" {
@@ -461,6 +479,18 @@ func Parse(b []byte) (Config, bool, error) {
 	// руками, при следующей записи пропала бы молча — лучше отказать сейчас.
 	if custom != len(cfg.Rules) {
 		return profile, false, fmt.Errorf("%w: своих правил %d, строк %d", ErrCorrupt, len(cfg.Rules), custom)
+	}
+	// И то же для авто-пула. Строк фильтра ровно одна при настроенном
+	// пуле и ни одной при умолчательном: приписанная руками исчезла бы
+	// при следующей записи молча, а пропавшая означала бы, что пул в
+	// состоянии есть, а в теле его нет.
+	wantFilters := 0
+	if !cfg.Auto.IsDefault() {
+		wantFilters = 1
+	}
+	if autoFilters != wantFilters {
+		return profile, false, fmt.Errorf("%w: строк фильтра авто-пула %d, ожидалась %d",
+			ErrCorrupt, autoFilters, wantFilters)
 	}
 	return cfg, false, nil
 }
@@ -522,6 +552,24 @@ func parseState(s string) (Config, error) {
 				return Config{}, err
 			}
 			cfg.Rules = rules
+		case "auto":
+			switch AutoMode(val) {
+			case AutoDeny, AutoAllow, AutoProvider:
+				cfg.Auto.Mode = AutoMode(val)
+			default:
+				return Config{}, fmt.Errorf("%w: неизвестный режим авто-пула %q", ErrCorrupt, val)
+			}
+		case "auto-nodes":
+			nodes, err := parseAutoNodes(val)
+			if err != nil {
+				return Config{}, err
+			}
+			for _, n := range nodes {
+				if problem := autoNodeProblem(n); problem != "" {
+					return Config{}, fmt.Errorf("%w: узел авто-пула %q: %s", ErrCorrupt, n, problem)
+				}
+			}
+			cfg.Auto.Nodes = nodes
 		default:
 			// Незнакомое поле — это не наш файл нашей же версии. Молча
 			// пропустить его значило бы применить непонятно что.
