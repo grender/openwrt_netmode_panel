@@ -114,9 +114,36 @@ func (f *fakeNikkiClient) Select(_ context.Context, group, member string) error 
 	if !found {
 		return nikki.ErrNotFound
 	}
-	g.Now, g.Fixed, g.Pinned = member, member, true
+	// У Selector поля fixed нет вовсе — проверено на живом движке
+	// (docs/recon/raw/93-autopool-spike.txt). Подделка обязана это
+	// повторять: иначе тест на признак закрепления прошёл бы на
+	// выдуманном поле, которого в ответе mihomo не бывает.
+	g.Now = member
+	if g.Type != "Selector" {
+		g.Fixed, g.Pinned = member, true
+	}
 	f.all[group] = g
 	return nil
+}
+
+// newFakeNikkiSelectorClient — раскладка нового профиля: PROXY это
+// Selector, в участниках которого группа AUTO и узлы подписки, а сама
+// AUTO — url-test над суженным пулом.
+func newFakeNikkiSelectorClient() *fakeNikkiClient {
+	d := func(v int) *int { return &v }
+	return &fakeNikkiClient{all: map[string]nikki.Proxy{
+		"PROXY": {Name: "PROXY", Type: "Selector", Alive: true,
+			Members: []string{"AUTO", "🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2", "мёртвый"},
+			Now:     "AUTO", Selectable: true},
+		"AUTO": {Name: "AUTO", Type: "URLTest", Alive: true,
+			Members: []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2"},
+			Now:     "🇨🇭⚡Швейцария 2", Selectable: true},
+		"GLOBAL": {Name: "GLOBAL", Type: "Selector", Alive: true,
+			Members: []string{"DIRECT", "PROXY"}, Now: "DIRECT", Selectable: true},
+		"🇵🇱⚡Польша":      {Name: "🇵🇱⚡Польша", Type: "Vless", Alive: true, DelayMS: d(38)},
+		"🇨🇭⚡Швейцария 2": {Name: "🇨🇭⚡Швейцария 2", Type: "Vless", Alive: true, DelayMS: d(27)},
+		"мёртвый":        {Name: "мёртвый", Type: "Vless", Alive: false, DelayMS: nil},
+	}}
 }
 
 // PanelAlive повторяет пробу /ui/: по умолчанию панель на месте.

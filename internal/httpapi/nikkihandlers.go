@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 
 	"netmoded/internal/happ"
+	"netmoded/internal/mixin"
 	"netmoded/internal/nikki"
 	"netmoded/internal/subs"
 )
@@ -55,18 +57,48 @@ func (s *Server) writeProxies(w http.ResponseWriter, r *http.Request, extra map[
 		ver = v
 	}
 
+	// Новая раскладка профиля: PROXY — селектор, «авто» это его участник
+	// AUTO. У Selector поля fixed НЕТ ВОВСЕ (проверено на живом движке,
+	// docs/recon/raw/93-autopool-spike.txt), поэтому признаки приходится
+	// выводить из того, на что группа указывает. На старой раскладке всё
+	// остаётся как было: профиль демону не принадлежит (ADR-0002), и
+	// требовать одной из двух форм он не вправе.
+	selected, fixed, pinned := g.Now, g.Fixed, g.Pinned
+	members := subs.Order(all, ProxyGroup, s.manifestEntries())
+	var autoPool *int
+	if a, ok := all[mixin.AutoGroup]; ok && a.IsGroup() && autoIsMember(g) {
+		n := len(a.Members)
+		autoPool = &n
+		if g.Now == mixin.AutoGroup {
+			// Работает авто. Владельцу важно не «AUTO», а через какой
+			// узел: иначе панель написала бы «сейчас AUTO» вместо имени
+			// сервера.
+			selected, fixed, pinned = a.Now, "", false
+		} else {
+			fixed, pinned = g.Now, true
+		}
+		// Сама AUTO — группа из профиля, а не узел подписки. В общем ряду
+		// она читалась бы как ещё один сервер, а строка «Авто» у панели
+		// своя и стоит отдельно.
+		members = dropMember(members, mixin.AutoGroup)
+	}
+
 	body := map[string]any{
 		"available": true,
 		"version":   ver,
 		"group":     ProxyGroup,
 		"type":      g.Type,
-		"selected":  g.Now,
+		"selected":  selected,
 		// Закреплён вручную или выбран движком — по одному selected это
 		// неразличимо, а для панели разница принципиальна: закрепление
 		// временное, и возврат к AUTO надо держать на виду.
-		"fixed":      g.Fixed,
-		"pinned":     g.Pinned,
+		"fixed":      fixed,
+		"pinned":     pinned,
 		"selectable": g.Selectable,
+		// Размер авто-пула — единственное, по чему видно, что фильтр
+		// съел больше, чем владелец имел в виду. Нет группы AUTO — нет и
+		// числа: ноль соврал бы про пустой пул.
+		"auto_pool": autoPool,
 		// Порядок и виды строк — из манифеста подписки, живость и задержка
 		// — из движка (subs.Order). Ни один источник не главнее: mihomo
 		// отдаёт узлы объектом и авторский порядок провайдера теряет, а
@@ -75,7 +107,7 @@ func (s *Server) writeProxies(w http.ResponseWriter, r *http.Request, extra map[
 		// Манифеста нет (свежая установка, ни одного обновления) — Order
 		// отдаёт ровно живой список mihomo, как было до подписки. Это не
 		// запасной путь, а нормальное состояние, и оно обязано работать.
-		"members": subs.Order(all, ProxyGroup, s.manifestEntries()),
+		"members": members,
 	}
 	// extra не может затереть поля тела: ключи контракта раскладываются
 	// последними. Иначе добавка «сверху» однажды подменила бы members и
@@ -280,7 +312,7 @@ func (s *Server) handleNikkiProxy(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	if in.Name == AutoSentinel {
-		err = s.nikki.Unfix(r.Context(), ProxyGroup)
+		err = s.selectAuto(r.Context())
 	} else {
 		err = s.nikki.Select(r.Context(), ProxyGroup, in.Name)
 	}
@@ -330,4 +362,49 @@ func (s *Server) entryKind(name string) (happ.Kind, bool) {
 		}
 	}
 	return "", false
+}
+
+// selectAuto возвращает группу к автовыбору — тем способом, который
+// понимает нынешний профиль.
+//
+// Способа два, и они взаимно исключающие. Если PROXY — селектор с
+// участником AUTO, автовыбор это выбор участника: DELETE такой группе
+// отвечает 400 «Body invalid» (проверено на живом движке, raw/93). Если
+// PROXY — url-test, то никакого AUTO в профиле нет, и автовыбор это
+// снятие ручного закрепления через DELETE.
+//
+// Лишний запрос списка здесь сознателен: узнать раскладку иначе нельзя, а
+// угадать и откатиться значило бы дёрнуть движок дважды в половине
+// случаев и всё равно не знать, какой профиль перед нами.
+func (s *Server) selectAuto(ctx context.Context) error {
+	all, err := s.nikki.Proxies(ctx)
+	if err != nil {
+		return err
+	}
+	if autoIsMember(all[ProxyGroup]) {
+		return s.nikki.Select(ctx, ProxyGroup, mixin.AutoGroup)
+	}
+	return s.nikki.Unfix(ctx, ProxyGroup)
+}
+
+// autoIsMember — собран ли профиль по раскладке с отдельной авто-группой.
+func autoIsMember(g nikki.Proxy) bool {
+	for _, m := range g.Members {
+		if m == mixin.AutoGroup {
+			return true
+		}
+	}
+	return false
+}
+
+// dropMember убирает строку с заданным именем, сохраняя порядок.
+func dropMember(ms []subs.Member, name string) []subs.Member {
+	out := make([]subs.Member, 0, len(ms))
+	for _, m := range ms {
+		if m.Name == name {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
