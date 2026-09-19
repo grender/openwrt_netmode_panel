@@ -341,6 +341,18 @@ type wireProxy struct {
 // Proxies возвращает узлы и группы.
 //
 // Корень ответа — объект, а не массив: {"proxies": {"имя": {...}}}.
+//
+// Запросов два, и второй обязателен. /proxies отдаёт ТОЛЬКО группы и
+// встроенные DIRECT/REJECT/GLOBAL: узлы, пришедшие из proxy-provider, в
+// эту карту не попадают, хотя в списке участников группы их имена стоят.
+// Замер 19.09.2026 на живом роутере: 9 ключей верхнего уровня против 38
+// имён в PROXY.all, пересечение пустое (docs/recon/raw/92).
+//
+// Пока спрашивали один /proxies, каждое имя участника не находилось в
+// карте, Members возвращала пустой список, и subs.Order объявляла все 38
+// узлов подписки «не принятыми движком» — при том что штатный zashboard
+// те же узлы показывал и давал выбрать, потому что читает список
+// участников группы, а не карту узлов.
 func (c *HTTP) Proxies(ctx context.Context) (map[string]Proxy, error) {
 	var wire struct {
 		Proxies map[string]wireProxy `json:"proxies"`
@@ -351,26 +363,73 @@ func (c *HTTP) Proxies(ctx context.Context) (map[string]Proxy, error) {
 
 	out := make(map[string]Proxy, len(wire.Proxies))
 	for name, w := range wire.Proxies {
-		p := Proxy{
-			Name:    name,
-			Type:    w.Type,
-			Alive:   w.Alive,
-			Members: w.All,
-			Now:     w.Now,
-			Fixed:   w.Fixed,
-			Pinned:  w.Fixed != "",
-			// Ручной выбор принимает любая группа: mihomo проверяет
-			// интерфейс SelectAble, а не конкретный тип, и Selector,
-			// URLTest и Fallback его реализуют.
-			Selectable: len(w.All) > 0,
-			DelayMS:    lastDelay(w),
-		}
-		if p.Name == "" {
-			p.Name = w.Name
-		}
-		out[name] = p
+		out[name] = proxyFromWire(name, w)
+	}
+
+	if err := c.addProviderProxies(ctx, out); err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+// proxyFromWire переводит ответ движка в нашу запись.
+//
+// Имя берётся ключом карты, а не полем тела: у провайдеров карты нет, и
+// там на вход приходит имя из самой записи.
+func proxyFromWire(name string, w wireProxy) Proxy {
+	p := Proxy{
+		Name:    name,
+		Type:    w.Type,
+		Alive:   w.Alive,
+		Members: w.All,
+		Now:     w.Now,
+		Fixed:   w.Fixed,
+		Pinned:  w.Fixed != "",
+		// Ручной выбор принимает любая группа: mihomo проверяет
+		// интерфейс SelectAble, а не конкретный тип, и Selector,
+		// URLTest и Fallback его реализуют.
+		Selectable: len(w.All) > 0,
+		DelayMS:    lastDelay(w),
+	}
+	if p.Name == "" {
+		p.Name = w.Name
+	}
+	return p
+}
+
+// addProviderProxies дописывает в карту узлы, которые движок держит в
+// провайдерах. Форма ответа — {"providers": {"имя": {"proxies": [...]}}}.
+//
+// Уже существующая запись НЕ перезаписывается, и это правило, а не
+// оптимизация: на каждую группу mihomo заводит «совместимого» провайдера
+// с копией этой группы, но без now и fixed. Затерев ими карту, мы бы
+// потеряли и текущий узел группы, и признак ручного закрепления — ровно
+// то, чем панель отличает «владелец выбрал» от «движок так решил».
+//
+// Отказ этого запроса — отказ всего вызова. Вернуть половину карты молча
+// нельзя: получился бы список, где узлы подписки помечены «движок их не
+// принял», хотя движок их принял и просто не был дослушан.
+func (c *HTTP) addProviderProxies(ctx context.Context, out map[string]Proxy) error {
+	var wire struct {
+		Providers map[string]struct {
+			Proxies []wireProxy `json:"proxies"`
+		} `json:"providers"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/providers/proxies", nil, &wire, callTimeout); err != nil {
+		return err
+	}
+	for _, prov := range wire.Providers {
+		for _, w := range prov.Proxies {
+			if w.Name == "" {
+				continue
+			}
+			if _, ok := out[w.Name]; ok {
+				continue
+			}
+			out[w.Name] = proxyFromWire(w.Name, w)
+		}
+	}
+	return nil
 }
 
 // lastDelay достаёт задержку последней пробы.

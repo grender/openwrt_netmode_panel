@@ -33,6 +33,11 @@ type fakeClash struct {
 	putMessage string
 	// providerBody — ответ GET /providers/proxies/{name}.
 	providerBody string
+	// providersBody — ответ GET /providers/proxies (без имени). Пустой
+	// означает движок без провайдеров: {"providers":{}}. Отдельное поле,
+	// потому что Proxies ходит туда ВСЕГДА — узлы провайдеров в /proxies
+	// не попадают, и без этого ответа список узлов пуст.
+	providersBody string
 	// rulesBody — ответ GET /providers/rules.
 	rulesBody string
 }
@@ -99,6 +104,12 @@ func (f *fakeClash) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"meta":true,"version":"v1.19.27"}`))
 	case "/proxies":
 		_, _ = w.Write([]byte(f.body))
+	case "/providers/proxies":
+		if f.providersBody == "" {
+			_, _ = w.Write([]byte(`{"providers":{}}`))
+			return
+		}
+		_, _ = w.Write([]byte(f.providersBody))
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -703,4 +714,102 @@ func TestRuleProvidersDistinguishesDownloadedFromNever(t *testing.T) {
 	if ads.Name != "geosite-ads" {
 		t.Errorf("имя = %q", ads.Name)
 	}
+}
+
+// ─────────── узлы провайдеров ───────────
+
+// providerShapeBody — форма живого ответа /providers/proxies, снятая с
+// роутера 19.09.2026 и урезанная до сути: провайдер-файл `sub` со своими
+// узлами и «совместимые» провайдеры, которые mihomo заводит на каждую
+// группу. Имена групп в них повторяются — и перезаписывать ими группы из
+// /proxies нельзя: у провайдерской копии нет ни now, ни fixed.
+const providerShapeBody = `{"providers":{
+  "sub": {"name":"sub","vehicleType":"File","proxies":[
+    {"name":"Польша","type":"Vless","alive":true,"history":[{"time":"2026-09-19T14:34:33Z","delay":41}]},
+    {"name":"Швейцария","type":"Vless","alive":false,"history":[{"time":"2026-09-19T14:34:33Z","delay":0}]}
+  ]},
+  "BYPASS": {"name":"BYPASS","vehicleType":"Compatible","proxies":[
+    {"name":"PROXY","type":"URLTest","alive":true,"all":["Польша"]},
+    {"name":"REJECT","type":"Reject","alive":true}
+  ]}
+}}`
+
+// Узлы провайдера в /proxies НЕ попадают: там лежат только группы и
+// встроенные DIRECT/REJECT/GLOBAL. Замер с роутера 19.09.2026 —
+// 9 ключей верхнего уровня против 38 имён в PROXY.all, пересечение
+// ПУСТОЕ. Пока Proxies спрашивал только /proxies, каждый узел подписки
+// доезжал до панели как «движок его не принял», и выбрать было нечего,
+// хотя zashboard те же 38 показывал: он читает список участников группы,
+// а не карту узлов.
+func TestProxiesPicksUpProviderNodes(t *testing.T) {
+	f, c, done := newClient(t, "118296")
+	defer done()
+	f.body = `{"proxies":{
+	  "PROXY":{"name":"PROXY","type":"URLTest","alive":true,"now":"Польша","all":["Польша","Швейцария"]},
+	  "DIRECT":{"name":"DIRECT","type":"Direct","alive":true}
+	}}`
+	f.providersBody = providerShapeBody
+
+	all, err := c.Proxies(context.Background())
+	if err != nil {
+		t.Fatalf("Proxies: %v", err)
+	}
+
+	for _, name := range []string{"Польша", "Швейцария"} {
+		p, ok := all[name]
+		if !ok {
+			t.Fatalf("узел провайдера %q не доехал: есть только %v", name, keysOf(all))
+		}
+		if p.IsGroup() {
+			t.Errorf("узел %q приехал группой: %+v", name, p)
+		}
+	}
+	// Живое состояние берётся у движка, а не выдумывается: у Польши проба
+	// прошла, у Швейцарии в истории 0 — то есть пробы не было, и наружу
+	// это обязано уходить как nil, а не как ноль миллисекунд.
+	if pl := all["Польша"]; !pl.Alive || pl.DelayMS == nil || *pl.DelayMS != 41 {
+		t.Errorf("Польша = %+v, ожидались alive и 41 мс", pl)
+	}
+	if sw := all["Швейцария"]; sw.Alive || sw.DelayMS != nil {
+		t.Errorf("Швейцария = %+v, ожидались мёртвый узел и nil задержки", sw)
+	}
+	// Ради этого всё и делалось: участники группы теперь разворачиваются.
+	if ms := Members(all, "PROXY"); len(ms) != 2 {
+		t.Errorf("участников группы развернулось %d, ожидалось 2", len(ms))
+	}
+}
+
+// «Совместимый» провайдер повторяет каждую группу, но без now и fixed.
+// Затереть им группу из /proxies значило бы потерять и текущий узел, и
+// признак ручного закрепления — то есть именно то, чем панель отличает
+// «владелец выбрал» от «движок решил».
+func TestProviderCopiesNeverOverwriteGroups(t *testing.T) {
+	f, c, done := newClient(t, "118296")
+	defer done()
+	f.body = `{"proxies":{
+	  "PROXY":{"name":"PROXY","type":"URLTest","alive":true,"now":"Польша","fixed":"Польша","all":["Польша"]},
+	  "REJECT":{"name":"REJECT","type":"Reject","alive":true}
+	}}`
+	f.providersBody = providerShapeBody
+
+	all, err := c.Proxies(context.Background())
+	if err != nil {
+		t.Fatalf("Proxies: %v", err)
+	}
+
+	g := all["PROXY"]
+	if g.Now != "Польша" || g.Fixed != "Польша" || !g.Pinned {
+		t.Errorf("группу затёрло провайдерской копией: %+v", g)
+	}
+	if len(g.Members) != 1 {
+		t.Errorf("участники группы = %v, ожидался один", g.Members)
+	}
+}
+
+func keysOf(m map[string]Proxy) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

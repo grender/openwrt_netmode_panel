@@ -1,0 +1,31 @@
+Снято 2026-09-19 с 192.168.9.1, mihomo v1.19.29, nikki 2026.04.08-r1.
+Движок поднят локально (nikki.proxy.enabled=0): перехвата нет, профиль настоящий.
+
+Вопрос: почему панель netmoded показывает все узлы подписки как
+«движок их не принял», а zashboard те же узлы даёт выбрать.
+
+== GET /proxies: ключи верхнего уровня ==
+9 штук: BYPASS, COMPATIBLE, DIRECT, GLOBAL, PASS, PASS-RULE, PROXY, REJECT, REJECT-DROP
+
+== группа PROXY ==
+type=URLTest  now='🇷🇺💳Россия'  fixed=''  len(all)=38
+первые имена участников: 🇪🇸⚡Испания, 🇨🇭⚡Швейцария-1, 🇨🇭⚡Швейцария-2 EXTRA, 🇨🇭⚡Швейцария-3
+
+== ПЕРЕСЕЧЕНИЕ: имена участников, присутствующие ключом верхнего уровня ==
+0 из 38 — то есть НИ ОДНОГО.
+
+Вот и весь дефект. nikki.Members разворачивала участников через карту
+/proxies, карта их не содержит, список выходил пустым, и subs.Order
+помечала каждый узел манифеста reasonMissingInLive.
+
+== GET /providers/proxies: там они есть ==
+  BYPASS     vehicleType=Compatible   узлов=2
+  default    vehicleType=Compatible   узлов=4
+  sub        vehicleType=File         узлов=38
+  новых имён, которых нет в /proxies: 38
+  имена, повторяющие верхний уровень (перезаписывать нельзя): BYPASS, DIRECT, PROXY, REJECT
+
+== что при этом отдавал демон, GET /api/nikki/proxies ==
+available=True group=PROXY type=URLTest selectable=True selected='🇷🇺💳Россия'
+members=40 по видам: {'auto': 1, 'unsupported': 38, 'separator': 1}
+причина у всех 38: узел есть в подписке, но mihomo его не показывает: движок либо не принял этот узел (например, транспорт, которого его версия не умеет), либо ещё не перечитал файл провайдера
