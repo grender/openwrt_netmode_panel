@@ -1,0 +1,65 @@
+Спайк авто-пула. 2026-09-19, живой роутер 192.168.9.1, mihomo v1.19.29,
+nikki 2026.04.08-r1. Движок поднят локально: nikki.proxy.enabled=0 и
+mixin.tun_enabled=0, в журнале «[Proxy] Disabled.», перехвата нет, LAN
+не тронут. Профиль и mixin.yaml возвращены побайтно после проверки.
+
+Проверялись пять допущений, на которых держится конструкция.
+
+== 1. Два file-провайдера на ОДИН путь уживаются ==
+Профиль объявляет sub и sub-auto, оба type: file, path: ./providers/sub.yaml.
+
+  sub:      vehicleType=File узлов=38
+  sub-auto: vehicleType=File узлов=38
+
+Да. Движок не возражает и читает файл дважды.
+
+== 2. mixin дописывает поле ВНУТРЬ провайдера профиля, а не заменяет его ==
+В mixin.yaml добавлено:
+    proxy-providers:
+      sub-auto:
+        filter: "⚡"
+В собранном /etc/nikki/run/config.yaml вышло:
+    sub-auto:
+      type: file
+      path: ./providers/sub.yaml
+      health-check: {enable: true, url: …, interval: 120, lazy: false}
+      filter: "⚡"
+
+Да — proxy-providers это карта, yq сливает её по ключу (. * $item).
+type, path и health-check из профиля целы, sub не тронут. На этом и
+держится отказоустойчивость: выключили склейку — остался профильный
+sub-auto без фильтра, то есть весь список, а не пустота.
+
+== 3. filter у file-провайдера работает и понимает эмодзи ==
+  sub: 38 узлов        sub-auto: 15 узлов
+  AUTO: участников=15, now=🇩🇪⚡Германия
+
+До фильтра AUTO выбирала 🇷🇺💳Россия. Это и есть исходный дефект:
+url-test над всеми 38 уводил обходной трафик в российский выход.
+RE2 без просмотра назад, но эмодзи — обычные литералы, проблем нет.
+
+== 4. select + AUTO: выбор и пин ==
+  PROXY: type=Selector, now=AUTO, участников=39 (AUTO + 38 узлов)
+  поля fixed у Selector НЕТ ВОВСЕ (у URLTest и Fallback — есть)
+
+  PUT /proxies/PROXY {"name":"🇷🇺💳Россия"} → 204, now=🇷🇺💳Россия
+  PUT /proxies/PROXY {"name":"AUTO"}       → 204, now=AUTO
+  DELETE /proxies/PROXY                    → 400 {"message":"Body invalid"}
+
+Пин узла, ИСКЛЮЧЁННОГО из авто-пула, работает — ради этого разделение
+пулов и затевалось. DELETE (нынешний путь «Авто» в демоне) на селекторе
+отвечает 400: демону придётся звать Select(PROXY,"AUTO"), а признак
+закрепления считать как now != "AUTO", раз fixed отсутствует.
+
+== 5. empty-fallback существует в 1.19.29 и срабатывает ==
+Фильтр заменён на заведомо непопадающий, sub-auto стал пустым.
+
+  empty-fallback: DIRECT → AUTO {all:["DIRECT"], now:"DIRECT", alive:true}
+  empty-fallback: REJECT → AUTO {all:["REJECT"], now:"REJECT", alive:true}
+
+Движок в обоих случаях стартует, PROXY остаётся с 39 участниками.
+
+ВЫВОД, МЕНЯЮЩИЙ ПЛАН: брать REJECT, а не DIRECT. DIRECT — это fail-open:
+трафик, который правила гонят в туннель, пошёл бы напрямую и молча.
+REJECT совпадает с уже принятым выбором для BYPASS = fallback[PROXY,
+REJECT] (docs/recon/nikki.md, «Остаточный риск закрепления»).
