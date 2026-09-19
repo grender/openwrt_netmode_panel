@@ -92,6 +92,11 @@ func parse(raw []byte, xhttp bool) ([]Entry, error) {
 
 	markSeparators(entries, ids)
 	dedupeNames(entries)
+	// Пул — ПОСЛЕ разведения имён, и порядок здесь обязателен. Имена до
+	// dedupeNames не окончательны, а пул ссылается именно на них: в файле
+	// провайдера mihomo держит узлы объектом, и два одинаковых имени там
+	// схлопнулись бы в одно.
+	resolvePools(entries, ids)
 	return entries, nil
 }
 
@@ -121,7 +126,7 @@ func parseRecord(rec json.RawMessage, index int, xhttp bool) (Entry, string) {
 		// группа поверх десятка серверов, у которой своего адреса нет.
 		// Подключаться к ней нечем, и в список узлов она не идёт.
 		if len(xr.Routing.Balancers) > 0 {
-			return Entry{Name: name, Kind: KindAuto}, ""
+			return Entry{Name: name, Kind: KindAuto, poolIDs: xr.balancerIDs()}, ""
 		}
 		return Entry{
 			Name:   name,
@@ -446,4 +451,66 @@ func (o xrayOutbound) endpoint() (server string, port int, secret string) {
 		return v.Address, v.Port, secret
 	}
 	return o.Settings.Address, o.Settings.Port, o.StreamSettings.HysteriaSettings.Auth
+}
+
+// balancerIDs — отпечатки серверов, из которых собран балансировщик.
+//
+// Берутся у ВСЕХ outbound-ов записи, а не у «полезного»: у авто-записи
+// полезного нет вовсе (в этом и признак), зато есть десяток обычных
+// outbound-ов — по одному на сервер пула. Служебные freedom и blackhole
+// отсеиваются сами: у них нет ни адреса, ни секрета, и identity пуст.
+func (r xrayRecord) balancerIDs() []string {
+	out := make([]string, 0, len(r.Outbounds))
+	for _, o := range r.Outbounds {
+		if id := o.identity(); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// resolvePools переводит отпечатки пула в имена узлов.
+//
+// Сопоставление идёт по отпечатку, а не по тегу outbound. Тег провайдера
+// выглядит как «proxy-31-56-150-7-direct», то есть несёт адрес сервера с
+// точками, заменёнными на дефисы, — разобрать его обратно можно, но это
+// догадка о чужом соглашении об именовании, которое провайдер вправе
+// сменить молча. Отпечаток же — протокол, сеть, адрес, порт и секрет —
+// свойство самого сервера, и тем же отпечатком уже ищутся двойники
+// разделителей.
+//
+// Имя, отпечатка которого среди узлов нет, пропускается молча: у
+// провайдера в балансировщике может стоять сервер, которого он в общий
+// список не положил, и выдумывать для него имя нам не из чего.
+func resolvePools(entries []Entry, ids []string) {
+	byID := make(map[string]string, len(entries))
+	for i, e := range entries {
+		if e.Kind != KindNode || ids[i] == "" {
+			continue
+		}
+		// Первое имя побеждает — то же правило, что у дубликатов в
+		// манифесте и у entryKind в httpapi.
+		if _, busy := byID[ids[i]]; !busy {
+			byID[ids[i]] = e.Name
+		}
+	}
+	for i := range entries {
+		if len(entries[i].poolIDs) == 0 {
+			continue
+		}
+		pool := make([]string, 0, len(entries[i].poolIDs))
+		seen := make(map[string]bool, len(entries[i].poolIDs))
+		for _, id := range entries[i].poolIDs {
+			name, ok := byID[id]
+			if !ok || seen[name] {
+				continue
+			}
+			seen[name] = true
+			pool = append(pool, name)
+		}
+		entries[i].poolIDs = nil
+		if len(pool) > 0 {
+			entries[i].Pool = pool
+		}
+	}
 }
