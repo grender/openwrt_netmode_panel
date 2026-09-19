@@ -663,6 +663,31 @@ const busyJob = () => !!state.job && state.job.state === 'running';
 // Общая для всех операций механика — секунды ожидания, потом ещё немного
 // показа исхода, — не дублируется: upstream отличается только тем, ЧТО
 // происходит по истечении sec, а не КОГДА.
+// autopoolBody — тело GET /api/nikki/autopool.
+//
+// Узлы берутся из того же примера, что и список в карточке Nikki: два
+// разных списка одних и тех же серверов в одной панели читались бы как
+// расхождение демона с самим собой. Пул провайдера — первые два имени:
+// в снятой подписке балансировщик у провайдера уже своей отбор, и важно
+// показать, что он УЖЕ отличается от всего списка.
+const autopoolBody = async () => {
+	const proxies = await readProxies();
+	const available = (proxies.members || []).filter((m) => m.kind === 'node').map((m) => m.name);
+	const o = state.overlay.autopool || {};
+	const nodes = o.nodes || [];
+	return {
+		fingerprint: o.fingerprint || 'sha256:0f3c1a2b4d5e6f70',
+		mode: o.mode || 'deny',
+		nodes,
+		foreign: state.scenario === 'rulesets-foreign',
+		available,
+		provider_pool: available.slice(0, 2),
+		missing: nodes.filter((n) => !available.includes(n)),
+		// Движок молчит — размер неизвестен. Ноль соврал бы про пустой пул.
+		pool_size: (await engineUp('nikki')) ? (o.pool_size ?? available.length) : null,
+	};
+};
+
 const startJob = (kind, arg, label, sec, finish) => {
 	state.job = {
 		id: 'j-' + Math.random().toString(16).slice(2, 8),
@@ -1276,6 +1301,44 @@ async function handleAPI(req, res, u) {
 	// состояние отказа (503 catalog_unavailable), которого у остального API
 	// нет: применённый выбор при этом продолжает читаться как ни в чём не
 	// бывало — он лежит в файле и каталога не спрашивает.
+	// Авто-пул. Своего примера у него нет: список узлов совпадает с тем,
+	// что отдаёт /api/nikki/proxies, и разводить два источника значило бы
+	// показывать в панели два разных списка одних и тех же серверов.
+	if (p === '/api/nikki/autopool' && method === 'GET') {
+		return send(res, 200, await autopoolBody());
+	}
+	if (p === '/api/nikki/autopool' && method === 'PUT') {
+		const body = await readBody(req);
+		if (!['deny', 'allow', 'provider'].includes(body.mode)) {
+			return fail(res, 400, 'bad_request', 'Неизвестный режим авто-пула «' + body.mode + '»: ожидались deny, allow или provider.');
+		}
+		const cur = await autopoolBody();
+		const got = (req.headers['if-match'] || '').trim();
+		if (!got) {
+			return fail(res, 409, 'stale_autopool', 'Нужен заголовок If-Match с отпечатком из GET /api/nikki/autopool: без него запись не докажет, что видела нынешний выбор.');
+		}
+		if (got !== cur.fingerprint) {
+			return fail(res, 409, 'stale_autopool', 'Авто-пул изменился, пока вы его правили: перечитайте GET /api/nikki/autopool и повторите с новым отпечатком.');
+		}
+		if (body.mode === 'provider' && cur.provider_pool.length === 0) {
+			return fail(res, 409, 'no_provider_pool', 'В подписке нет своего авторежима: балансировщика у провайдера не нашлось, и брать состав пула неоткуда. Выберите узлы вручную.');
+		}
+		const nodes = body.mode === 'provider' ? cur.provider_pool : (body.nodes || []);
+		const unknown = nodes.filter((n) => !cur.available.includes(n));
+		if (unknown.length > 0) {
+			return fail(res, 400, 'unknown_node', 'В подписке нет таких узлов: ' + unknown.slice(0, 3).join(', ') + '. Список узлов мог измениться — перечитайте GET /api/nikki/autopool.');
+		}
+		const left = body.mode === 'deny' ? cur.available.filter((n) => !nodes.includes(n)).length : nodes.length;
+		if (left === 0) {
+			return fail(res, 400, 'empty_pool', 'После такого выбора в авто-пуле не остаётся ни одного узла. Снимите часть отметок или смените режим.');
+		}
+		startJob('autopool', '', 'Применение авто-пула', 6, () => {
+			// Отпечаток обязан смениться: иначе оптимистичная блокировка в
+			// моке ненастоящая, и путь stale_autopool в панели не нажать.
+			state.overlay.autopool = { mode: body.mode, nodes, pool_size: left, fingerprint: nextFingerprint() };
+		});
+		return send(res, 202, { job: state.job });
+	}
 	if (p === '/api/nikki/rulesets/catalog' && method === 'GET') {
 		if (state.scenario === 'rulesets-nocatalog') {
 			return fail(res, 503, 'catalog_unavailable',
