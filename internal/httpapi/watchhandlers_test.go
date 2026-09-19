@@ -294,7 +294,7 @@ func TestWatchSessionReadsEngine(t *testing.T) {
 			ID: "a", Net: "tcp", SourceIP: "192.168.9.219", SourcePort: 50317,
 			Host: "api.anthropic.com", RemoteDestination: "154.222.132.99", DestinationPort: 443,
 			Upload: 3456, Download: 4953, Start: time.Now().Add(-time.Minute),
-			Chains: []string{"🇫🇷⚡Франция", "PROXY", "BYPASS"},
+			Chains: []string{"🇫🇯⚡Фокстрот", "PROXY", "BYPASS"},
 			Rule:   "RuleSet", RulePayload: "nm-geosite-anthropic",
 		}},
 	}}
@@ -321,7 +321,7 @@ func TestWatchSessionReadsEngine(t *testing.T) {
 	if got.Name != "api.anthropic.com" {
 		t.Errorf("адресат = %q", got.Name)
 	}
-	if got.Chain != "BYPASS[🇫🇷⚡Франция]" {
+	if got.Chain != "BYPASS[🇫🇯⚡Фокстрот]" {
 		t.Errorf("цепочка = %q", got.Chain)
 	}
 	if got.Up != 3456 || got.Down != 4953 {

@@ -45,7 +45,7 @@ func TestRenderKeepsOnlyNodesInOrder(t *testing.T) {
 	// движку про них знать нечего, они живут в манифесте и в панели.
 	for _, p := range doc.Proxies {
 		switch p["name"] {
-		case "🇪🇺 🚀Авто | Лучший сервер ⚡⚡", "⬇️ Обходы белых списков ⬇️":
+		case "🇦🇶 🚀Авто | Быстрый узел ⚡⚡", "⬇️ Обходы белых списков ⬇️":
 			t.Errorf("в файл провайдера попала служебная запись %v", p["name"])
 		}
 	}
@@ -55,8 +55,8 @@ func TestRenderKeepsOnlyNodesInOrder(t *testing.T) {
 // ключом proxies, а не голый массив.
 func TestRenderShapeIsProviderFile(t *testing.T) {
 	entries := []Entry{
-		{Name: "🇩🇪Германия", Kind: KindNode, Type: "vless", Proxy: map[string]any{
-			"name": "🇩🇪Германия", "type": "vless", "server": "203.0.113.1", "port": 443,
+		{Name: "🇧🇧Браво", Kind: KindNode, Type: "vless", Proxy: map[string]any{
+			"name": "🇧🇧Браво", "type": "vless", "server": "203.0.113.1", "port": 443,
 			"alpn": []string{"h2", "http/1.1"},
 			"reality-opts": map[string]any{
 				"public-key": "PK", "short-id": "aa",
@@ -89,9 +89,9 @@ func TestRenderShapeIsProviderFile(t *testing.T) {
 // пришёл бы из движка вместо внятного места.
 func TestRenderWithoutNodes(t *testing.T) {
 	entries := []Entry{
-		{Name: "🇪🇺 Авто", Kind: KindAuto},
+		{Name: "🇦🇶 Авто", Kind: KindAuto},
 		{Name: "⬇️ Заголовок ⬇️", Kind: KindSeparator},
-		{Name: "🇩🇪Германия", Kind: KindUnsupported, Reason: "протокол vmess не переводится в узел mihomo"},
+		{Name: "🇧🇧Браво", Kind: KindUnsupported, Reason: "протокол vmess не переводится в узел mihomo"},
 	}
 
 	var doc struct {
@@ -116,7 +116,7 @@ func TestRenderWithoutNodes(t *testing.T) {
 // {"proxies":[]}, который движок примет. Паника здесь — тот же выбор, что у
 // соседней ветки про несериализуемый узел.
 func TestRenderPanicsOnManifestEntries(t *testing.T) {
-	entries := []Entry{{Name: "🇩🇪⚡Германия", Kind: KindNode, Type: "vless"}}
+	entries := []Entry{{Name: "🇧🇧⚡Браво", Kind: KindNode, Type: "vless"}}
 	defer func() {
 		r := recover()
 		if r == nil {

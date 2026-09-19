@@ -41,7 +41,7 @@ func TestAutoUsesSelectOnSelectorProfile(t *testing.T) {
 	s.SetNikkiClient(fake)
 
 	// Сначала закрепим узел, чтобы возврат к «Авто» было видно.
-	if rec := post(t, s, "/api/nikki/proxy", `{"name":"🇵🇱⚡Польша"}`, ""); rec.Code != http.StatusOK {
+	if rec := post(t, s, "/api/nikki/proxy", `{"name":"🇭🇳⚡Отель"}`, ""); rec.Code != http.StatusOK {
 		t.Fatalf("закрепление: код %d: %s", rec.Code, rec.Body.String())
 	}
 	rec := post(t, s, "/api/nikki/proxy", `{"name":"AUTO"}`, "")
@@ -59,7 +59,7 @@ func TestAutoUsesUnfixOnURLTestProfile(t *testing.T) {
 	fake := newFakeNikkiClient()
 	s.SetNikkiClient(fake)
 
-	if rec := post(t, s, "/api/nikki/proxy", `{"name":"🇵🇱⚡Польша"}`, ""); rec.Code != http.StatusOK {
+	if rec := post(t, s, "/api/nikki/proxy", `{"name":"🇭🇳⚡Отель"}`, ""); rec.Code != http.StatusOK {
 		t.Fatalf("закрепление: код %d", rec.Code)
 	}
 	rec := post(t, s, "/api/nikki/proxy", `{"name":"AUTO"}`, "")
@@ -84,9 +84,9 @@ func TestSelectorPinnedIsComputedFromNow(t *testing.T) {
 		t.Errorf("группа указывает на AUTO, а выглядит закреплённой: %+v", got)
 	}
 
-	rec := post(t, s, "/api/nikki/proxy", `{"name":"🇵🇱⚡Польша"}`, "")
+	rec := post(t, s, "/api/nikki/proxy", `{"name":"🇭🇳⚡Отель"}`, "")
 	got = readAuto(t, rec.Body.Bytes())
-	if !got.Pinned || got.Fixed != "🇵🇱⚡Польша" {
+	if !got.Pinned || got.Fixed != "🇭🇳⚡Отель" {
 		t.Errorf("узел закреплён, а признака нет: %+v", got)
 	}
 }
@@ -99,7 +99,7 @@ func TestSelectorSelectedShowsNodeBehindAuto(t *testing.T) {
 	s.SetNikkiClient(newFakeNikkiSelectorClient())
 
 	got := readAuto(t, do(t, s, http.MethodGet, "/api/nikki/proxies", true).Body.Bytes())
-	if got.Selected != "🇨🇭⚡Швейцария 2" {
+	if got.Selected != "🇨🇻⚡Чарли 2" {
 		t.Errorf("selected = %q, ожидался узел, через который работает AUTO", got.Selected)
 	}
 }
@@ -159,7 +159,7 @@ func TestRulesetsApplyKeepsAutoPool(t *testing.T) {
 		Download: mixin.DownloadDirect,
 		Sets:     []mixin.Set{{Name: "youtube", Action: mixin.ActionTunnel}},
 		Auto: mixin.AutoConfig{Mode: mixin.AutoAllow,
-			Nodes: []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2"}},
+			Nodes: []string{"🇭🇳⚡Отель", "🇨🇻⚡Чарли 2"}},
 	}
 	writeMixin(t, s, mixin.Render(before))
 	// Движок отчитывается, что новый набор скачан: иначе джоб честно

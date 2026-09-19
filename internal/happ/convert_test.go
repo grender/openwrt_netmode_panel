@@ -262,8 +262,8 @@ func TestConvertXHTTPPadding(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 
-	// «🇩🇪⚡Германия» — обычный xhttp + reality, паддинг 50-150.
-	opts := xhttpOpts(t, entries, "🇩🇪⚡Германия")
+	// «🇧🇧⚡Браво» — обычный xhttp + reality, паддинг 50-150.
+	opts := xhttpOpts(t, entries, "🇧🇧⚡Браво")
 	assertOpts(t, opts, map[string]any{
 		"mode":            "stream-one",
 		"path":            "/api/v2/stream/by-group-id/deadbeefcafe1234",
@@ -298,7 +298,7 @@ func TestConvertXHTTPZeroPadding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	opts := xhttpOpts(t, entries, "🇩🇪⚪Германия (БС-3)☁️")
+	opts := xhttpOpts(t, entries, "🇧🇧⚪Браво (РЦ-3)☁️")
 	assertOpts(t, opts, map[string]any{
 		"x-padding-bytes":    "0-0",
 		"uplink-http-method": "GET",
@@ -312,7 +312,7 @@ func TestConvertXHTTPZeroPadding(t *testing.T) {
 	}
 }
 
-// TestConvertXHTTPObfuscation: у «Турции (БС-4)» сессия и счётчик уезжают в
+// TestConvertXHTTPObfuscation: у «Новембера (РЦ-4)» сессия и счётчик уезжают в
 // cookies, а паддинг — в query-параметр заголовка Referer. Умолчание обеих
 // сторон — path, поэтому без переноса сервер не найдёт ни паддинга, ни
 // сессии, и узел мёртв на все сто процентов.
@@ -321,7 +321,7 @@ func TestConvertXHTTPObfuscation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	opts := xhttpOpts(t, entries, "🇹🇷⚪Турция (БС-4)☁️")
+	opts := xhttpOpts(t, entries, "🇳🇷⚪Новембер (РЦ-4)☁️")
 
 	assertOpts(t, opts, map[string]any{
 		"x-padding-bytes":        "80-600",
@@ -379,7 +379,7 @@ func TestConvertXHTTPReuseSettings(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 
-	opts := xhttpOpts(t, entries, "🇹🇷⚪Турция (БС-4)☁️")
+	opts := xhttpOpts(t, entries, "🇳🇷⚪Новембер (РЦ-4)☁️")
 	if _, ok := opts["xmux"]; ok {
 		t.Error("xmux остался под именем Xray")
 	}
@@ -398,22 +398,22 @@ func TestConvertXHTTPReuseSettings(t *testing.T) {
 		t.Errorf("нулевое maxConnections создало ключ: %v", reuse["max-connections"])
 	}
 
-	// У «Швейцарии (БС-1)» cMaxReuseTimes задан строкой — он обязан
+	// У «Чарли (РЦ-1)» cMaxReuseTimes задан строкой — он обязан
 	// доехать, в отличие от нулевого у соседей.
-	sw := xhttpOpts(t, entries, "🇨🇭⚪Швейцария (БС-1)☁️")
-	swReuse, ok := sw["reuse-settings"].(map[string]any)
+	charlie := xhttpOpts(t, entries, "🇨🇻⚪Чарли (РЦ-1)☁️")
+	swReuse, ok := charlie["reuse-settings"].(map[string]any)
 	if !ok {
-		t.Fatalf("reuse-settings отсутствуют: %v", sortedKeys(sw))
+		t.Fatalf("reuse-settings отсутствуют: %v", sortedKeys(charlie))
 	}
 	assertOpts(t, swReuse, map[string]any{"c-max-reuse-times": "256-512"})
 
-	// А у «Германии» он нулевой и ключа создавать не должен.
-	de, ok := xhttpOpts(t, entries, "🇩🇪⚡Германия")["reuse-settings"].(map[string]any)
+	// А у «Браво» он нулевой и ключа создавать не должен.
+	bravo, ok := xhttpOpts(t, entries, "🇧🇧⚡Браво")["reuse-settings"].(map[string]any)
 	if !ok {
-		t.Fatal("reuse-settings у Германии отсутствуют")
+		t.Fatal("reuse-settings у Браво отсутствуют")
 	}
-	if _, ok := de["c-max-reuse-times"]; ok {
-		t.Errorf("нулевое cMaxReuseTimes создало ключ: %v", de["c-max-reuse-times"])
+	if _, ok := bravo["c-max-reuse-times"]; ok {
+		t.Errorf("нулевое cMaxReuseTimes создало ключ: %v", bravo["c-max-reuse-times"])
 	}
 }
 
@@ -422,7 +422,7 @@ func TestConvertXHTTPReuseSettings(t *testing.T) {
 // одинаковым от запуска к запуску (обход карты в Go случаен).
 func TestConvertXHTTPSessionSpelling(t *testing.T) {
 	node := func(extra string) []byte {
-		return []byte(`[{"remarks":"🇩🇪Тест","outbounds":[{
+		return []byte(`[{"remarks":"🇧🇧Тест","outbounds":[{
 			"tag":"proxy","protocol":"vless",
 			"settings":{"vnext":[{"address":"203.0.113.1","port":443,"users":[{"id":"u"}]}]},
 			"streamSettings":{"network":"xhttp","xhttpSettings":{"mode":"packet-up","host":"","path":"/p","extra":` + extra + `},
@@ -444,7 +444,7 @@ func TestConvertXHTTPSessionSpelling(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Parse: %v", err)
 				}
-				opts := xhttpOpts(t, entries, "🇩🇪Тест")
+				opts := xhttpOpts(t, entries, "🇧🇧Тест")
 				if got := opts["session-key"]; got != c.want {
 					t.Fatalf("session-key = %v, ожидалось %q", got, c.want)
 				}
@@ -528,7 +528,7 @@ func TestConvertUnsupported(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			raw := []byte(`[{"remarks":"🇩🇪Тест","outbounds":[` + c.outbound + `]}]`)
+			raw := []byte(`[{"remarks":"🇧🇧Тест","outbounds":[` + c.outbound + `]}]`)
 			entries, err := Parse(raw)
 			if err != nil {
 				t.Fatalf("Parse: %v", err)
@@ -551,7 +551,7 @@ func TestConvertHysteriaUsesFlatSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	e := entries[15] // 🇨🇭🎮Швейцария GAMING
+	e := entries[15] // 🇨🇻🎮Чарли GAMING
 	if e.Type != "hysteria2" {
 		t.Fatalf("тип %q, ожидался hysteria2", e.Type)
 	}
@@ -584,7 +584,7 @@ func TestXHTTPSwitchIsOn(t *testing.T) {
 // режим, и ключ просто опускается. У reality без отпечатка узел не поднимется
 // вовсе — там отказ (см. TestConvertUnsupported).
 func TestConvertTLSWithoutFingerprintIsANode(t *testing.T) {
-	raw := []byte(`[{"remarks":"🇩🇪Тест","outbounds":[{"tag":"proxy","protocol":"vless",
+	raw := []byte(`[{"remarks":"🇧🇧Тест","outbounds":[{"tag":"proxy","protocol":"vless",
 	  "settings":{"vnext":[{"address":"203.0.113.1","port":443,"users":[{"id":"u"}]}]},
 	  "streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"serverName":"s"}}}]}]`)
 	entries, err := Parse(raw)
@@ -692,7 +692,7 @@ func ssOutbound(server string) string {
 func TestConvertShadowsocksUoT(t *testing.T) {
 	parseOne := func(server string) Entry {
 		t.Helper()
-		entries, err := Parse([]byte(`[{"remarks":"🇨🇦Тест","outbounds":[` + ssOutbound(server) + `]}]`))
+		entries, err := Parse([]byte(`[{"remarks":"🇵🇼Тест","outbounds":[` + ssOutbound(server) + `]}]`))
 		if err != nil {
 			t.Fatalf("Parse: %v", err)
 		}
@@ -745,7 +745,7 @@ func TestConvertShadowsocksUnsupported(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			entries, err := Parse([]byte(`[{"remarks":"🇨🇦Тест","outbounds":[` + c.outbound + `]}]`))
+			entries, err := Parse([]byte(`[{"remarks":"🇵🇼Тест","outbounds":[` + c.outbound + `]}]`))
 			if err != nil {
 				t.Fatalf("Parse: %v", err)
 			}
@@ -766,7 +766,7 @@ func TestConvertShadowsocksUnsupported(t *testing.T) {
 // TestConvertShadowsocks2022ValidKey: ключ нужной длины принимается.
 func TestConvertShadowsocks2022ValidKey(t *testing.T) {
 	key := "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=" // 32 байта
-	entries, err := Parse([]byte(`[{"remarks":"🇨🇦Тест","outbounds":[` +
+	entries, err := Parse([]byte(`[{"remarks":"🇵🇼Тест","outbounds":[` +
 		ssOutbound(`{"address":"203.0.113.1","port":2030,"password":"`+key+`","method":"2022-blake3-aes-256-gcm"}`) + `]}]`))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -778,7 +778,7 @@ func TestConvertShadowsocks2022ValidKey(t *testing.T) {
 
 // TestUnknownProtocolBlamesConverter: незнакомый протокол — вина конвертера.
 func TestUnknownProtocolBlamesConverter(t *testing.T) {
-	entries, err := Parse([]byte(`[{"remarks":"🇩🇪Тест","outbounds":[{"tag":"proxy","protocol":"trojan","settings":{},"streamSettings":{}}]}]`))
+	entries, err := Parse([]byte(`[{"remarks":"🇧🇧Тест","outbounds":[{"tag":"proxy","protocol":"trojan","settings":{},"streamSettings":{}}]}]`))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}

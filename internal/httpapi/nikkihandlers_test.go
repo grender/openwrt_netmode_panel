@@ -40,7 +40,7 @@ func TestNikkiProxiesShape(t *testing.T) {
 	if got.Pinned {
 		t.Error("исходно ничего не закреплено — pinned должен быть false")
 	}
-	if got.Selected != "🇨🇭⚡Швейцария 2" {
+	if got.Selected != "🇨🇻⚡Чарли 2" {
 		t.Errorf("selected = %q", got.Selected)
 	}
 	if len(got.Members) != 3 {
@@ -80,7 +80,7 @@ func TestNikkiSelectPinsNode(t *testing.T) {
 	fake := newFakeNikkiClient()
 	s.SetNikkiClient(fake)
 
-	rec := post(t, s, "/api/nikki/proxy", `{"name":"🇵🇱⚡Польша"}`, "")
+	rec := post(t, s, "/api/nikki/proxy", `{"name":"🇭🇳⚡Отель"}`, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("код %d: %s", rec.Code, rec.Body.String())
 	}
@@ -93,7 +93,7 @@ func TestNikkiSelectPinsNode(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("разбор: %v", err)
 	}
-	if got.Selected != "🇵🇱⚡Польша" || got.Fixed != "🇵🇱⚡Польша" || !got.Pinned {
+	if got.Selected != "🇭🇳⚡Отель" || got.Fixed != "🇭🇳⚡Отель" || !got.Pinned {
 		t.Errorf("после закрепления: %+v", got)
 	}
 }
@@ -106,7 +106,7 @@ func TestNikkiAutoUnpins(t *testing.T) {
 	fake := newFakeNikkiClient()
 	s.SetNikkiClient(fake)
 
-	if rec := post(t, s, "/api/nikki/proxy", `{"name":"🇵🇱⚡Польша"}`, ""); rec.Code != http.StatusOK {
+	if rec := post(t, s, "/api/nikki/proxy", `{"name":"🇭🇳⚡Отель"}`, ""); rec.Code != http.StatusOK {
 		t.Fatalf("закрепление: %d", rec.Code)
 	}
 	rec := post(t, s, "/api/nikki/proxy", `{"name":"AUTO"}`, "")
@@ -175,7 +175,7 @@ func TestStatusCarriesNikkiNode(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("разбор: %v", err)
 	}
-	if !got.Nikki.Available || got.Nikki.Set != "🇨🇭⚡Швейцария 2" {
+	if !got.Nikki.Available || got.Nikki.Set != "🇨🇻⚡Чарли 2" {
 		t.Errorf("nikki в статусе: %+v", got.Nikki)
 	}
 }
@@ -367,11 +367,11 @@ func withManifest(s *Server, entries []happ.Entry) {
 // подписки, и его место — в хвосте списка, а не в небытии.
 func subManifest() []happ.Entry {
 	return []happ.Entry{
-		{Name: "Авто | Лучший сервер", Kind: happ.KindAuto},
-		{Name: "🇨🇭⚡Швейцария 2", Kind: happ.KindNode, Type: "vless"},
+		{Name: "Авто | Быстрый узел", Kind: happ.KindAuto},
+		{Name: "🇨🇻⚡Чарли 2", Kind: happ.KindNode, Type: "vless"},
 		{Name: "⬇️ Обходы белых списков ⬇️", Kind: happ.KindSeparator},
-		{Name: "🇵🇱⚡Польша", Kind: happ.KindNode, Type: "vless"},
-		{Name: "🇷🇺 Россия (wl)", Kind: happ.KindUnsupported,
+		{Name: "🇭🇳⚡Отель", Kind: happ.KindNode, Type: "vless"},
+		{Name: "🇦🇬 Альфа (wl)", Kind: happ.KindUnsupported,
 			Reason: "транспорт xhttp выключен настройкой"},
 	}
 }
@@ -408,11 +408,11 @@ func TestNikkiProxiesFollowManifestOrder(t *testing.T) {
 	got := membersOf(t, do(t, s, "GET", "/api/nikki/proxies", true))
 
 	want := []struct{ name, kind string }{
-		{"Авто | Лучший сервер", "auto"},
-		{"🇨🇭⚡Швейцария 2", "node"},
+		{"Авто | Быстрый узел", "auto"},
+		{"🇨🇻⚡Чарли 2", "node"},
 		{"⬇️ Обходы белых списков ⬇️", "separator"},
-		{"🇵🇱⚡Польша", "node"},
-		{"🇷🇺 Россия (wl)", "unsupported"},
+		{"🇭🇳⚡Отель", "node"},
+		{"🇦🇬 Альфа (wl)", "unsupported"},
 		// Живой участник мимо манифеста — в хвост, а не в небытие: молча
 		// выброшенный узел неотличим от узла, которого больше нет.
 		{"мёртвый", "node"},
@@ -441,8 +441,8 @@ func TestNikkiProxiesFollowManifestOrder(t *testing.T) {
 func TestNikkiSelectRejectsNonNodeRows(t *testing.T) {
 	for _, name := range []string{
 		"⬇️ Обходы белых списков ⬇️", // separator
-		"Авто | Лучший сервер",       // auto
-		"🇷🇺 Россия (wl)",             // unsupported
+		"Авто | Быстрый узел",        // auto
+		"🇦🇬 Альфа (wl)",              // unsupported
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, _ := newServer(t)
@@ -474,7 +474,7 @@ func TestNikkiAutoStillWorksWithManifest(t *testing.T) {
 	s, _ := newServer(t)
 	withManifest(s, subManifest())
 
-	if rec := post(t, s, "/api/nikki/proxy", `{"name":"🇵🇱⚡Польша"}`, ""); rec.Code != http.StatusOK {
+	if rec := post(t, s, "/api/nikki/proxy", `{"name":"🇭🇳⚡Отель"}`, ""); rec.Code != http.StatusOK {
 		t.Fatalf("закрепление узла: код %d: %s", rec.Code, rec.Body.String())
 	}
 	rec := post(t, s, "/api/nikki/proxy", `{"name":"AUTO"}`, "")
@@ -533,12 +533,12 @@ func TestNikkiTestProbesOnlyNodes(t *testing.T) {
 	for _, n := range f.delayed {
 		probed[n] = true
 	}
-	for _, n := range []string{"Авто | Лучший сервер", "⬇️ Обходы белых списков ⬇️", "🇷🇺 Россия (wl)"} {
+	for _, n := range []string{"Авто | Быстрый узел", "⬇️ Обходы белых списков ⬇️", "🇦🇬 Альфа (wl)"} {
 		if probed[n] {
 			t.Errorf("строка %q опрошена как узел", n)
 		}
 	}
-	for _, n := range []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2", "мёртвый"} {
+	for _, n := range []string{"🇭🇳⚡Отель", "🇨🇻⚡Чарли 2", "мёртвый"} {
 		if !probed[n] {
 			t.Errorf("узел %q не опрошен", n)
 		}
@@ -553,7 +553,7 @@ func TestNikkiWithoutManifestBehavesAsBefore(t *testing.T) {
 
 	// Список — в порядке mihomo, все строки node, ни одного отсева.
 	got := membersOf(t, do(t, s, "GET", "/api/nikki/proxies", true))
-	want := []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2", "мёртвый"}
+	want := []string{"🇭🇳⚡Отель", "🇨🇻⚡Чарли 2", "мёртвый"}
 	if len(got) != len(want) {
 		t.Fatalf("строк %d, ожидалось %d: %+v", len(got), len(want), got)
 	}

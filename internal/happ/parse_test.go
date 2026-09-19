@@ -34,7 +34,7 @@ func TestParseKeepsProviderOrder(t *testing.T) {
 
 	// Порядок — главная ценность разбора: Clash API отдаёт узлы объектом
 	// и восстановить авторскую раскладку потом неоткуда.
-	if got, want := entries[0].Name, "🇪🇺 🚀Авто | Лучший сервер ⚡⚡"; got != want {
+	if got, want := entries[0].Name, "🇦🇶 🚀Авто | Быстрый узел ⚡⚡"; got != want {
 		t.Errorf("первая запись %q, ожидалась %q", got, want)
 	}
 	if entries[0].Kind != KindAuto {
@@ -43,7 +43,7 @@ func TestParseKeepsProviderOrder(t *testing.T) {
 	if got, want := entries[24].Name, "⬇️ Обходы белых списков ⬇️"; got != want {
 		t.Errorf("запись 25 %q, ожидался разделитель %q", got, want)
 	}
-	if got, want := entries[29].Name, "🇨🇭⚪Швейцария (БС-2)☁️"; got != want {
+	if got, want := entries[29].Name, "🇨🇻⚪Чарли (РЦ-2)☁️"; got != want {
 		t.Errorf("последняя запись %q, ожидалась %q", got, want)
 	}
 }
@@ -137,7 +137,7 @@ func TestParsePicksWhitelistOutbound(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 
-	// «🇨🇭⚪Швейцария (БС-1)☁️»: decoy на 203.0.113.14, wl на 203.0.113.15.
+	// «🇨🇻⚪Чарли (РЦ-1)☁️»: decoy на 203.0.113.14, wl на 203.0.113.15.
 	e := entries[28]
 	if e.Kind != KindNode {
 		t.Fatalf("запись 29 имеет вид %q, ожидался узел", e.Kind)
@@ -171,7 +171,7 @@ func TestSeparatorNeedsTwin(t *testing.T) {
 
 	t.Run("копия соседа становится разделителем", func(t *testing.T) {
 		raw := []byte("[" +
-			node("🇩🇪Германия", "203.0.113.1") + "," +
+			node("🇧🇧Браво", "203.0.113.1") + "," +
 			node("⬇️ Заголовок ⬇️", "203.0.113.1") + "]")
 
 		entries, err := Parse(raw)
@@ -193,7 +193,7 @@ func TestSeparatorNeedsTwin(t *testing.T) {
 
 	t.Run("уникальный узел без флага остаётся узлом", func(t *testing.T) {
 		raw := []byte("[" +
-			node("🇩🇪Германия", "203.0.113.1") + "," +
+			node("🇧🇧Браво", "203.0.113.1") + "," +
 			node("Резервный сервер", "203.0.113.2") + "]")
 
 		entries, err := Parse(raw)
@@ -214,7 +214,7 @@ func TestSeparatorNeedsTwin(t *testing.T) {
 		// есть ПОСЛЕ него: односторонний поиск заголовок пропустил бы.
 		raw := []byte("[" +
 			node("⬇️ Заголовок ⬇️", "203.0.113.1") + "," +
-			node("🇩🇪Германия", "203.0.113.1") + "]")
+			node("🇧🇧Браво", "203.0.113.1") + "]")
 
 		entries, err := Parse(raw)
 		if err != nil {
@@ -244,15 +244,15 @@ func TestParseDedupesNames(t *testing.T) {
 	}
 
 	raw := []byte("[" +
-		node("🇩🇪Германия", "203.0.113.1") + "," +
-		node("🇩🇪Германия", "203.0.113.2") + "," +
-		node("🇩🇪Германия", "203.0.113.3") + "]")
+		node("🇧🇧Браво", "203.0.113.1") + "," +
+		node("🇧🇧Браво", "203.0.113.2") + "," +
+		node("🇧🇧Браво", "203.0.113.3") + "]")
 
 	entries, err := Parse(raw)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	want := []string{"🇩🇪Германия", "🇩🇪Германия (2)", "🇩🇪Германия (3)"}
+	want := []string{"🇧🇧Браво", "🇧🇧Браво (2)", "🇧🇧Браво (3)"}
 	for i, w := range want {
 		if entries[i].Name != w {
 			t.Errorf("имя записи %d — %q, ожидалось %q", i, entries[i].Name, w)
@@ -304,7 +304,7 @@ func TestParseErrors(t *testing.T) {
 // не отказ разбора, а факт про подписку. Вызывающий узнаёт о нём из
 // Summary и показывает владельцу список с причинами, а не пустую панель.
 func TestParseZeroNodesIsNotAnError(t *testing.T) {
-	raw := []byte(`[{"remarks": "🇩🇪Германия", "outbounds": [
+	raw := []byte(`[{"remarks": "🇧🇧Браво", "outbounds": [
 		{"tag": "proxy", "protocol": "vmess", "settings": {}, "streamSettings": {}}]}]`)
 
 	entries, err := Parse(raw)
@@ -323,8 +323,8 @@ func TestParseZeroNodesIsNotAnError(t *testing.T) {
 // Владельцу полезнее список с одной строкой-объяснением, чем пустая панель.
 func TestParseSurvivesBrokenRecord(t *testing.T) {
 	raw := []byte(`[
-		{"remarks": "🇩🇪Германия", "outbounds": "не объект"},
-		{"remarks": "🇭🇺Венгрия", "outbounds": [{
+		{"remarks": "🇧🇧Браво", "outbounds": "не объект"},
+		{"remarks": "🇱🇨Лима", "outbounds": [{
 			"tag": "proxy", "protocol": "hysteria",
 			"settings": {"address": "203.0.113.1", "port": 8449, "version": 2},
 			"streamSettings": {"network": "hysteria",
@@ -339,7 +339,7 @@ func TestParseSurvivesBrokenRecord(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("записей %d, ожидалось 2", len(entries))
 	}
-	if entries[0].Kind != KindUnsupported || entries[0].Name != "🇩🇪Германия" {
+	if entries[0].Kind != KindUnsupported || entries[0].Name != "🇧🇧Браво" {
 		t.Errorf("кривая запись разобрана как %+v", entries[0])
 	}
 	if entries[1].Kind != KindNode {
@@ -351,12 +351,12 @@ func TestHasFlagPrefix(t *testing.T) {
 	// Одиночный regional indicator рисуется буквой в рамке и флагом не
 	// является: проверять только первую руну нельзя.
 	cases := map[string]bool{
-		"🇩🇪⚡Германия":                true,
-		"🇪🇺 🚀Авто | Лучший ⚡⚡":       true,
+		"🇧🇧⚡Браво":                   true,
+		"🇦🇶 🚀Авто | Лучший ⚡⚡":       true,
 		"⬇️ Обходы белых списков ⬇️": false,
 		"Резервный сервер":           false,
 		"":                           false,
-		"\U0001F1E9Германия":         false, // одна руна, не пара
+		"\U0001F1E9Браво":            false, // одна руна, не пара
 	}
 	for name, want := range cases {
 		if got := hasFlagPrefix(name); got != want {

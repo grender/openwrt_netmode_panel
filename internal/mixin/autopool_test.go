@@ -10,11 +10,11 @@ import (
 // с живого роутера: ровно на них проверяется экранирование и в регулярку,
 // и в YAML.
 const (
-	nodeRu   = "🇷🇺💳Россия"
-	nodeBS1  = "🇨🇭⚪Швейцария (БС-1)☁️"
-	nodeDE   = "🇩🇪⚡Германия"
-	nodeSep  = "⬇️ Обходы белых списков ⬇️"
-	nodeQuot = "узел с ' апострофом"
+	nodeAlfa  = "🇦🇬💳Альфа"
+	nodeRC1   = "🇨🇻⚪Чарли (РЦ-1)☁️"
+	nodeBravo = "🇧🇧⚡Браво"
+	nodeSep   = "⬇️ Обходы белых списков ⬇️"
+	nodeQuot  = "узел с ' апострофом"
 )
 
 func autoBodyOf(t *testing.T, c Config) string {
@@ -57,7 +57,7 @@ func TestAutoModeChoosesFilterKey(t *testing.T) {
 		{AutoProvider, "filter"},
 	} {
 		body := autoBodyOf(t, Config{Policy: PolicyDirect, Download: DownloadDirect,
-			Auto: AutoConfig{Mode: tt.mode, Nodes: []string{nodeDE}}})
+			Auto: AutoConfig{Mode: tt.mode, Nodes: []string{nodeBravo}}})
 		if !strings.Contains(body, "    "+tt.key+": ") {
 			t.Errorf("режим %q: в теле нет %q:\n%s", tt.mode, tt.key, body)
 		}
@@ -68,16 +68,16 @@ func TestAutoModeChoosesFilterKey(t *testing.T) {
 }
 
 // Имена уезжают в регулярку RE2. В них есть скобки и дефисы — без
-// QuoteMeta «(БС-1)» стала бы группой захвата, и фильтр поймал бы не тот
-// узел. Якоря обязательны: без них «Россия» совпала бы и с «Россия-2».
+// QuoteMeta «(РЦ-1)» стала бы группой захвата, и фильтр поймал бы не тот
+// узел. Якоря обязательны: без них «Альфа» совпала бы и с «Альфа-2».
 func TestAutoNamesAreQuotedAndAnchored(t *testing.T) {
 	body := autoBodyOf(t, Config{Policy: PolicyDirect, Download: DownloadDirect,
-		Auto: AutoConfig{Mode: AutoDeny, Nodes: []string{nodeRu, nodeBS1}}})
+		Auto: AutoConfig{Mode: AutoDeny, Nodes: []string{nodeAlfa, nodeRC1}}})
 
-	if strings.Contains(body, "(БС-1)") {
+	if strings.Contains(body, "(РЦ-1)") {
 		t.Errorf("скобки имени не экранированы — это группа захвата:\n%s", body)
 	}
-	if !strings.Contains(body, `\(БС-1\)`) {
+	if !strings.Contains(body, `\(РЦ-1\)`) {
 		t.Errorf("ожидалось экранирование скобок:\n%s", body)
 	}
 	if !strings.Contains(body, "'^(?:") || !strings.Contains(body, ")$'") {
@@ -110,9 +110,9 @@ func TestAutoNameWithQuoteSurvivesYAML(t *testing.T) {
 // percent-encoding списка не рвётся.
 func TestAutoRoundTrip(t *testing.T) {
 	for _, want := range []AutoConfig{
-		{Mode: AutoDeny, Nodes: []string{nodeRu, nodeBS1}},
-		{Mode: AutoAllow, Nodes: []string{nodeDE, nodeSep}},
-		{Mode: AutoProvider, Nodes: []string{nodeDE}},
+		{Mode: AutoDeny, Nodes: []string{nodeAlfa, nodeRC1}},
+		{Mode: AutoAllow, Nodes: []string{nodeBravo, nodeSep}},
+		{Mode: AutoProvider, Nodes: []string{nodeBravo}},
 	} {
 		c := Config{Policy: PolicyDirect, Download: DownloadDirect,
 			Sets: []Set{{Name: "youtube", Action: ActionTunnel}}, Auto: want}
@@ -155,7 +155,7 @@ func TestAutoEmptyModeEqualsDeny(t *testing.T) {
 // Render на PolicyProfile обязан выпускать тело авто-пула наружу.
 func TestAutoSurvivesProfilePolicy(t *testing.T) {
 	c := Config{Policy: PolicyProfile, Download: DownloadDirect,
-		Auto: AutoConfig{Mode: AutoAllow, Nodes: []string{nodeDE}}}
+		Auto: AutoConfig{Mode: AutoAllow, Nodes: []string{nodeBravo}}}
 
 	out := string(Render(c))
 	if !strings.Contains(out, "proxy-providers:") {
@@ -178,7 +178,7 @@ func TestAutoSurvivesProfilePolicy(t *testing.T) {
 // записи исчезла бы молча.
 func TestAutoBodyCountMismatchIsCorrupt(t *testing.T) {
 	c := Config{Policy: PolicyDirect, Download: DownloadDirect,
-		Auto: AutoConfig{Mode: AutoDeny, Nodes: []string{nodeRu}}}
+		Auto: AutoConfig{Mode: AutoDeny, Nodes: []string{nodeAlfa}}}
 	out := string(Render(c))
 
 	// Убираем строку фильтра, оставив состояние на месте.
@@ -215,9 +215,9 @@ func TestAutoValidateRejectsJunk(t *testing.T) {
 		name string
 		c    AutoConfig
 	}{
-		{"неизвестный режим", AutoConfig{Mode: "как-нибудь", Nodes: []string{nodeDE}}},
+		{"неизвестный режим", AutoConfig{Mode: "как-нибудь", Nodes: []string{nodeBravo}}},
 		{"пустое имя", AutoConfig{Mode: AutoAllow, Nodes: []string{""}}},
-		{"дубликат", AutoConfig{Mode: AutoAllow, Nodes: []string{nodeDE, nodeDE}}},
+		{"дубликат", AutoConfig{Mode: AutoAllow, Nodes: []string{nodeBravo, nodeBravo}}},
 		{"перевод строки", AutoConfig{Mode: AutoAllow, Nodes: []string{"узел\nещё"}}},
 	} {
 		if err := ValidateAuto(tt.c); err == nil {
@@ -233,7 +233,7 @@ func TestAutoFingerprintIsIndependent(t *testing.T) {
 	base := Config{Policy: PolicyDirect, Download: DownloadDirect,
 		Sets: []Set{{Name: "youtube", Action: ActionTunnel}}}
 	other := base
-	other.Auto = AutoConfig{Mode: AutoAllow, Nodes: []string{nodeDE}}
+	other.Auto = AutoConfig{Mode: AutoAllow, Nodes: []string{nodeBravo}}
 
 	if Fingerprint(base) != Fingerprint(other) {
 		t.Error("правка авто-пула сдвинула отпечаток наборов")
@@ -254,7 +254,7 @@ func TestAutoFieldAbsentWhenDefault(t *testing.T) {
 		t.Error("поле авто-пула пишется при умолчании — старый демон сломается на ровном месте")
 	}
 	withAuto := base
-	withAuto.Auto = AutoConfig{Mode: AutoAllow, Nodes: []string{nodeDE}}
+	withAuto.Auto = AutoConfig{Mode: AutoAllow, Nodes: []string{nodeBravo}}
 	if !strings.Contains(string(Render(withAuto)), autoStateField) {
 		t.Error("поле авто-пула не пишется — старый демон потеряет пул молча")
 	}

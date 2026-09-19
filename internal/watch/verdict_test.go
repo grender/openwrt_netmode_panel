@@ -68,7 +68,7 @@ func TestSilentNeedsAgeUploadAndDirect(t *testing.T) {
 	if got := base(func(c *nikki.Conn) { c.Download = 1 }); got != VerdictOK {
 		t.Errorf("ответ пришёл → %q", got)
 	}
-	if got := base(func(c *nikki.Conn) { c.Chains = []string{"🇫🇷⚡Франция", "PROXY", "BYPASS"} }); got != VerdictOK {
+	if got := base(func(c *nikki.Conn) { c.Chains = []string{"🇫🇯⚡Фокстрот", "PROXY", "BYPASS"} }); got != VerdictOK {
 		t.Errorf("то же самое через туннель → %q; там это значит другое и лечится другим", got)
 	}
 }
@@ -81,7 +81,7 @@ func TestSilentNeedsAgeUploadAndDirect(t *testing.T) {
 // этот случай по полю, а не искать квадратные скобки в имени узла.
 func TestUnreachableKeepsChainOfFailedDial(t *testing.T) {
 	tb := newTable()
-	ev, kind := ParseLine("[TCP] dial BYPASS[🇫🇷⚡Франция] (match RuleSet/nm-geosite-discord) " +
+	ev, kind := ParseLine("[TCP] dial BYPASS[🇫🇯⚡Фокстрот] (match RuleSet/nm-geosite-discord) " +
 		devIP + ":50440 --> 162.159.136.232:443 error: dial tcp 162.159.136.232:443: i/o timeout")
 	if kind != LineParsed {
 		t.Fatalf("строка не разобрана")
@@ -92,7 +92,7 @@ func TestUnreachableKeepsChainOfFailedDial(t *testing.T) {
 	if got.Verdict != VerdictUnreachable {
 		t.Fatalf("вердикт = %q", got.Verdict)
 	}
-	if got.ErrorChain != "BYPASS[🇫🇷⚡Франция]" {
+	if got.ErrorChain != "BYPASS[🇫🇯⚡Фокстрот]" {
 		t.Errorf("цепочка неудачи = %q", got.ErrorChain)
 	}
 	if got.LastError == "" || got.DialErrors != 1 {

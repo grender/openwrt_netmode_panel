@@ -16,11 +16,11 @@ func d(v int) *int { return &v }
 func liveFixture() map[string]nikki.Proxy {
 	return map[string]nikki.Proxy{
 		"PROXY": {Name: "PROXY", Type: "URLTest", Alive: true, Selectable: true,
-			Members: []string{"Польша", "Швейцария", "Германия"},
-			Now:     "Швейцария"},
-		"Польша":    {Name: "Польша", Type: "Vless", Alive: true, DelayMS: d(38)},
-		"Швейцария": {Name: "Швейцария", Type: "Vless", Alive: true, DelayMS: d(27)},
-		"Германия":  {Name: "Германия", Type: "Hysteria2", Alive: false, DelayMS: nil},
+			Members: []string{"Отель", "Чарли", "Браво"},
+			Now:     "Чарли"},
+		"Отель": {Name: "Отель", Type: "Vless", Alive: true, DelayMS: d(38)},
+		"Чарли": {Name: "Чарли", Type: "Vless", Alive: true, DelayMS: d(27)},
+		"Браво": {Name: "Браво", Type: "Hysteria2", Alive: false, DelayMS: nil},
 	}
 }
 
@@ -66,7 +66,7 @@ func TestOrderWithoutManifestFallsBackToLive(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := Order(liveFixture(), "PROXY", tt.manifest)
 
-			want := []string{"Польша", "Швейцария", "Германия"}
+			want := []string{"Отель", "Чарли", "Браво"}
 			if !eqStrings(names(got), want) {
 				t.Fatalf("порядок %v, ожидался %v", names(got), want)
 			}
@@ -90,20 +90,20 @@ func TestOrderWithoutManifestFallsBackToLive(t *testing.T) {
 // а живое состояние подмешивается только к узлам.
 func TestOrderFollowsManifest(t *testing.T) {
 	manifest := []happ.Entry{
-		{Name: "Авто | Лучший сервер", Kind: happ.KindAuto},
-		{Name: "Германия", Kind: happ.KindNode, Type: "hysteria2"},
-		{Name: "Польша", Kind: happ.KindNode, Type: "vless"},
+		{Name: "Авто | Быстрый узел", Kind: happ.KindAuto},
+		{Name: "Браво", Kind: happ.KindNode, Type: "hysteria2"},
+		{Name: "Отель", Kind: happ.KindNode, Type: "vless"},
 		{Name: "⬇️ Обходы белых списков ⬇️", Kind: happ.KindSeparator},
-		{Name: "Швейцария", Kind: happ.KindNode, Type: "vless"},
+		{Name: "Чарли", Kind: happ.KindNode, Type: "vless"},
 	}
 
 	got := Order(liveFixture(), "PROXY", manifest)
 
 	// Порядок манифеста, а НЕ порядок участников группы в mihomo:
-	// там Польша шла первой, а Германия последней.
+	// там Отель шла первой, а Браво последней.
 	want := []string{
-		"Авто | Лучший сервер", "Германия", "Польша",
-		"⬇️ Обходы белых списков ⬇️", "Швейцария",
+		"Авто | Быстрый узел", "Браво", "Отель",
+		"⬇️ Обходы белых списков ⬇️", "Чарли",
 	}
 	if !eqStrings(names(got), want) {
 		t.Fatalf("порядок %v, ожидался %v", names(got), want)
@@ -119,13 +119,13 @@ func TestOrderFollowsManifest(t *testing.T) {
 		}
 	}
 
-	// Германия жива=false и без задержки, Польша — с задержкой: живое
+	// Браво жива=false и без задержки, Отель — с задержкой: живое
 	// состояние приехало из mihomo, а не из манифеста.
 	if got[1].Alive || got[1].DelayMS != nil {
-		t.Errorf("Германия: %+v", got[1])
+		t.Errorf("Браво: %+v", got[1])
 	}
 	if got[2].DelayMS == nil || *got[2].DelayMS != 38 {
-		t.Errorf("Польша: %+v", got[2])
+		t.Errorf("Отель: %+v", got[2])
 	}
 }
 
@@ -139,9 +139,9 @@ func TestNonNodeRowsCarryNoLiveState(t *testing.T) {
 	// узел, — и подмешать сюда живое состояние значило бы показать
 	// заголовок подключаемым.
 	manifest := []happ.Entry{
-		{Name: "Польша", Kind: happ.KindSeparator},
-		{Name: "Авто | Лучший сервер", Kind: happ.KindAuto},
-		{Name: "Гонконг", Kind: happ.KindUnsupported, Reason: "транспорт tuic не поддержан"},
+		{Name: "Отель", Kind: happ.KindSeparator},
+		{Name: "Авто | Быстрый узел", Kind: happ.KindAuto},
+		{Name: "Униформ", Kind: happ.KindUnsupported, Reason: "транспорт tuic не поддержан"},
 	}
 
 	got := Order(live, "PROXY", manifest)
@@ -169,8 +169,8 @@ func TestNonNodeRowsCarryNoLiveState(t *testing.T) {
 // владелец пойдёт искать пропажу в подписке вместо движка.
 func TestNodeMissingInLiveStaysVisibleAsUnsupported(t *testing.T) {
 	manifest := []happ.Entry{
-		{Name: "Польша", Kind: happ.KindNode, Type: "vless"},
-		{Name: "Гонконг", Kind: happ.KindNode, Type: "tuic"},
+		{Name: "Отель", Kind: happ.KindNode, Type: "vless"},
+		{Name: "Униформ", Kind: happ.KindNode, Type: "tuic"},
 	}
 
 	got := Order(liveFixture(), "PROXY", manifest)
@@ -179,7 +179,7 @@ func TestNodeMissingInLiveStaysVisibleAsUnsupported(t *testing.T) {
 		t.Fatalf("строк %d: %v", len(got), names(got))
 	}
 	hk := got[1]
-	if hk.Name != "Гонконг" {
+	if hk.Name != "Униформ" {
 		t.Fatalf("пропавший узел выпал из списка: %v", names(got))
 	}
 	if hk.Kind != happ.KindUnsupported {
@@ -203,13 +203,13 @@ func TestNodeMissingInLiveStaysVisibleAsUnsupported(t *testing.T) {
 func TestLiveMembersMissingFromManifestGoLast(t *testing.T) {
 	manifest := []happ.Entry{
 		{Name: "⬇️ Обходы ⬇️", Kind: happ.KindSeparator},
-		{Name: "Швейцария", Kind: happ.KindNode, Type: "vless"},
+		{Name: "Чарли", Kind: happ.KindNode, Type: "vless"},
 	}
 
 	got := Order(liveFixture(), "PROXY", manifest)
 
-	// Хвост идёт в порядке mihomo (Польша, потом Германия), а не по алфавиту.
-	want := []string{"⬇️ Обходы ⬇️", "Швейцария", "Польша", "Германия"}
+	// Хвост идёт в порядке mihomo (Отель, потом Браво), а не по алфавиту.
+	want := []string{"⬇️ Обходы ⬇️", "Чарли", "Отель", "Браво"}
 	if !eqStrings(names(got), want) {
 		t.Fatalf("порядок %v, ожидался %v", names(got), want)
 	}
@@ -231,15 +231,15 @@ func TestLiveMembersMissingFromManifestGoLast(t *testing.T) {
 // не выбирает, а выглядит как ещё один сервер.
 func TestDuplicateNamesCollapseToFirst(t *testing.T) {
 	manifest := []happ.Entry{
-		{Name: "Польша", Kind: happ.KindNode, Type: "vless"},
+		{Name: "Отель", Kind: happ.KindNode, Type: "vless"},
 		{Name: "⬇️ Обходы ⬇️", Kind: happ.KindSeparator},
-		{Name: "Польша", Kind: happ.KindSeparator}, // копия под заголовком
-		{Name: "Швейцария", Kind: happ.KindNode, Type: "vless"},
+		{Name: "Отель", Kind: happ.KindSeparator}, // копия под заголовком
+		{Name: "Чарли", Kind: happ.KindNode, Type: "vless"},
 	}
 
 	got := Order(liveFixture(), "PROXY", manifest)
 
-	want := []string{"Польша", "⬇️ Обходы ⬇️", "Швейцария", "Германия"}
+	want := []string{"Отель", "⬇️ Обходы ⬇️", "Чарли", "Браво"}
 	if !eqStrings(names(got), want) {
 		t.Fatalf("порядок %v, ожидался %v", names(got), want)
 	}
@@ -254,8 +254,8 @@ func TestDuplicateNamesCollapseToFirst(t *testing.T) {
 // пустая панель неотличима от «подписка не скачалась».
 func TestEmptyLiveDoesNotPanic(t *testing.T) {
 	manifest := []happ.Entry{
-		{Name: "Авто | Лучший сервер", Kind: happ.KindAuto},
-		{Name: "Польша", Kind: happ.KindNode, Type: "vless"},
+		{Name: "Авто | Быстрый узел", Kind: happ.KindAuto},
+		{Name: "Отель", Kind: happ.KindNode, Type: "vless"},
 	}
 
 	for _, live := range []map[string]nikki.Proxy{nil, {}} {
@@ -282,13 +282,13 @@ func TestEmptyLiveDoesNotPanic(t *testing.T) {
 // этом остаётся единственным источником списка, и дописывать в хвост нечего.
 func TestUnknownGroupKeepsManifest(t *testing.T) {
 	manifest := []happ.Entry{
-		{Name: "Польша", Kind: happ.KindNode, Type: "vless"},
+		{Name: "Отель", Kind: happ.KindNode, Type: "vless"},
 		{Name: "⬇️ Обходы ⬇️", Kind: happ.KindSeparator},
 	}
 
 	got := Order(liveFixture(), "НЕТТАКОЙ", manifest)
 
-	want := []string{"Польша", "⬇️ Обходы ⬇️"}
+	want := []string{"Отель", "⬇️ Обходы ⬇️"}
 	if !eqStrings(names(got), want) {
 		t.Fatalf("порядок %v, ожидался %v", names(got), want)
 	}
@@ -313,11 +313,11 @@ func TestUnknownGroupKeepsManifest(t *testing.T) {
 // которая не работает, без объяснения.
 func TestNodeOutsideGroupIsNotSelectable(t *testing.T) {
 	live := liveFixture()
-	// Группа знает всех, кроме Польши; сама Польша при этом жива.
+	// Группа знает всех, кроме Отеля; сам Отель при этом жив.
 	g := live["PROXY"]
 	var members []string
 	for _, m := range g.Members {
-		if m != "Польша" {
+		if m != "Отель" {
 			members = append(members, m)
 		}
 	}
@@ -325,8 +325,8 @@ func TestNodeOutsideGroupIsNotSelectable(t *testing.T) {
 	live["PROXY"] = g
 
 	manifest := []happ.Entry{
-		{Name: "Польша", Kind: happ.KindNode, Type: "vless"},
-		{Name: "Германия", Kind: happ.KindNode, Type: "vless"},
+		{Name: "Отель", Kind: happ.KindNode, Type: "vless"},
+		{Name: "Браво", Kind: happ.KindNode, Type: "vless"},
 	}
 	got := Order(live, "PROXY", manifest)
 	// Третья строка — участник группы, которого нет в манифесте: он
@@ -334,10 +334,10 @@ func TestNodeOutsideGroupIsNotSelectable(t *testing.T) {
 	if len(got) < 2 {
 		t.Fatalf("строк %d, ожидалось не меньше 2: %+v", len(got), got)
 	}
-	if got[0].Name != "Польша" || got[0].Kind != happ.KindUnsupported || got[0].Reason != reasonNotInGroup {
-		t.Errorf("Польша вне группы должна быть unsupported с причиной о группе: %+v", got[0])
+	if got[0].Name != "Отель" || got[0].Kind != happ.KindUnsupported || got[0].Reason != reasonNotInGroup {
+		t.Errorf("Отель вне группы должна быть unsupported с причиной о группе: %+v", got[0])
 	}
-	if got[1].Name != "Германия" || got[1].Kind != happ.KindNode {
-		t.Errorf("Германия в группе должна остаться узлом: %+v", got[1])
+	if got[1].Name != "Браво" || got[1].Kind != happ.KindNode {
+		t.Errorf("Браво в группе должна остаться узлом: %+v", got[1])
 	}
 }

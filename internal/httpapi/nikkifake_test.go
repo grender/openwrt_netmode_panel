@@ -70,13 +70,13 @@ func newFakeNikkiClient() *fakeNikkiClient {
 	d := func(v int) *int { return &v }
 	return &fakeNikkiClient{all: map[string]nikki.Proxy{
 		"PROXY": {Name: "PROXY", Type: "URLTest", Alive: true,
-			Members: []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2", "мёртвый"},
-			Now:     "🇨🇭⚡Швейцария 2", Selectable: true},
+			Members: []string{"🇭🇳⚡Отель", "🇨🇻⚡Чарли 2", "мёртвый"},
+			Now:     "🇨🇻⚡Чарли 2", Selectable: true},
 		"GLOBAL": {Name: "GLOBAL", Type: "Selector", Alive: true,
 			Members: []string{"DIRECT", "PROXY"}, Now: "DIRECT", Selectable: true},
-		"🇵🇱⚡Польша":      {Name: "🇵🇱⚡Польша", Type: "Vless", Alive: true, DelayMS: d(38)},
-		"🇨🇭⚡Швейцария 2": {Name: "🇨🇭⚡Швейцария 2", Type: "Vless", Alive: true, DelayMS: d(27)},
-		"мёртвый":        {Name: "мёртвый", Type: "Vless", Alive: false, DelayMS: nil},
+		"🇭🇳⚡Отель":   {Name: "🇭🇳⚡Отель", Type: "Vless", Alive: true, DelayMS: d(38)},
+		"🇨🇻⚡Чарли 2": {Name: "🇨🇻⚡Чарли 2", Type: "Vless", Alive: true, DelayMS: d(27)},
+		"мёртвый":    {Name: "мёртвый", Type: "Vless", Alive: false, DelayMS: nil},
 	}}
 }
 
@@ -133,11 +133,11 @@ func newFakeNikkiSelectorClient() *fakeNikkiClient {
 	d := func(v int) *int { return &v }
 	return &fakeNikkiClient{all: map[string]nikki.Proxy{
 		"PROXY": {Name: "PROXY", Type: "Selector", Alive: true,
-			Members: []string{"AUTO", "🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2", "мёртвый"},
+			Members: []string{"AUTO", "🇭🇳⚡Отель", "🇨🇻⚡Чарли 2", "мёртвый"},
 			Now:     "AUTO", Selectable: true},
 		"AUTO": {Name: "AUTO", Type: "URLTest", Alive: true,
-			Members: []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2"},
-			Now:     "🇨🇭⚡Швейцария 2", Selectable: true},
+			Members: []string{"🇭🇳⚡Отель", "🇨🇻⚡Чарли 2"},
+			Now:     "🇨🇻⚡Чарли 2", Selectable: true},
 		// BYPASS в новую раскладку входит наравне с AUTO: наборы целятся
 		// именно в него. Без него проверка «наборы применились» упёрлась
 		// бы в group_missing раньше, чем дошла до сути.
@@ -145,9 +145,9 @@ func newFakeNikkiSelectorClient() *fakeNikkiClient {
 			Members: []string{"PROXY", "REJECT"}, Now: "PROXY", Selectable: true},
 		"GLOBAL": {Name: "GLOBAL", Type: "Selector", Alive: true,
 			Members: []string{"DIRECT", "PROXY"}, Now: "DIRECT", Selectable: true},
-		"🇵🇱⚡Польша":      {Name: "🇵🇱⚡Польша", Type: "Vless", Alive: true, DelayMS: d(38)},
-		"🇨🇭⚡Швейцария 2": {Name: "🇨🇭⚡Швейцария 2", Type: "Vless", Alive: true, DelayMS: d(27)},
-		"мёртвый":        {Name: "мёртвый", Type: "Vless", Alive: false, DelayMS: nil},
+		"🇭🇳⚡Отель":   {Name: "🇭🇳⚡Отель", Type: "Vless", Alive: true, DelayMS: d(38)},
+		"🇨🇻⚡Чарли 2": {Name: "🇨🇻⚡Чарли 2", Type: "Vless", Alive: true, DelayMS: d(27)},
+		"мёртвый":    {Name: "мёртвый", Type: "Vless", Alive: false, DelayMS: nil},
 	}}
 }
 
@@ -296,7 +296,7 @@ func (f *fakeNikkiClient) Unfix(_ context.Context, group string) error {
 		return nikki.ErrNotSelectable
 	}
 	g.Fixed, g.Pinned = "", false
-	g.Now = "🇨🇭⚡Швейцария 2" // движок снова выбирает сам
+	g.Now = "🇨🇻⚡Чарли 2" // движок снова выбирает сам
 	f.all[group] = g
 	return nil
 }

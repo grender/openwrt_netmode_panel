@@ -212,7 +212,7 @@ func TestProxiesFromRealFixture(t *testing.T) {
 	if !proxy.IsGroup() || len(proxy.Members) != 29 {
 		t.Errorf("участников %d, ожидалось 29", len(proxy.Members))
 	}
-	if proxy.Now != "🇨🇭⚡Швейцария 2" {
+	if proxy.Now != "🇨🇻⚡Чарли 2" {
 		t.Errorf("now = %q", proxy.Now)
 	}
 
@@ -321,13 +321,13 @@ func TestSelectWorksOnURLTest(t *testing.T) {
 	f, c, done := newClient(t, "118296")
 	defer done()
 
-	if err := c.Select(context.Background(), "PROXY", "🇵🇱⚡Польша"); err != nil {
+	if err := c.Select(context.Background(), "PROXY", "🇭🇳⚡Отель"); err != nil {
 		t.Fatalf("Select у URLTest: %v", err)
 	}
 	if f.lastPUT != "/proxies/PROXY" {
 		t.Errorf("PUT ушёл на %q", f.lastPUT)
 	}
-	if !strings.Contains(f.lastBody, "Польша") {
+	if !strings.Contains(f.lastBody, "Отель") {
 		t.Errorf("тело PUT = %q", f.lastBody)
 	}
 }
@@ -646,14 +646,14 @@ func TestProviderProxiesParsesNames(t *testing.T) {
 	f, c, done := newClient(t, "118296")
 	defer done()
 	f.providerBody = `{"name":"sub","type":"Proxy","vehicleType":"File",
-	  "proxies":[{"name":"🇩🇪⚡Германия","type":"Vless"},{"name":"🇵🇱⚡Польша","type":"Vless"}],
+	  "proxies":[{"name":"🇧🇧⚡Браво","type":"Vless"},{"name":"🇭🇳⚡Отель","type":"Vless"}],
 	  "updatedAt":"2026-09-06T10:00:00Z"}`
 
 	names, err := c.ProviderProxies(context.Background(), "sub")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(names) != 2 || names[0] != "🇩🇪⚡Германия" || names[1] != "🇵🇱⚡Польша" {
+	if len(names) != 2 || names[0] != "🇧🇧⚡Браво" || names[1] != "🇭🇳⚡Отель" {
 		t.Fatalf("имена: %v", names)
 	}
 }
@@ -725,11 +725,11 @@ func TestRuleProvidersDistinguishesDownloadedFromNever(t *testing.T) {
 // /proxies нельзя: у провайдерской копии нет ни now, ни fixed.
 const providerShapeBody = `{"providers":{
   "sub": {"name":"sub","vehicleType":"File","proxies":[
-    {"name":"Польша","type":"Vless","alive":true,"history":[{"time":"2026-09-19T14:34:33Z","delay":41}]},
-    {"name":"Швейцария","type":"Vless","alive":false,"history":[{"time":"2026-09-19T14:34:33Z","delay":0}]}
+    {"name":"Отель","type":"Vless","alive":true,"history":[{"time":"2026-09-19T14:34:33Z","delay":41}]},
+    {"name":"Чарли","type":"Vless","alive":false,"history":[{"time":"2026-09-19T14:34:33Z","delay":0}]}
   ]},
   "BYPASS": {"name":"BYPASS","vehicleType":"Compatible","proxies":[
-    {"name":"PROXY","type":"URLTest","alive":true,"all":["Польша"]},
+    {"name":"PROXY","type":"URLTest","alive":true,"all":["Отель"]},
     {"name":"REJECT","type":"Reject","alive":true}
   ]}
 }}`
@@ -745,7 +745,7 @@ func TestProxiesPicksUpProviderNodes(t *testing.T) {
 	f, c, done := newClient(t, "118296")
 	defer done()
 	f.body = `{"proxies":{
-	  "PROXY":{"name":"PROXY","type":"URLTest","alive":true,"now":"Польша","all":["Польша","Швейцария"]},
+	  "PROXY":{"name":"PROXY","type":"URLTest","alive":true,"now":"Отель","all":["Отель","Чарли"]},
 	  "DIRECT":{"name":"DIRECT","type":"Direct","alive":true}
 	}}`
 	f.providersBody = providerShapeBody
@@ -755,7 +755,7 @@ func TestProxiesPicksUpProviderNodes(t *testing.T) {
 		t.Fatalf("Proxies: %v", err)
 	}
 
-	for _, name := range []string{"Польша", "Швейцария"} {
+	for _, name := range []string{"Отель", "Чарли"} {
 		p, ok := all[name]
 		if !ok {
 			t.Fatalf("узел провайдера %q не доехал: есть только %v", name, keysOf(all))
@@ -764,14 +764,14 @@ func TestProxiesPicksUpProviderNodes(t *testing.T) {
 			t.Errorf("узел %q приехал группой: %+v", name, p)
 		}
 	}
-	// Живое состояние берётся у движка, а не выдумывается: у Польши проба
-	// прошла, у Швейцарии в истории 0 — то есть пробы не было, и наружу
+	// Живое состояние берётся у движка, а не выдумывается: у Отеля проба
+	// прошла, у Чарли в истории 0 — то есть пробы не было, и наружу
 	// это обязано уходить как nil, а не как ноль миллисекунд.
-	if pl := all["Польша"]; !pl.Alive || pl.DelayMS == nil || *pl.DelayMS != 41 {
-		t.Errorf("Польша = %+v, ожидались alive и 41 мс", pl)
+	if ho := all["Отель"]; !ho.Alive || ho.DelayMS == nil || *ho.DelayMS != 41 {
+		t.Errorf("Отель = %+v, ожидались alive и 41 мс", ho)
 	}
-	if sw := all["Швейцария"]; sw.Alive || sw.DelayMS != nil {
-		t.Errorf("Швейцария = %+v, ожидались мёртвый узел и nil задержки", sw)
+	if ch := all["Чарли"]; ch.Alive || ch.DelayMS != nil {
+		t.Errorf("Чарли = %+v, ожидались мёртвый узел и nil задержки", ch)
 	}
 	// Ради этого всё и делалось: участники группы теперь разворачиваются.
 	if ms := Members(all, "PROXY"); len(ms) != 2 {
@@ -787,7 +787,7 @@ func TestProviderCopiesNeverOverwriteGroups(t *testing.T) {
 	f, c, done := newClient(t, "118296")
 	defer done()
 	f.body = `{"proxies":{
-	  "PROXY":{"name":"PROXY","type":"URLTest","alive":true,"now":"Польша","fixed":"Польша","all":["Польша"]},
+	  "PROXY":{"name":"PROXY","type":"URLTest","alive":true,"now":"Отель","fixed":"Отель","all":["Отель"]},
 	  "REJECT":{"name":"REJECT","type":"Reject","alive":true}
 	}}`
 	f.providersBody = providerShapeBody
@@ -798,7 +798,7 @@ func TestProviderCopiesNeverOverwriteGroups(t *testing.T) {
 	}
 
 	g := all["PROXY"]
-	if g.Now != "Польша" || g.Fixed != "Польша" || !g.Pinned {
+	if g.Now != "Отель" || g.Fixed != "Отель" || !g.Pinned {
 		t.Errorf("группу затёрло провайдерской копией: %+v", g)
 	}
 	if len(g.Members) != 1 {

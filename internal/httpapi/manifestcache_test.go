@@ -13,13 +13,13 @@ import (
 )
 
 // twoNodes — подписка из двух узлов в порядке, ОБРАТНОМ порядку группы в
-// подделке mihomo (там Польша первая). Иначе тест был бы зелёным и при
+// подделке mihomo (там Отель первая). Иначе тест был бы зелёным и при
 // полностью проигнорированном манифесте.
 const twoNodes = `[
-  {"remarks":"🇨🇭⚡Швейцария 2","outbounds":[{"tag":"proxy","protocol":"vless",
+  {"remarks":"🇨🇻⚡Чарли 2","outbounds":[{"tag":"proxy","protocol":"vless",
     "settings":{"vnext":[{"address":"203.0.113.2","port":443,"users":[{"id":"00000000-0000-0000-0000-000000000002","flow":"xtls-rprx-vision"}]}]},
     "streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"a.example","publicKey":"pk2","shortId":"02","fingerprint":"chrome"}}}]},
-  {"remarks":"🇵🇱⚡Польша","outbounds":[{"tag":"proxy","protocol":"vless",
+  {"remarks":"🇭🇳⚡Отель","outbounds":[{"tag":"proxy","protocol":"vless",
     "settings":{"vnext":[{"address":"203.0.113.1","port":443,"users":[{"id":"00000000-0000-0000-0000-000000000001","flow":"xtls-rprx-vision"}]}]},
     "streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"b.example","publicKey":"pk1","shortId":"01","fingerprint":"chrome"}}}]}
 ]`
@@ -79,7 +79,7 @@ func TestSubscriptionUpdateRefreshesManifestCache(t *testing.T) {
 			t.Fatalf("код %d: %s", rec.Code, rec.Body.String())
 		}
 		rows := membersOf(t, rec)
-		if len(rows) < 2 || rows[0].Name != "🇨🇭⚡Швейцария 2" || rows[1].Name != "🇵🇱⚡Польша" {
+		if len(rows) < 2 || rows[0].Name != "🇨🇻⚡Чарли 2" || rows[1].Name != "🇭🇳⚡Отель" {
 			t.Fatalf("порядок пришёл не из манифеста: %+v", rows)
 		}
 		for _, r := range rows[:2] {
@@ -100,7 +100,7 @@ func TestSubscriptionUpdateRefreshesManifestCache(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "записаны") {
 			t.Fatalf("ожидался отказ с оговоркой «файлы записаны», получено %v", err)
 		}
-		if got := s.manifestEntries(); len(got) != 2 || got[0].Name != "🇨🇭⚡Швейцария 2" {
+		if got := s.manifestEntries(); len(got) != 2 || got[0].Name != "🇨🇻⚡Чарли 2" {
 			t.Fatalf("кэш не перечитан после частичного отказа: %+v", got)
 		}
 	})
@@ -112,15 +112,15 @@ func TestSubscriptionUpdateRefreshesManifestCache(t *testing.T) {
 func TestEntryKindFirstWins(t *testing.T) {
 	s, _ := newServer(t)
 	withManifest(s, []happ.Entry{
-		{Name: "🇵🇱⚡Польша", Kind: happ.KindNode, Type: "vless"},
-		{Name: "🇵🇱⚡Польша", Kind: happ.KindSeparator},
+		{Name: "🇭🇳⚡Отель", Kind: happ.KindNode, Type: "vless"},
+		{Name: "🇭🇳⚡Отель", Kind: happ.KindSeparator},
 	})
 
 	rec := do(t, s, "GET", "/api/nikki/proxies", true)
 	rows := membersOf(t, rec)
 	seen := 0
 	for _, r := range rows {
-		if r.Name == "🇵🇱⚡Польша" {
+		if r.Name == "🇭🇳⚡Отель" {
 			seen++
 			if r.Kind != string(happ.KindNode) {
 				t.Errorf("первая запись — узел, получен вид %q", r.Kind)
@@ -131,7 +131,7 @@ func TestEntryKindFirstWins(t *testing.T) {
 		t.Fatalf("строка должна быть ровно одна, получено %d", seen)
 	}
 
-	req := httptest.NewRequest("POST", "/api/nikki/proxy", strings.NewReader(`{"name":"🇵🇱⚡Польша"}`))
+	req := httptest.NewRequest("POST", "/api/nikki/proxy", strings.NewReader(`{"name":"🇭🇳⚡Отель"}`))
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()

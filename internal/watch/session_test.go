@@ -286,7 +286,7 @@ func TestFeedIgnoresOtherDevices(t *testing.T) {
 	now := t0
 	s := newSession(&fakeSource{}, &now, nil)
 	s.feed(nikki.LogLine{Type: "info",
-		Payload: "[TCP] 192.168.0.234:37984 --> api.anthropic.com:443 match RuleSet(nm-geosite-anthropic) using BYPASS[🇫🇷⚡Франция]"}, now)
+		Payload: "[TCP] 192.168.0.234:37984 --> api.anthropic.com:443 match RuleSet(nm-geosite-anthropic) using BYPASS[🇫🇯⚡Фокстрот]"}, now)
 
 	st := s.State()
 	if len(st.Targets) != 0 {

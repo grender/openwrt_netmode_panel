@@ -42,7 +42,7 @@ func TestDelayReadsMeasuredShape(t *testing.T) {
 	srv := httptest.NewServer(d)
 	defer srv.Close()
 
-	got, err := New(srv.URL, "sec").Delay(context.Background(), "🇵🇱⚡Польша")
+	got, err := New(srv.URL, "sec").Delay(context.Background(), "🇭🇳⚡Отель")
 	if err != nil {
 		t.Fatalf("Delay: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestDelayReadsMeasuredShape(t *testing.T) {
 	// пробелами. r.URL.Path у сервера уже раскодирован, поэтому сверяем
 	// с исходным именем — важно, что оно доехало целым, а не что байты
 	// совпали с конкретной кодировкой.
-	if d.lastP != "/proxies/🇵🇱⚡Польша/delay" {
+	if d.lastP != "/proxies/🇭🇳⚡Отель/delay" {
 		t.Errorf("путь %q", d.lastP)
 	}
 	// Оба параметра обязательны: без url mihomo возьмёт свой по умолчанию,

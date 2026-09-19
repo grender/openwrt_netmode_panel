@@ -100,7 +100,7 @@ func TestParseRecordedRuleSet(t *testing.T) {
 		if ev.Rule != "RuleSet" || ev.Payload != "nm-geosite-youtube" {
 			t.Errorf("правило = %q/%q", ev.Rule, ev.Payload)
 		}
-		if ev.Chain != "BYPASS[🇫🇷⚡Франция]" {
+		if ev.Chain != "BYPASS[🇫🇯⚡Фокстрот]" {
 			t.Errorf("цепочка = %q — она обязана совпасть с nikki.ChainString снимка", ev.Chain)
 		}
 		return
@@ -151,11 +151,11 @@ func TestParseFormsNotSeenOnRouter(t *testing.T) {
 		},
 		{
 			name: "правило со значением в скобках",
-			in:   "[TCP] 192.168.9.219:50526 --> www.youtube.com:443 match DomainSuffix(youtube.com) using BYPASS[🇫🇷⚡Франция]",
+			in:   "[TCP] 192.168.9.219:50526 --> www.youtube.com:443 match DomainSuffix(youtube.com) using BYPASS[🇫🇯⚡Фокстрот]",
 			kind: LineParsed,
 			want: Event{Kind: EventMatch, Net: "tcp", SrcIP: "192.168.9.219", SrcPort: 50526,
 				Host: "www.youtube.com", Port: 443, Rule: "DomainSuffix", Payload: "youtube.com",
-				Chain: "BYPASS[🇫🇷⚡Франция]"},
+				Chain: "BYPASS[🇫🇯⚡Фокстрот]"},
 		},
 		{
 			name: "нет совпавшего правила",
@@ -225,7 +225,7 @@ func TestUnparsedVsForeign(t *testing.T) {
 // обычная строка, а отсекает его фильтр по адресу устройства — иначе он
 // попал бы в «не разобрано» и выглядел бы как смена формата.
 func TestForeignSourceIsParsedNotDropped(t *testing.T) {
-	const p = "[TCP] 192.168.0.234:37984 --> api.anthropic.com:443 match RuleSet(nm-geosite-anthropic) using BYPASS[🇫🇷⚡Франция]"
+	const p = "[TCP] 192.168.0.234:37984 --> api.anthropic.com:443 match RuleSet(nm-geosite-anthropic) using BYPASS[🇫🇯⚡Фокстрот]"
 	ev, kind := ParseLine(p)
 	if kind != LineParsed {
 		t.Fatalf("вид строки = %v", kind)

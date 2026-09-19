@@ -1989,7 +1989,7 @@ components:
         chain:
           type: string
           description: "Куда ушло: `DIRECT` либо `группа[узел]`."
-          example: "BYPASS[🇫🇷⚡Франция]"
+          example: "BYPASS[🇫🇯⚡Фокстрот]"
         first: { type: string, format: date-time }
         last: { type: string, format: date-time }
         count: { type: integer, description: Соединений за сессию. }
@@ -3439,7 +3439,7 @@ components:
             Чем является строка списка.
 
             - `node` — узел; единственный вид, который принимает выбор;
-            - `auto` — запись «Авто | Лучший сервер»: у провайдера это
+            - `auto` — запись «Авто | Быстрый узел»: у провайдера это
               балансировщик, у нас ей соответствует снятие закрепления
               (`POST /api/nikki/proxy` с именем `AUTO`);
             - `separator` — заголовок раздела; за именем стоит копия

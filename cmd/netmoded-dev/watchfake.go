@@ -42,13 +42,13 @@ type devConn struct {
 
 var devConns = []devConn{
 	{id: "3f10a1d4-4913-4793-82a4-f63b664e7808", name: "api.anthropic.com", addr: "154.222.132.99", port: 443, net: "tcp",
-		chains: []string{"🇫🇷⚡Франция", "PROXY", "BYPASS"}, rule: "RuleSet", payload: "nm-geosite-anthropic",
+		chains: []string{"🇫🇯⚡Фокстрот", "PROXY", "BYPASS"}, rule: "RuleSet", payload: "nm-geosite-anthropic",
 		upRate: 60, downRate: 140, ageSec: 240},
 	{id: "b1a2c3d4-0001-4000-8000-000000000001", name: "www.youtube.com", addr: "142.250.150.91", port: 443, net: "tcp",
-		chains: []string{"🇫🇷⚡Франция", "PROXY", "BYPASS"}, rule: "RuleSet", payload: "nm-geosite-youtube",
+		chains: []string{"🇫🇯⚡Фокстрот", "PROXY", "BYPASS"}, rule: "RuleSet", payload: "nm-geosite-youtube",
 		upRate: 3600, downRate: 220000, ageSec: 720},
 	{id: "b1a2c3d4-0001-4000-8000-000000000002", name: "rr1---sn-5hne6n6z.googlevideo.com", addr: "173.194.135.72", port: 443, net: "udp",
-		chains: []string{"🇫🇷⚡Франция", "PROXY", "BYPASS"}, rule: "RuleSet", payload: "nm-geosite-youtube",
+		chains: []string{"🇫🇯⚡Фокстрот", "PROXY", "BYPASS"}, rule: "RuleSet", payload: "nm-geosite-youtube",
 		upRate: 12288, downRate: 1468006, ageSec: 660},
 	{id: "b1a2c3d4-0001-4000-8000-000000000003", name: "www.google.com", addr: "142.250.74.100", port: 443, net: "tcp",
 		chains: []string{"DIRECT"}, rule: "Match", upRate: 400, downRate: 2600, ageSec: 700},

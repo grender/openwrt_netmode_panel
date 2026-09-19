@@ -60,7 +60,7 @@ Transfer-Encoding: chunked
 
 | Случай | Шаблон (`tunnel.go`) | Пример из `raw/91` |
 |---|---|---|
-| правило с payload | `[NET] SRC --> DST match TYPE(PAYLOAD) using CHAIN` (:639) | `[TCP] 192.168.9.219:50526 --> www.youtube.com:443 match RuleSet(nm-geosite-youtube) using BYPASS[🇫🇷⚡Франция]` |
+| правило с payload | `[NET] SRC --> DST match TYPE(PAYLOAD) using CHAIN` (:639) | `[TCP] 192.168.9.219:50526 --> www.youtube.com:443 match RuleSet(nm-geosite-youtube) using BYPASS[🇫🇯⚡Фокстрот]` |
 | правило без payload | `[NET] SRC --> DST match TYPE using CHAIN` (:641) | `[TCP] 192.168.9.219:50446 --> www.google.com:443 match Match using DIRECT` |
 | дозвон не удался | `[NET] dial PROXY (match TYPE/PAYLOAD) SRC --> DST error: ERR` (:629) | `[TCP] dial DIRECT (match Match/) 192.168.9.219:50440 --> 194.221.250.50:80 error: dial tcp 194.221.250.50:80: i/o timeout` |
 | режим global/direct, особый прокси, без правила | `… using GLOBAL`, `… using DIRECT`, `… doesn't match any rule using …` (:636-648) | не наблюдались — у nikki режим `rule` |
@@ -127,7 +127,7 @@ Transfer-Encoding: chunked
 | `metadata.process`, `processPath`, `uid` | пусты / 0 у всех: TProxy процесса не знает |
 | `upload`, `download` | байты с начала соединения |
 | `start` | RFC 3339 с наносекундами |
-| `chains` | **от узла к группе**: `["🇫🇷⚡Франция","PROXY","BYPASS"]`, у прямых `["DIRECT"]` |
+| `chains` | **от узла к группе**: `["🇫🇯⚡Фокстрот","PROXY","BYPASS"]`, у прямых `["DIRECT"]` |
 | `rule`, `rulePayload` | `RuleSet` + `nm-geosite-anthropic`, `DomainSuffix` + домен, `Match` + пусто |
 
 ### Почему нет страны и ASN

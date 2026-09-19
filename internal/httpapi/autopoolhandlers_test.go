@@ -33,10 +33,10 @@ func seedManifest(t *testing.T, s *Server, entries []happ.Entry) {
 // threeNodes — подписка из трёх узлов и «Авто» с пулом из двух.
 func threeNodes() []happ.Entry {
 	return []happ.Entry{
-		{Name: "Авто", Kind: happ.KindAuto, Pool: []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2"}},
-		{Name: "🇵🇱⚡Польша", Kind: happ.KindNode, Type: "vless"},
-		{Name: "🇨🇭⚡Швейцария 2", Kind: happ.KindNode, Type: "vless"},
-		{Name: "🇷🇺💳Россия", Kind: happ.KindNode, Type: "vless"},
+		{Name: "Авто", Kind: happ.KindAuto, Pool: []string{"🇭🇳⚡Отель", "🇨🇻⚡Чарли 2"}},
+		{Name: "🇭🇳⚡Отель", Kind: happ.KindNode, Type: "vless"},
+		{Name: "🇨🇻⚡Чарли 2", Kind: happ.KindNode, Type: "vless"},
+		{Name: "🇦🇬💳Альфа", Kind: happ.KindNode, Type: "vless"},
 	}
 }
 
@@ -129,7 +129,7 @@ func TestAutopoolPutNeedsIfMatch(t *testing.T) {
 	s, _ := newServer(t)
 	seedManifest(t, s, threeNodes())
 
-	rec := putAutopool(t, s, `{"mode":"deny","nodes":["🇷🇺💳Россия"]}`, "")
+	rec := putAutopool(t, s, `{"mode":"deny","nodes":["🇦🇬💳Альфа"]}`, "")
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("код %d, ожидался 409: %s", rec.Code, rec.Body.String())
 	}
@@ -137,13 +137,13 @@ func TestAutopoolPutNeedsIfMatch(t *testing.T) {
 		t.Errorf("код отказа %q", code)
 	}
 
-	rec = putAutopool(t, s, `{"mode":"deny","nodes":["🇷🇺💳Россия"]}`, "sha256:деревянный")
+	rec = putAutopool(t, s, `{"mode":"deny","nodes":["🇦🇬💳Альфа"]}`, "sha256:деревянный")
 	if rec.Code != http.StatusConflict {
 		t.Errorf("устаревший отпечаток: код %d", rec.Code)
 	}
 }
 
-// Главный путь: отметили Россию, применили — в файле появился
+// Главный путь: отметили Альфу, применили — в файле появился
 // exclude-filter, а секция наборов осталась нетронутой.
 func TestAutopoolPutWritesExcludeFilterAndKeepsSets(t *testing.T) {
 	s, _ := newServer(t)
@@ -154,7 +154,7 @@ func TestAutopoolPutWritesExcludeFilterAndKeepsSets(t *testing.T) {
 		Sets: []mixin.Set{{Name: "youtube", Action: mixin.ActionTunnel}}}
 	writeMixin(t, s, mixin.Render(before))
 
-	rec := putAutopool(t, s, `{"mode":"deny","nodes":["🇷🇺💳Россия"]}`,
+	rec := putAutopool(t, s, `{"mode":"deny","nodes":["🇦🇬💳Альфа"]}`,
 		mixin.AutoFingerprint(before.Auto))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d: %s", rec.Code, rec.Body.String())
@@ -190,7 +190,7 @@ func TestAutopoolProviderModeTakesPoolFromManifest(t *testing.T) {
 	s.SetNikkiClient(newFakeNikkiSelectorClient())
 	seedManifest(t, s, threeNodes())
 
-	rec := putAutopool(t, s, `{"mode":"provider","nodes":["🇷🇺💳Россия"]}`,
+	rec := putAutopool(t, s, `{"mode":"provider","nodes":["🇦🇬💳Альфа"]}`,
 		mixin.AutoFingerprint(mixin.AutoConfig{}))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d: %s", rec.Code, rec.Body.String())
@@ -207,7 +207,7 @@ func TestAutopoolProviderModeTakesPoolFromManifest(t *testing.T) {
 	if got.Auto.Mode != mixin.AutoProvider {
 		t.Fatalf("режим %q", got.Auto.Mode)
 	}
-	if strings.Join(got.Auto.Nodes, "|") != "🇵🇱⚡Польша|🇨🇭⚡Швейцария 2" {
+	if strings.Join(got.Auto.Nodes, "|") != "🇭🇳⚡Отель|🇨🇻⚡Чарли 2" {
 		t.Errorf("состав %v, ожидался пул провайдера, а не присланный список", got.Auto.Nodes)
 	}
 }
@@ -216,7 +216,7 @@ func TestAutopoolProviderModeTakesPoolFromManifest(t *testing.T) {
 // неоткуда, и отказ обязан это назвать, а не записать пустоту.
 func TestAutopoolProviderModeWithoutBalancer(t *testing.T) {
 	s, _ := newServer(t)
-	seedManifest(t, s, []happ.Entry{{Name: "🇵🇱⚡Польша", Kind: happ.KindNode, Type: "vless"}})
+	seedManifest(t, s, []happ.Entry{{Name: "🇭🇳⚡Отель", Kind: happ.KindNode, Type: "vless"}})
 
 	rec := putAutopool(t, s, `{"mode":"provider"}`, mixin.AutoFingerprint(mixin.AutoConfig{}))
 	if rec.Code != http.StatusConflict {
@@ -233,11 +233,11 @@ func TestAutopoolPutRefusals(t *testing.T) {
 	}{
 		{"незнакомый режим", `{"mode":"как-нибудь"}`, "bad_request"},
 		{"не JSON", `{`, "bad_request"},
-		{"имени нет в подписке", `{"mode":"allow","nodes":["🇿🇼Нет такого"]}`, "unknown_node"},
+		{"имени нет в подписке", `{"mode":"allow","nodes":["🇿🇲Нет такого"]}`, "unknown_node"},
 		{"пустой пул у allow", `{"mode":"allow","nodes":[]}`, "bad_autopool"},
 		// Исключили всё, что есть, — в пуле не осталось ничего. Движок
 		// переживёт (empty-fallback), но записывать мёртвую группу нельзя.
-		{"исключили всех", `{"mode":"deny","nodes":["🇵🇱⚡Польша","🇨🇭⚡Швейцария 2","🇷🇺💳Россия"]}`, "empty_pool"},
+		{"исключили всех", `{"mode":"deny","nodes":["🇭🇳⚡Отель","🇨🇻⚡Чарли 2","🇦🇬💳Альфа"]}`, "empty_pool"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s, _ := newServer(t)
@@ -263,12 +263,12 @@ func TestAutopoolReportsMissingNames(t *testing.T) {
 	seedManifest(t, s, threeNodes())
 	writeMixin(t, s, mixin.Render(mixin.Config{
 		Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
-		Auto: mixin.AutoConfig{Mode: mixin.AutoAllow, Nodes: []string{"🇵🇱⚡Польша", "🇩🇪Которого нет"}},
+		Auto: mixin.AutoConfig{Mode: mixin.AutoAllow, Nodes: []string{"🇭🇳⚡Отель", "🇧🇧Которого нет"}},
 	}))
 
 	got := getAutopool(t, s)
 	miss := strList(t, got["missing"])
-	if len(miss) != 1 || miss[0] != "🇩🇪Которого нет" {
+	if len(miss) != 1 || miss[0] != "🇧🇧Которого нет" {
 		t.Errorf("пропавшие имена %v", miss)
 	}
 }
@@ -285,7 +285,7 @@ func TestAutopoolTurnsMixinFlagOnEvenWithProfilePolicy(t *testing.T) {
 	before := mixin.Config{Policy: mixin.PolicyProfile, Download: mixin.DownloadDirect}
 	writeMixin(t, s, mixin.Render(before))
 
-	rec := putAutopool(t, s, `{"mode":"allow","nodes":["🇵🇱⚡Польша"]}`,
+	rec := putAutopool(t, s, `{"mode":"allow","nodes":["🇭🇳⚡Отель"]}`,
 		mixin.AutoFingerprint(before.Auto))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("код %d: %s", rec.Code, rec.Body.String())
@@ -307,12 +307,12 @@ func TestProviderPoolFollowsSubscription(t *testing.T) {
 	seedManifest(t, s, threeNodes())
 	writeMixin(t, s, mixin.Render(mixin.Config{
 		Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
-		Auto: mixin.AutoConfig{Mode: mixin.AutoProvider, Nodes: []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2"}},
+		Auto: mixin.AutoConfig{Mode: mixin.AutoProvider, Nodes: []string{"🇭🇳⚡Отель", "🇨🇻⚡Чарли 2"}},
 	}))
 
-	// Провайдер добавил Россию в свой балансировщик.
+	// Провайдер добавил Альфу в свой балансировщик.
 	grown := threeNodes()
-	grown[0].Pool = []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2", "🇷🇺💳Россия"}
+	grown[0].Pool = []string{"🇭🇳⚡Отель", "🇨🇻⚡Чарли 2", "🇦🇬💳Альфа"}
 	seedManifest(t, s, grown)
 
 	s.resyncProviderPool(context.Background())
@@ -341,11 +341,11 @@ func TestProviderPoolDoesNotRestartOnSameComposition(t *testing.T) {
 	seedManifest(t, s, threeNodes())
 	writeMixin(t, s, mixin.Render(mixin.Config{
 		Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
-		Auto: mixin.AutoConfig{Mode: mixin.AutoProvider, Nodes: []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2"}},
+		Auto: mixin.AutoConfig{Mode: mixin.AutoProvider, Nodes: []string{"🇭🇳⚡Отель", "🇨🇻⚡Чарли 2"}},
 	}))
 
 	shuffled := threeNodes()
-	shuffled[0].Pool = []string{"🇨🇭⚡Швейцария 2", "🇵🇱⚡Польша"}
+	shuffled[0].Pool = []string{"🇨🇻⚡Чарли 2", "🇭🇳⚡Отель"}
 	seedManifest(t, s, shuffled)
 
 	s.resyncProviderPool(context.Background())
@@ -360,10 +360,10 @@ func TestManualPoolIgnoresSubscription(t *testing.T) {
 	s, f := newServer(t)
 	s.SetNikkiClient(newFakeNikkiSelectorClient())
 	before := mixin.Config{Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
-		Auto: mixin.AutoConfig{Mode: mixin.AutoAllow, Nodes: []string{"🇵🇱⚡Польша"}}}
+		Auto: mixin.AutoConfig{Mode: mixin.AutoAllow, Nodes: []string{"🇭🇳⚡Отель"}}}
 	writeMixin(t, s, mixin.Render(before))
 	grown := threeNodes()
-	grown[0].Pool = []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2", "🇷🇺💳Россия"}
+	grown[0].Pool = []string{"🇭🇳⚡Отель", "🇨🇻⚡Чарли 2", "🇦🇬💳Альфа"}
 	seedManifest(t, s, grown)
 
 	s.resyncProviderPool(context.Background())

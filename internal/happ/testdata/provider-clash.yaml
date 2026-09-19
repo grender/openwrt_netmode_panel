@@ -4,7 +4,7 @@ mode: rule
 log-level: info
 ipv6: true
 proxies:
-- name: 🇨🇭⚡Швейцария-1
+- name: 🇨🇻⚡Чарли-1
   type: vless
   server: 203.0.113.14
   port: 443
@@ -13,12 +13,12 @@ proxies:
   udp: true
   flow: xtls-rprx-vision
   tls: true
-  servername: navigation.maps.yandex.net
+  servername: sni15.example.net
   client-fingerprint: firefox
   reality-opts:
     public-key: REDACTED_PUBKEY-15AAAAAAAAAAAAAAAAAAAAAAAAA
     short-id: 5ecec50000000004
-- name: 🇨🇭⚡Швейцария-2
+- name: 🇨🇻⚡Чарли-2
   type: vless
   server: 203.0.113.12
   port: 8443
@@ -27,12 +27,12 @@ proxies:
   udp: true
   flow: xtls-rprx-vision
   tls: true
-  servername: receive-sentry.lmru.tech
+  servername: sni17.example.net
   client-fingerprint: firefox
   reality-opts:
     public-key: REDACTED_PUBKEY-18AAAAAAAAAAAAAAAAAAAAAAAAA
     short-id: 5ecec50000000009
-- name: 🇨🇭⚡Швейцария-4 EXTRA
+- name: 🇨🇻⚡Чарли-4 EXTRA
   type: vless
   server: host1.example.net
   port: 443
@@ -41,12 +41,12 @@ proxies:
   udp: true
   flow: xtls-rprx-vision
   tls: true
-  servername: navigation.maps.yandex.net
+  servername: sni15.example.net
   client-fingerprint: firefox
   reality-opts:
     public-key: REDACTED_PUBKEY-15AAAAAAAAAAAAAAAAAAAAAAAAA
     short-id: 5ecec50000000030
-- name: 🇫🇷⚡Франция
+- name: 🇫🇯⚡Фокстрот
   type: vless
   server: 203.0.113.4
   port: 8443
@@ -55,12 +55,12 @@ proxies:
   udp: true
   flow: xtls-rprx-vision
   tls: true
-  servername: snapchat.com
+  servername: sni18.example.net
   client-fingerprint: firefox
   reality-opts:
     public-key: REDACTED_PUBKEY-16AAAAAAAAAAAAAAAAAAAAAAAAA
     short-id: 5ecec50000000014
-- name: 🇸🇪⚡Швеция
+- name: 🇰🇮⚡Кило
   type: vless
   server: 203.0.113.8
   port: 443
@@ -69,12 +69,12 @@ proxies:
   udp: true
   flow: xtls-rprx-vision
   tls: true
-  servername: edu.sirius.online
+  servername: sni11.example.net
   client-fingerprint: firefox
   reality-opts:
     public-key: REDACTED_PUBKEY-05AAAAAAAAAAAAAAAAAAAAAAAAA
     short-id: 5ecec50000000006
-- name: 🇪🇸⚡Испания
+- name: 🇯🇲⚡Джульетта
   type: vless
   server: 203.0.113.2
   port: 8443
@@ -83,12 +83,12 @@ proxies:
   udp: true
   flow: xtls-rprx-vision
   tls: true
-  servername: a.auth-nsdi.ru
+  servername: sni05.example.net
   client-fingerprint: firefox
   reality-opts:
     public-key: REDACTED_PUBKEY-08AAAAAAAAAAAAAAAAAAAAAAAAA
     short-id: 5ecec50000000005
-- name: 🇳🇱🎮Нидерланды GAMING
+- name: 🇪🇨🎮Эхо GAMING
   type: hysteria2
   server: 203.0.113.10
   port: 8449
@@ -96,7 +96,7 @@ proxies:
   sni: sni3.example.net
   alpn:
   - h3
-- name: 🇫🇮🎮Финляндия GAMING
+- name: 🇩🇲🎮Дельта GAMING
   type: hysteria2
   server: 203.0.113.6
   port: 8449
@@ -104,7 +104,7 @@ proxies:
   sni: sni4.example.net
   alpn:
   - h3
-- name: 🇨🇭🎮Швейцария GAMING
+- name: 🇨🇻🎮Чарли GAMING
   type: hysteria2
   server: 203.0.113.14
   port: 8449
@@ -112,7 +112,7 @@ proxies:
   sni: sni1.example.net
   alpn:
   - h3
-- name: 🇹🇷💳Турция Torrent
+- name: 🇳🇷💳Новембер Torrent
   type: vless
   server: 203.0.113.13
   port: 8443
@@ -121,12 +121,12 @@ proxies:
   udp: true
   flow: xtls-rprx-vision
   tls: true
-  servername: tamtam.chat
+  servername: sni22.example.net
   client-fingerprint: firefox
   reality-opts:
     public-key: REDACTED_PUBKEY-12AAAAAAAAAAAAAAAAAAAAAAAAA
     short-id: 5ecec50000000007
-- name: 🇷🇺💳Россия-1
+- name: 🇦🇬💳Альфа-1
   type: vless
   server: 203.0.113.23
   port: 443
@@ -135,12 +135,12 @@ proxies:
   udp: true
   flow: xtls-rprx-vision
   tls: true
-  servername: navigation.maps.yandex.net
+  servername: sni15.example.net
   client-fingerprint: firefox
   reality-opts:
     public-key: REDACTED_PUBKEY-14AAAAAAAAAAAAAAAAAAAAAAAAA
     short-id: 5ecec50000000024
-- name: 🇷🇺💳Россия-2
+- name: 🇦🇬💳Альфа-2
   type: vless
   server: 203.0.113.20
   port: 443
@@ -149,12 +149,12 @@ proxies:
   udp: true
   flow: xtls-rprx-vision
   tls: true
-  servername: mts01.edge-mwsru01.live
+  servername: sni13.example.net
   client-fingerprint: chrome
   reality-opts:
     public-key: REDACTED_PUBKEY-17AAAAAAAAAAAAAAAAAAAAAAAAA
     short-id: 5ecec50000000012
-- name: 🇨🇦Канада Torrent
+- name: 🇵🇼Папа Torrent
   type: vless
   server: 203.0.113.5
   port: 8443
@@ -163,12 +163,12 @@ proxies:
   udp: true
   flow: xtls-rprx-vision
   tls: true
-  servername: ad.mail.ru
+  servername: sni06.example.net
   client-fingerprint: firefox
   reality-opts:
     public-key: REDACTED_PUBKEY-13AAAAAAAAAAAAAAAAAAAAAAAAA
     short-id: 5ecec50000000010
-- name: 🇺🇸США Torrent
+- name: 🇴🇲Оскар Torrent
   type: vless
   server: 203.0.113.11
   port: 443
@@ -177,12 +177,12 @@ proxies:
   udp: true
   flow: xtls-rprx-vision
   tls: true
-  servername: kombo.mail.ru
+  servername: sni12.example.net
   client-fingerprint: firefox
   reality-opts:
     public-key: REDACTED_PUBKEY-10AAAAAAAAAAAAAAAAAAAAAAAAA
     short-id: 5ecec50000000003
-- name: 🇮🇹Италия Torrent
+- name: 🇲🇺Майк Torrent
   type: vless
   server: 203.0.113.17
   port: 8443
@@ -191,7 +191,7 @@ proxies:
   udp: true
   flow: xtls-rprx-vision
   tls: true
-  servername: whatsnew.mail.ru
+  servername: sni23.example.net
   client-fingerprint: firefox
   reality-opts:
     public-key: REDACTED_PUBKEY-19AAAAAAAAAAAAAAAAAAAAAAAAA
@@ -201,39 +201,39 @@ proxy-groups:
   type: select
   proxies:
   - Auto
-  - 🇨🇭⚡Швейцария-1
-  - 🇨🇭⚡Швейцария-2
-  - 🇨🇭⚡Швейцария-4 EXTRA
-  - 🇫🇷⚡Франция
-  - 🇸🇪⚡Швеция
-  - 🇪🇸⚡Испания
-  - 🇳🇱🎮Нидерланды GAMING
-  - 🇫🇮🎮Финляндия GAMING
-  - 🇨🇭🎮Швейцария GAMING
-  - 🇹🇷💳Турция Torrent
-  - 🇷🇺💳Россия-1
-  - 🇷🇺💳Россия-2
-  - 🇨🇦Канада Torrent
-  - 🇺🇸США Torrent
-  - 🇮🇹Италия Torrent
+  - 🇨🇻⚡Чарли-1
+  - 🇨🇻⚡Чарли-2
+  - 🇨🇻⚡Чарли-4 EXTRA
+  - 🇫🇯⚡Фокстрот
+  - 🇰🇮⚡Кило
+  - 🇯🇲⚡Джульетта
+  - 🇪🇨🎮Эхо GAMING
+  - 🇩🇲🎮Дельта GAMING
+  - 🇨🇻🎮Чарли GAMING
+  - 🇳🇷💳Новембер Torrent
+  - 🇦🇬💳Альфа-1
+  - 🇦🇬💳Альфа-2
+  - 🇵🇼Папа Torrent
+  - 🇴🇲Оскар Torrent
+  - 🇲🇺Майк Torrent
 - name: Auto
   type: url-test
   proxies:
-  - 🇨🇭⚡Швейцария-1
-  - 🇨🇭⚡Швейцария-2
-  - 🇨🇭⚡Швейцария-4 EXTRA
-  - 🇫🇷⚡Франция
-  - 🇸🇪⚡Швеция
-  - 🇪🇸⚡Испания
-  - 🇳🇱🎮Нидерланды GAMING
-  - 🇫🇮🎮Финляндия GAMING
-  - 🇨🇭🎮Швейцария GAMING
-  - 🇹🇷💳Турция Torrent
-  - 🇷🇺💳Россия-1
-  - 🇷🇺💳Россия-2
-  - 🇨🇦Канада Torrent
-  - 🇺🇸США Torrent
-  - 🇮🇹Италия Torrent
+  - 🇨🇻⚡Чарли-1
+  - 🇨🇻⚡Чарли-2
+  - 🇨🇻⚡Чарли-4 EXTRA
+  - 🇫🇯⚡Фокстрот
+  - 🇰🇮⚡Кило
+  - 🇯🇲⚡Джульетта
+  - 🇪🇨🎮Эхо GAMING
+  - 🇩🇲🎮Дельта GAMING
+  - 🇨🇻🎮Чарли GAMING
+  - 🇳🇷💳Новембер Torrent
+  - 🇦🇬💳Альфа-1
+  - 🇦🇬💳Альфа-2
+  - 🇵🇼Папа Torrent
+  - 🇴🇲Оскар Torrent
+  - 🇲🇺Майк Torrent
   url: http://www.gstatic.com/generate_204
   interval: 300
 rules:

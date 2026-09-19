@@ -44,14 +44,14 @@ func newDevNikki() *devNikki {
 		name  string
 		delay *int
 	}{
-		{"🇵🇱⚡Польша", d(38)},
-		{"🇨🇭⚡Швейцария 2", d(27)},
-		{"🇩🇪⚡Германия 1", d(44)},
-		{"🇳🇱⚡Нидерланды 1", d(61)},
-		{"🇺🇸США 1", d(148)},
-		{"🇯🇵Япония", d(210)},
+		{"🇭🇳⚡Отель", d(38)},
+		{"🇨🇻⚡Чарли 2", d(27)},
+		{"🇧🇧⚡Браво 1", d(44)},
+		{"🇪🇨⚡Эхо 1", d(61)},
+		{"🇴🇲Оскар 1", d(148)},
+		{"🇹🇻Танго", d(210)},
 		{separator, nil},
-		{"🇹🇷💳Турция", nil}, // мёртвый: delay:0 у mihomo → null у нас
+		{"🇳🇷💳Новембер", nil}, // мёртвый: delay:0 у mihomo → null у нас
 	}
 
 	all := map[string]nikki.Proxy{}
@@ -72,7 +72,7 @@ func newDevNikki() *devNikki {
 	}
 	all["PROXY"] = nikki.Proxy{
 		Name: "PROXY", Type: "URLTest", Alive: true,
-		Members: members, Now: "🇨🇭⚡Швейцария 2", Selectable: true,
+		Members: members, Now: "🇨🇻⚡Чарли 2", Selectable: true,
 	}
 	all["BYPASS"] = nikki.Proxy{
 		Name: "BYPASS", Type: "Fallback", Alive: true,

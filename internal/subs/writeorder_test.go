@@ -144,7 +144,7 @@ func TestUpdateReloadFailureLeavesNewContent(t *testing.T) {
 		t.Errorf("файл провайдера остался старым: %q", p)
 	}
 	m, _ := os.ReadFile(h.manifest)
-	if !strings.Contains(string(m), "Германия") {
+	if !strings.Contains(string(m), "Браво") {
 		t.Errorf("манифест остался старым: %q", m)
 	}
 }
@@ -189,13 +189,13 @@ func TestUpdateVerifiesEngineList(t *testing.T) {
 	t.Run("движок показал чужие имена — отказ с обеими тройками", func(t *testing.T) {
 		h := newHarness(t, oneNode, nil)
 		h.up.Proxies = func(context.Context) ([]string, error) {
-			return []string{"🇩🇪⚡Германия 1", "🇨🇭⚡Швейцария 2"}, nil
+			return []string{"🇧🇧⚡Браво 1", "🇨🇻⚡Чарли 2"}, nil
 		}
 		_, err := h.up.Update(context.Background())
 		if !errors.Is(err, ErrProviderIgnored) {
 			t.Fatalf("ожидался ErrProviderIgnored, получено %v", err)
 		}
-		for _, want := range []string{"204", "🇩🇪⚡Германия 1", "🇩🇪 Германия", "path", "override"} {
+		for _, want := range []string{"204", "🇧🇧⚡Браво 1", "🇧🇧 Браво", "path", "override"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("в тексте %q нет %q", err.Error(), want)
 			}
@@ -215,7 +215,7 @@ func TestUpdateVerifiesEngineList(t *testing.T) {
 		h.up.Logf = func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
 		h.up.Proxies = func(context.Context) ([]string, error) {
 			// Один записанный узел есть, и ещё чужой — частичное совпадение.
-			return []string{"🇩🇪 Германия", "чужой"}, nil
+			return []string{"🇧🇧 Браво", "чужой"}, nil
 		}
 		if _, err := h.up.Update(context.Background()); err != nil {
 			t.Fatalf("частичное совпадение — не отказ: %v", err)
@@ -255,19 +255,19 @@ func TestUpdateVerifiesEngineList(t *testing.T) {
 // TestUpdatePartialEngineListIsLogged — два узла записаны, один пропал:
 // не отказ, но строка в журнале с именем пропавшего.
 func TestUpdatePartialEngineListIsLogged(t *testing.T) {
-	two := strings.Replace(oneNode, `"remarks": "🇩🇪 Германия"`, `"remarks": "🇩🇪 Германия"`, 1)
+	two := strings.Replace(oneNode, `"remarks": "🇧🇧 Браво"`, `"remarks": "🇧🇧 Браво"`, 1)
 	two = "[" + strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(two), "["), "]") + "," +
 		strings.Replace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(oneNode), "["), "]"),
-			`"remarks": "🇩🇪 Германия"`, `"remarks": "🇫🇷 Франция"`, 1) + "]"
+			`"remarks": "🇧🇧 Браво"`, `"remarks": "🇫🇯 Фокстрот"`, 1) + "]"
 	h := newHarness(t, two, nil)
 	var logged []string
 	h.up.Logf = func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
-	h.up.Proxies = func(context.Context) ([]string, error) { return []string{"🇩🇪 Германия"}, nil }
+	h.up.Proxies = func(context.Context) ([]string, error) { return []string{"🇧🇧 Браво"}, nil }
 
 	if _, err := h.up.Update(context.Background()); err != nil {
 		t.Fatalf("частичное совпадение — не отказ: %v", err)
 	}
-	if len(logged) != 1 || !strings.Contains(logged[0], "🇫🇷 Франция") || !strings.Contains(logged[0], "1 узлов из 2") {
+	if len(logged) != 1 || !strings.Contains(logged[0], "🇫🇯 Фокстрот") || !strings.Contains(logged[0], "1 узлов из 2") {
 		t.Fatalf("ожидалась одна запись с пропавшим узлом и счётом: %v", logged)
 	}
 }

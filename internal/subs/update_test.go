@@ -20,7 +20,7 @@ import (
 // чужого JSON, который меняется без нашего участия.
 const oneNode = `[
   {
-    "remarks": "🇩🇪 Германия",
+    "remarks": "🇧🇧 Браво",
     "outbounds": [
       {
         "tag": "proxy",
@@ -47,7 +47,7 @@ const oneNode = `[
 
 // zeroNodes — подписка, которая разбирается, но узлов не даёт: одна запись
 // «Авто», то есть балансировщик без своего адреса.
-const zeroNodes = `[{"remarks":"Авто | Лучший сервер","outbounds":[],"routing":{"balancers":[{}]}}]`
+const zeroNodes = `[{"remarks":"Авто | Быстрый узел","outbounds":[],"routing":{"balancers":[{}]}}]`
 
 type harness struct {
 	up        *Updater
@@ -113,7 +113,7 @@ func TestUpdateWritesBothFilesAndReloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("манифест не читается: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Kind != happ.KindNode || entries[0].Name != "🇩🇪 Германия" {
+	if len(entries) != 1 || entries[0].Kind != happ.KindNode || entries[0].Name != "🇧🇧 Браво" {
 		t.Errorf("манифест: %+v", entries)
 	}
 
@@ -324,10 +324,10 @@ func TestManifestRoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "subscription.json")
 
 	want := []happ.Entry{
-		{Name: "Авто | Лучший сервер", Kind: happ.KindAuto},
-		{Name: "🇩🇪 Германия", Kind: happ.KindNode, Type: "vless"},
+		{Name: "Авто | Быстрый узел", Kind: happ.KindAuto},
+		{Name: "🇧🇧 Браво", Kind: happ.KindNode, Type: "vless"},
 		{Name: "⬇️ Обходы ⬇️", Kind: happ.KindSeparator},
-		{Name: "🇯🇵 Япония", Kind: happ.KindUnsupported, Reason: "транспорт не поддержан"},
+		{Name: "🇹🇻 Танго", Kind: happ.KindUnsupported, Reason: "транспорт не поддержан"},
 	}
 	b, err := json.MarshalIndent(want, "", "  ")
 	if err != nil {

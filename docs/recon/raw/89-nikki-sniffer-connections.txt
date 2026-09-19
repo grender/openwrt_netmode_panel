@@ -15,10 +15,10 @@ nikki.mixin.sniffer_sniff='0'
      43 192.168.9.238 fake-ip DIRECT Match
      31 192.168.9.208 fake-ip DIRECT Match
      12 192.168.9.238 normal DIRECT Match
-     11 192.168.9.238 fake-ip 🇳🇱⚡Нидерланды RuleSet
-      3 192.168.9.238 normal 🇳🇱⚡Нидерланды RuleSet
-      3 192.168.9.104 fake-ip 🇳🇱⚡Нидерланды RuleSet
-      2 192.168.9.208 fake-ip 🇳🇱⚡Нидерланды RuleSet
+     11 192.168.9.238 fake-ip 🇪🇨⚡Эхо RuleSet
+      3 192.168.9.238 normal 🇪🇨⚡Эхо RuleSet
+      3 192.168.9.104 fake-ip 🇪🇨⚡Эхо RuleSet
+      2 192.168.9.208 fake-ip 🇪🇨⚡Эхо RuleSet
       1 192.168.9.238 redir-host DIRECT Match
 
 ## GET /connections, характерные записи 192.168.9.208   (до, metadata усечены)
@@ -108,14 +108,14 @@ nikki.mixin.sniffer='1'
      31 192.168.9.238 fake-ip DIRECT Match sniff=no
      21 192.168.9.208 normal DIRECT Match sniff=yes
      15 192.168.9.238 normal DIRECT Match sniff=yes
-     13 192.168.9.208 normal 🇧🇪Бельгия RuleSet sniff=yes
-      7 192.168.9.238 fake-ip 🇧🇪Бельгия RuleSet sniff=no
+     13 192.168.9.208 normal 🇼🇸Виски RuleSet sniff=yes
+      7 192.168.9.238 fake-ip 🇼🇸Виски RuleSet sniff=no
       5 192.168.9.238 normal DIRECT Match sniff=no
       5 192.168.9.208 normal DIRECT Match sniff=no
       5 192.168.9.208 fake-ip DIRECT Match sniff=no
-      3 192.168.9.238 normal 🇧🇪Бельгия RuleSet sniff=yes
-      3 192.168.9.238 normal 🇧🇪Бельгия RuleSet sniff=no
-      2 192.168.9.208 fake-ip 🇧🇪Бельгия RuleSet sniff=no
+      3 192.168.9.238 normal 🇼🇸Виски RuleSet sniff=yes
+      3 192.168.9.238 normal 🇼🇸Виски RuleSet sniff=no
+      2 192.168.9.208 fake-ip 🇼🇸Виски RuleSet sniff=no
 
 ## sniffHost у 192.168.9.208   (после)
       3 "sniffHost":"rr2---sn-5hne6nsz.googlevideo.com"

@@ -407,7 +407,7 @@
           "destinationIPASN",
           "dnsMode"
         ],
-        "observed": "107 154 байта на 150 соединений; destinationIP пуст у 141 (fake-ip), remoteDestination заполнен у всех, destinationGeoIP null у 146, destinationIPASN пуст у всех, process пуст у всех (TProxy). chains — от узла к группе: [\"🇫🇷⚡Франция\",\"PROXY\",\"BYPASS\"]. destinationPort — строка",
+        "observed": "107 154 байта на 150 соединений; destinationIP пуст у 141 (fake-ip), remoteDestination заполнен у всех, destinationGeoIP null у 146, destinationIPASN пуст у всех, process пуст у всех (TProxy). chains — от узла к группе: [\"🇫🇯⚡Фокстрот\",\"PROXY\",\"BYPASS\"]. destinationPort — строка",
         "geo_asn_note": "DstGeoIP пишется только при проверке правила GEOIP (rules/common/geoip.go:59-91), DstIPASN — только при проверке IP-ASN (rules/common/ipasn.go:35). Правила, до которого соединение не дошло, нет и метки — пустота не поломка",
         "no_server_filter": "фильтра по источнику у mihomo нет — отбор по sourceIP делает клиент",
         "source_tree": "https://github.com/MetaCubeX/mihomo/blob/v1.19.27 (та же версия, что снята живьём в nikki.version)",

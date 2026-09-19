@@ -49,20 +49,20 @@ nikki
 {"downloadTotal":26887948512,"uploadTotal":9866090047,"connections":[…],"memory":73535488}
 
 ## одна запись fake-ip и одна normal (как есть)
-{"id":"3f10a1d4-4913-4793-82a4-f63b664e7808","metadata":{"network":"tcp","type":"TProxy","sourceIP":"192.168.9.219","destinationIP":"","sourceGeoIP":null,"destinationGeoIP":null,"sourceIPASN":"","destinationIPASN":"","sourcePort":"50317","destinationPort":"443","inboundIP":"::","inboundPort":"7892","inboundName":"DEFAULT-TPROXY","inboundUser":"","host":"api.anthropic.com","dnsMode":"fake-ip","uid":0,"process":"","processPath":"","specialProxy":"","specialRules":"","remoteDestination":"154.222.132.99","dscp":0,"sniffHost":""},"upload":3456,"download":4953,"start":"2026-09-14T02:08:26.799495937Z","chains":["🇫🇷⚡Франция","PROXY","BYPASS"],"providerChains":["sub","",""],"rule":"RuleSet","rulePayload":"nm-geosite-anthropic"}
+{"id":"3f10a1d4-4913-4793-82a4-f63b664e7808","metadata":{"network":"tcp","type":"TProxy","sourceIP":"192.168.9.219","destinationIP":"","sourceGeoIP":null,"destinationGeoIP":null,"sourceIPASN":"","destinationIPASN":"","sourcePort":"50317","destinationPort":"443","inboundIP":"::","inboundPort":"7892","inboundName":"DEFAULT-TPROXY","inboundUser":"","host":"api.anthropic.com","dnsMode":"fake-ip","uid":0,"process":"","processPath":"","specialProxy":"","specialRules":"","remoteDestination":"154.222.132.99","dscp":0,"sniffHost":""},"upload":3456,"download":4953,"start":"2026-09-14T02:08:26.799495937Z","chains":["🇫🇯⚡Фокстрот","PROXY","BYPASS"],"providerChains":["sub","",""],"rule":"RuleSet","rulePayload":"nm-geosite-anthropic"}
 {"id":"f26ddbd2-639b-4729-b30c-cca96279102f","metadata":{"network":"tcp","type":"TProxy","sourceIP":"192.168.9.163","destinationIP":"13.222.111.224","sourceGeoIP":null,"destinationGeoIP":["us"],"sourceIPASN":"","destinationIPASN":"","sourcePort":"54094","destinationPort":"554","inboundIP":"::","inboundPort":"7892","inboundName":"DEFAULT-TPROXY","inboundUser":"","host":"","dnsMode":"normal","uid":0,"process":"","processPath":"","specialProxy":"","specialRules":"","remoteDestination":"13.222.111.224","dscp":0,"sniffHost":""},"upload":29689,"download":38576,"start":"2026-09-14T01:39:54.041347515Z","chains":["DIRECT"],"providerChains":[""],"rule":"Match","rulePayload":""}
 ## свёртка: источник dnsMode network цепочка правило
-     69 192.168.9.219 fake-ip tcp 🇫🇷⚡Франция RuleSet
+     69 192.168.9.219 fake-ip tcp 🇫🇯⚡Фокстрот RuleSet
      56 192.168.9.219 fake-ip tcp DIRECT Match
       4 192.168.9.219 normal tcp DIRECT Match
       4 192.168.9.142 fake-ip tcp DIRECT Match
       4 192.168.9.124 fake-ip tcp DIRECT Match
-      3 192.168.9.124 normal tcp 🇫🇷⚡Франция RuleSet
+      3 192.168.9.124 normal tcp 🇫🇯⚡Фокстрот RuleSet
       2 192.168.9.226 normal tcp DIRECT Match
-      2 192.168.9.219 normal tcp 🇫🇷⚡Франция RuleSet
+      2 192.168.9.219 normal tcp 🇫🇯⚡Фокстрот RuleSet
       2 192.168.9.219 normal tcp DIRECT DomainSuffix
       2 192.168.9.163 normal tcp DIRECT Match
-      1 192.168.9.163 fake-ip tcp 🇫🇷⚡Франция RuleSet
+      1 192.168.9.163 fake-ip tcp 🇫🇯⚡Фокстрот RuleSet
       1 192.168.9.163 fake-ip tcp DIRECT Match
 ## заполненность полей среди всех записей
 host пусто=9
@@ -136,12 +136,12 @@ Transfer-Encoding: chunked
      22 "type":"info"
      11 "type":"warning"
 ## строки с RuleSet / DomainSuffix / не-DIRECT
-{"type":"info","payload":"[TCP] 192.168.0.234:37984 --\u003e api.anthropic.com:443 match RuleSet(nm-geosite-anthropic) using BYPASS[🇫🇷⚡Франция]"}
-{"type":"info","payload":"[TCP] 192.168.0.234:42740 --\u003e www.youtube.com:443 match RuleSet(nm-geosite-youtube) using BYPASS[🇫🇷⚡Франция]"}
-{"type":"info","payload":"[TCP] 192.168.9.219:50526 --\u003e www.youtube.com:443 match RuleSet(nm-geosite-youtube) using BYPASS[🇫🇷⚡Франция]"}
-{"type":"info","payload":"[TCP] 192.168.0.234:37984 --\u003e api.anthropic.com:443 match RuleSet(nm-geosite-anthropic) using BYPASS[🇫🇷⚡Франция]"}
-{"type":"info","payload":"[TCP] 192.168.0.234:42740 --\u003e www.youtube.com:443 match RuleSet(nm-geosite-youtube) using BYPASS[🇫🇷⚡Франция]"}
-{"type":"info","payload":"[TCP] 192.168.9.219:50526 --\u003e www.youtube.com:443 match RuleSet(nm-geosite-youtube) using BYPASS[🇫🇷⚡Франция]"}
+{"type":"info","payload":"[TCP] 192.168.0.234:37984 --\u003e api.anthropic.com:443 match RuleSet(nm-geosite-anthropic) using BYPASS[🇫🇯⚡Фокстрот]"}
+{"type":"info","payload":"[TCP] 192.168.0.234:42740 --\u003e www.youtube.com:443 match RuleSet(nm-geosite-youtube) using BYPASS[🇫🇯⚡Фокстрот]"}
+{"type":"info","payload":"[TCP] 192.168.9.219:50526 --\u003e www.youtube.com:443 match RuleSet(nm-geosite-youtube) using BYPASS[🇫🇯⚡Фокстрот]"}
+{"type":"info","payload":"[TCP] 192.168.0.234:37984 --\u003e api.anthropic.com:443 match RuleSet(nm-geosite-anthropic) using BYPASS[🇫🇯⚡Фокстрот]"}
+{"type":"info","payload":"[TCP] 192.168.0.234:42740 --\u003e www.youtube.com:443 match RuleSet(nm-geosite-youtube) using BYPASS[🇫🇯⚡Фокстрот]"}
+{"type":"info","payload":"[TCP] 192.168.9.219:50526 --\u003e www.youtube.com:443 match RuleSet(nm-geosite-youtube) using BYPASS[🇫🇯⚡Фокстрот]"}
 ## строки UDP
 ## строки dial (ошибки)
 {"type":"warning","payload":"[TCP] dial DIRECT (match Match/) 192.168.9.219:50516 --\u003e 194.221.250.50:80 error: dial tcp 194.221.250.50:80: i/o timeout"}

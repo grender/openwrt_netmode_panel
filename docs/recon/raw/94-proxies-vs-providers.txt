@@ -8,8 +8,8 @@
 9 штук: BYPASS, COMPATIBLE, DIRECT, GLOBAL, PASS, PASS-RULE, PROXY, REJECT, REJECT-DROP
 
 == группа PROXY ==
-type=URLTest  now='🇷🇺💳Россия'  fixed=''  len(all)=38
-первые имена участников: 🇪🇸⚡Испания, 🇨🇭⚡Швейцария-1, 🇨🇭⚡Швейцария-2 EXTRA, 🇨🇭⚡Швейцария-3
+type=URLTest  now='🇦🇬💳Альфа'  fixed=''  len(all)=38
+первые имена участников: 🇯🇲⚡Джульетта, 🇨🇻⚡Чарли-1, 🇨🇻⚡Чарли-2 EXTRA, 🇨🇻⚡Чарли-3
 
 == ПЕРЕСЕЧЕНИЕ: имена участников, присутствующие ключом верхнего уровня ==
 0 из 38 — то есть НИ ОДНОГО.
@@ -26,6 +26,6 @@ type=URLTest  now='🇷🇺💳Россия'  fixed=''  len(all)=38
   имена, повторяющие верхний уровень (перезаписывать нельзя): BYPASS, DIRECT, PROXY, REJECT
 
 == что при этом отдавал демон, GET /api/nikki/proxies ==
-available=True group=PROXY type=URLTest selectable=True selected='🇷🇺💳Россия'
+available=True group=PROXY type=URLTest selectable=True selected='🇦🇬💳Альфа'
 members=40 по видам: {'auto': 1, 'unsupported': 38, 'separator': 1}
 причина у всех 38: узел есть в подписке, но mihomo его не показывает: движок либо не принял этот узел (например, транспорт, которого его версия не умеет), либо ещё не перечитал файл провайдера

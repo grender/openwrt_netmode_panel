@@ -107,8 +107,8 @@ func TestConnectionsParsesRouterRecords(t *testing.T) {
 	if fake.Name() != "api.anthropic.com" {
 		t.Errorf("имя адресата = %q, ожидался host при пустом sniffHost", fake.Name())
 	}
-	if got := ChainString(fake.Chains); got != "BYPASS[🇫🇷⚡Франция]" {
-		t.Errorf("цепочка = %q, а журнал пишет BYPASS[🇫🇷⚡Франция]", got)
+	if got := ChainString(fake.Chains); got != "BYPASS[🇫🇯⚡Фокстрот]" {
+		t.Errorf("цепочка = %q, а журнал пишет BYPASS[🇫🇯⚡Фокстрот]", got)
 	}
 	if fake.Rule != "RuleSet" || fake.RulePayload != "nm-geosite-anthropic" {
 		t.Errorf("правило = %q/%q", fake.Rule, fake.RulePayload)
@@ -142,7 +142,7 @@ func TestChainStringMatchesLogLine(t *testing.T) {
 	}{
 		{nil, ""},
 		{[]string{"DIRECT"}, "DIRECT"},
-		{[]string{"🇫🇷⚡Франция", "PROXY", "BYPASS"}, "BYPASS[🇫🇷⚡Франция]"},
+		{[]string{"🇫🇯⚡Фокстрот", "PROXY", "BYPASS"}, "BYPASS[🇫🇯⚡Фокстрот]"},
 		{[]string{"узел", "группа"}, "группа[узел]"},
 	}
 	for _, c := range cases {
