@@ -1078,6 +1078,102 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "503": { $ref: "#/components/responses/RulesetsUnavailable" }
 
+  /api/nikki/autopool:
+    get:
+      tags: [nikki]
+      summary: Чем наполняется группа AUTO
+      description: |
+        Вторая, независимая секция того же `/etc/nikki/mixin.yaml`, что и
+        наборы. Отвечает на вопрос «из каких узлов движок выбирает сам»,
+        тогда как наборы отвечают «что вообще идёт в туннель».
+
+        **Список узлов берётся из манифеста подписки, а не у движка.** Это
+        не экономия запроса: выбор владельца лежит в нашем файле и читается
+        без mihomo, а будь список живым, экран гас бы вместе с движком —
+        ровно тогда, когда владелец и лезет разбираться, почему обход не
+        работает.
+
+        `pool_size` — сколько узлов у движка в группе `AUTO` **сейчас**.
+        `null` означает «спросить не смогли», а не «пул пуст»: ноль соврал
+        бы про пустую группу у погашенного движка.
+
+        `provider_pool` пуст, если у провайдера своего авторежима нет:
+        тогда режим `provider` брать неоткуда, и панель обязана его не
+        предлагать.
+
+        `missing` — имена, которые владелец отметил, а провайдер с тех пор
+        переименовал или убрал. Молчать о них нельзя: в режиме `allow`
+        такое имя молча уменьшает пул, в `deny` — молча увеличивает.
+      responses:
+        "200":
+          description: Выбор по авто-пулу
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutopoolResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/RulesetsFileError" }
+    put:
+      tags: [nikki]
+      summary: Применить состав авто-пула (джоб)
+      description: |
+        Записывает `mixin.yaml` целиком, сохраняя секцию наборов, и
+        перезапускает Nikki: движок собирает рабочий конфиг только на
+        старте. Обход пропадает на 5–20 секунд.
+
+        **`If-Match` обязателен** — отпечаток из `GET`. Отпечаток у пула
+        свой, отдельный от наборов: решения независимые, и правка одного не
+        должна отбивать чужую запись другого.
+
+        Режим `provider` состава **не принимает**: список берёт демон из
+        балансировщика подписки, и в этом весь смысл режима — он
+        пересобирается сам при каждом обновлении.
+
+        Порядок проверок идёт от «запись бессмысленна» к «запись
+        невозможна», и все они стоят до первой записи: отката нет
+        (ADR-0006).
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          schema: { type: string }
+          description: Отпечаток из `GET /api/nikki/autopool`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AutopoolRequest" }
+      responses:
+        "202":
+          description: Джоб принят. Ход выполнения — в `GET /api/status`, поле `job`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobEnvelope" }
+        "400":
+          description: |
+            `bad_request` — тело не разбирается или режим незнаком.
+            `bad_autopool` — форма выбора не принята (пустой пул у `allow`,
+            дубликат имени, потолок в 128 узлов).
+            `unknown_node` — отмечено имя, которого в подписке нет: список
+            мог измениться, перечитайте `GET`.
+            `empty_pool` — после такого выбора в пуле не остаётся ни одного
+            узла. `empty-fallback` в профиле спасёт движок, но записывать
+            заведомо мёртвую группу нельзя: владелец не поймёт, чем он её
+            опустошил.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: |
+            `stale_autopool` — нет `If-Match` либо отпечаток разошёлся.
+            `foreign_mixin` — файл написан не нами.
+            `no_provider_pool` — запрошен режим `provider`, а балансировщика
+            у провайдера нет.
+            `job_busy` — уже идёт другая операция.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/RulesetsFileError" }
   /api/nikki/rulesets/catalog:
     get:
       tags: [nikki]
@@ -3360,6 +3456,80 @@ components:
             Почему строка непригодна. **Ключ отсутствует**, если пусто
             (`omitempty`); непуст только при `kind: unsupported`.
 
+    AutopoolRequest:
+      type: object
+      description: Тело `PUT /api/nikki/autopool`.
+      required: [mode]
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum: [deny, allow, provider]
+          description: |
+            `deny` — в пул идут все узлы, кроме отмеченных. Умолчание: с
+            пустым списком это весь список, то есть поведение до появления
+            авто-пула. `allow` — только отмеченные. `provider` — состав
+            берётся из балансировщика подписки и пересобирается при каждом
+            её обновлении.
+        nodes:
+          type: array
+          items: { type: string }
+          description: |
+            Имена узлов подписки. У `deny` — что исключить, у `allow` — что
+            оставить. У `provider` **игнорируется**: состав даёт демон.
+    AutopoolResponse:
+      type: object
+      description: |
+        Тело `GET /api/nikki/autopool`. Собирается из `map[string]any`,
+        поэтому порядок ключей в примере алфавитный — на него не
+        программируют.
+      required: [fingerprint, mode, nodes, foreign, available, provider_pool, missing]
+      additionalProperties: false
+      properties:
+        fingerprint:
+          type: string
+          description: |
+            Отпечаток выбора для `If-Match` (`sha256:` + 16 hex). Считается
+            по канонической форме — режим и имена, — а не по байтам файла.
+            Отдельный от отпечатка наборов: секции независимы.
+          examples: ["sha256:0f3c1a2b4d5e6f70"]
+        mode:
+          type: string
+          enum: [deny, allow, provider]
+          description: |
+            Наружу всегда словом. Внутри пустой режим и `deny` — одно
+            состояние, но переключателю в панели нужен конкретный выбор.
+        nodes:
+          type: array
+          items: { type: string }
+          description: Отмеченные имена в том смысле, который задаёт `mode`.
+        foreign:
+          type: boolean
+          description: |
+            Файл есть, но написан не нами. Тогда выбор пуст, а панель
+            обязана показать предупреждение, а не кнопку «Применить».
+        available:
+          type: array
+          items: { type: string }
+          description: |
+            Узлы подписки в авторском порядке провайдера — из них владелец
+            и отмечает. Из манифеста, а не от движка.
+        provider_pool:
+          type: array
+          items: { type: string }
+          description: |
+            Состав балансировщика подписки. Пуст — своего авторежима у
+            провайдера нет, и режим `provider` недоступен.
+        missing:
+          type: array
+          items: { type: string }
+          description: |
+            Отмеченные имена, которых больше нет в подписке.
+        pool_size:
+          type: [integer, "null"]
+          description: |
+            Сколько узлов у движка в группе `AUTO` сейчас. `null` —
+            «спросить не смогли», а не «пул пуст».
     RulesetsResponse:
       type: object
       description: |

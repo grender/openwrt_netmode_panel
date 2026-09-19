@@ -16,6 +16,7 @@ export const ROUTES = {
 	bridgeEnable: '/api/bridge/enable',
 	logs: '/api/logs',
 	mode: '/api/mode',
+	nikkiAutopool: '/api/nikki/autopool',
 	nikkiPanel: '/api/nikki/panel',
 	nikkiProxies: '/api/nikki/proxies',
 	nikkiProxy: '/api/nikki/proxy',

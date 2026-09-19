@@ -667,7 +667,7 @@ func (s *Server) applyRulesets(ctx context.Context, want mixin.Config) error {
 	}
 
 	// b. Флаг.
-	if err := s.switchMixinFlag(ctx, want.Policy); err != nil {
+	if err := s.switchMixinFlag(ctx, want); err != nil {
 		return err
 	}
 
@@ -751,11 +751,15 @@ func (s *Server) applyRulesets(ctx context.Context, want mixin.Config) error {
 //
 // Запись тем же значением стоила бы коммита пакета nikki на флеше и заодно
 // опубликовала бы всё, что накопил в стейджинге кто-то ещё.
-func (s *Server) switchMixinFlag(ctx context.Context, p mixin.Policy) error {
+// Решение принимается по ВСЕМУ файлу, а не по одной политике наборов.
+// Секций в нём две, и авто-пул живёт в той же склейке: выключив флаг
+// из-за «правила из профиля», мы молча обесценили бы выбор узлов —
+// файл остался бы на диске, а движок перестал бы его читать.
+func (s *Server) switchMixinFlag(ctx context.Context, c mixin.Config) error {
 	want := "1"
-	if p == mixin.PolicyProfile {
-		// Правила целиком из профиля: файл из одной шапки, и склеивать его
-		// не нужно вовсе.
+	if c.Policy == mixin.PolicyProfile && c.Auto.IsDefault() {
+		// Обе секции пусты: файл из одной шапки, и склеивать его не нужно
+		// вовсе.
 		want = "0"
 	}
 
