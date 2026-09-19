@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { api, ApiError, T as BUDGET } from '../api/client';
 import { describe, errCode, failText, jobText, STALE_CODES, BRIDGE_STALE_CODES, WHY_CODES } from '../api/describe';
 import type {
+	AutopoolDraft,
+	AutopoolResponse,
 	BridgeState,
 	JobAccepted,
 	LogsResponse,
@@ -31,6 +33,7 @@ import { Section, Skel, Spin, useMedia } from './bits';
 import { bridgeProblem, bridgeSummary } from './Bridge';
 import { Engine, engineSummary, engineTitle } from './Engine';
 import { rulesSummary } from './Rulesets';
+import { poolLeft, poolSummary } from './Autopool';
 import { Settings, SETTINGS_ROWS, type SettingsRow } from './Settings';
 import { BridgeForm, NetworkForm, type BridgeBody, type NetBody, type NetSeed } from './Sheets';
 import { Shelf } from './Shelf';
@@ -80,6 +83,7 @@ export function App() {
 	const sub = useSide<SubscriptionURL>('subscription');
 	const rulesets = useSide<RulesetsResponse>('nikkiRulesets');
 	const catalog = useSide<RulesetsCatalog>('nikkiRulesetsCatalog');
+	const autopool = useSide<AutopoolResponse>('nikkiAutopool');
 
 	const [netForm, setNetForm] = useState<NetSeed | null>(null);
 	// Экран — из адреса, и только из него: кнопка «назад» браузера обязана
@@ -94,6 +98,7 @@ export function App() {
 	// есть однажды применил бы выбор поверх файла, которого владелец уже
 	// не помнит.
 	const [rulesDraft, setRulesDraft] = useState<RulesDraft | null>(null);
+	const [poolDraft, setPoolDraft] = useState<AutopoolDraft | null>(null);
 	const [bridgeForm, setBridgeForm] = useState(false);
 	// Наблюдатель опрашивается СВОИМ циклом и только пока его экран открыт:
 	// состояние сессии велико, а нужно оно ровно здесь. И только этот опрос
@@ -233,6 +238,21 @@ export function App() {
 		// У наборов свой тост: после применения важно не «готово», а какие
 		// наборы не загрузились. Общее «готово» это скрыло бы, и владелец
 		// узнал бы о неработающем правиле только по неработающему сайту.
+		// У пула свой тост: важно не «готово», а сколько узлов в нём
+		// осталось — иначе владелец узнает о слишком жадном фильтре только
+		// по неработающему обходу.
+		if (j.kind === 'autopool') {
+			void (async () => {
+				try {
+					const r = await api<AutopoolResponse>('nikkiAutopool', { timeoutMs: BUDGET.SIDE });
+					autopool.put(r);
+					lock.flash(t('pool.done', { n: r.pool_size ?? poolLeft({ mode: r.mode, nodes: r.nodes }, r.available) }), 'ok');
+				} catch {
+					void autopool.load();
+				}
+			})();
+			return;
+		}
 		if (j.kind === 'rulesets') {
 			void (async () => {
 				try {
@@ -505,6 +525,31 @@ export function App() {
 			},
 		);
 
+	const onApplyPool = (d: AutopoolDraft) =>
+		void lock.act(
+			'autopool',
+			async () => {
+				try {
+					poll.sow(
+						await api<JobAccepted>('nikkiAutopool', {
+							method: 'PUT',
+							body: JSON.stringify(d),
+							headers: { 'If-Match': autopool.value?.fingerprint ?? '' },
+							timeoutMs: BUDGET.MODE,
+						}),
+					);
+				} catch (e) {
+					// Устаревший отпечаток лечится перечитыванием, а не
+					// повтором: пул изменился, и повтор затёр бы чужую
+					// правку тем же черновиком.
+					if (errCode(e) === 'stale_autopool') await autopool.load();
+					throw e;
+				}
+				setPoolDraft(null);
+			},
+			async () => {},
+		);
+
 	const onApplyRules = (d: RulesDraft) =>
 		void lock.act(
 			'rulesets',
@@ -748,6 +793,10 @@ export function App() {
 						locked={locked}
 						status={status}
 						rulesets={rulesets.value}
+						autopool={autopool.value}
+						poolDraft={poolDraft}
+						setPoolDraft={setPoolDraft}
+						onApplyPool={onApplyPool}
 						catalog={catalog.value}
 						draft={rulesDraft}
 						setDraft={setRulesDraft}
@@ -1056,6 +1105,7 @@ export function App() {
 						t={t}
 						rows={[
 							{ id: 'routes', title: t('shelf.rules'), summary: rulesSummary(rulesets.value, rulesDraft, t) },
+							{ id: 'pool', title: t('shelf.pool'), summary: poolSummary(autopool.value, poolDraft, t) },
 							{ id: 'sub', title: t('shelf.sub'), summary: subSummary(status, lang, t) },
 							{ id: 'bridge', title: t('shelf.bridge'), summary: bridgeSummary(bridge.value, t), warn: !!problem },
 							// Сводка наблюдателя называет СОСТОЯНИЕ: «выключен» — это

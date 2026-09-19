@@ -61,6 +61,15 @@ const ERR_KEY: Record<string, Key> = {
 	catalog_unavailable: 'err.catalog_unavailable',
 	group_missing: 'err.group_missing',
 	mixin_corrupt: 'err.mixin_corrupt',
+
+	// Авто-пул. Своя оптимистичная блокировка (stale_autopool): отпечаток
+	// у пула отдельный от наборов, потому что решения независимы, и
+	// правка одного не должна отбивать чужую запись другого.
+	stale_autopool: 'err.stale_autopool',
+	bad_autopool: 'err.bad_autopool',
+	unknown_node: 'err.unknown_node',
+	empty_pool: 'err.empty_pool',
+	no_provider_pool: 'err.no_provider_pool',
 };
 
 /**

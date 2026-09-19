@@ -1,5 +1,7 @@
 import type { ComponentChildren } from 'preact';
 import type {
+	AutopoolDraft,
+	AutopoolResponse,
 	BridgeState,
 	LogsResponse,
 	ProxiesResponse,
@@ -13,13 +15,14 @@ import type { Lang, T } from '../i18n';
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
 import { Section } from './bits';
+import { Autopool, poolSummary } from './Autopool';
 import { Bridge, bridgeProblem, bridgeSummary } from './Bridge';
 import { Rulesets, rulesSummary } from './Rulesets';
 import { Subscription, subSummary } from './Subscription';
 
 /** Разделы экрана настроек — они же хеши адреса: #routes, #sub, #bridge. */
-export type SettingsRow = 'routes' | 'sub' | 'bridge';
-export const SETTINGS_ROWS: SettingsRow[] = ['routes', 'sub', 'bridge'];
+export type SettingsRow = 'routes' | 'pool' | 'sub' | 'bridge';
+export const SETTINGS_ROWS: SettingsRow[] = ['routes', 'pool', 'sub', 'bridge'];
 
 export interface SettingsProps {
 	/** Открытый раздел на узком экране; на широком раскрыты все. */
@@ -38,6 +41,11 @@ export interface SettingsProps {
 	setDraft(d: RulesDraft | null): void;
 	onApplyRules(d: RulesDraft): void;
 	onLoadCatalog(): void;
+
+	autopool: Side<AutopoolResponse>;
+	poolDraft: AutopoolDraft | null;
+	setPoolDraft(d: AutopoolDraft | null): void;
+	onApplyPool(d: AutopoolDraft): void;
 
 	sub: Side<SubscriptionURL>;
 	logs: Side<LogsResponse>;
@@ -83,6 +91,21 @@ export function Settings(p: SettingsProps) {
 					t={t}
 					onApply={p.onApplyRules}
 					onLoadCatalog={p.onLoadCatalog}
+				/>
+			</Section>
+
+			{/* Авто-пул стоит сразу за наборами: обе секции живут в одном
+			    mixin.yaml и отвечают на соседние вопросы — что идёт в
+			    туннель и через какие узлы. */}
+			<Section id="pool" title={t('shelf.pool')} summary={poolSummary(p.autopool, p.poolDraft, t)} wide={wide} open={open('pool')} onToggle={() => p.onRow('pool')} t={t} full>
+				<Autopool
+					applied={p.autopool}
+					draft={p.poolDraft}
+					setDraft={p.setPoolDraft}
+					lock={p.lock}
+					locked={p.locked}
+					t={t}
+					onApply={p.onApplyPool}
 				/>
 			</Section>
 
