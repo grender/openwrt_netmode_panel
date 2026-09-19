@@ -138,6 +138,11 @@ func newFakeNikkiSelectorClient() *fakeNikkiClient {
 		"AUTO": {Name: "AUTO", Type: "URLTest", Alive: true,
 			Members: []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2"},
 			Now:     "🇨🇭⚡Швейцария 2", Selectable: true},
+		// BYPASS в новую раскладку входит наравне с AUTO: наборы целятся
+		// именно в него. Без него проверка «наборы применились» упёрлась
+		// бы в group_missing раньше, чем дошла до сути.
+		"BYPASS": {Name: "BYPASS", Type: "Fallback", Alive: true,
+			Members: []string{"PROXY", "REJECT"}, Now: "PROXY", Selectable: true},
 		"GLOBAL": {Name: "GLOBAL", Type: "Selector", Alive: true,
 			Members: []string{"DIRECT", "PROXY"}, Now: "DIRECT", Selectable: true},
 		"🇵🇱⚡Польша":      {Name: "🇵🇱⚡Польша", Type: "Vless", Alive: true, DelayMS: d(38)},

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"netmoded/internal/job"
 	"netmoded/internal/mixin"
 )
 
@@ -141,5 +142,57 @@ func TestAutoPoolSizeIsReported(t *testing.T) {
 	s2.SetNikkiClient(newFakeNikkiClient())
 	if old := readAuto(t, do(t, s2, http.MethodGet, "/api/nikki/proxies", true).Body.Bytes()); old.AutoPool != nil {
 		t.Errorf("на профиле без AUTO отдан размер пула %d", *old.AutoPool)
+	}
+}
+
+// Авто-пул и наборы — две независимые секции ОДНОГО файла, а файл
+// пишется целиком. Значит применение наборов обязано перенести пул из
+// прочитанного: без переноса владелец, нажавший «Применить» на вкладке
+// наборов, молча потерял бы выбор узлов — и связи между двумя экранами
+// не увидел бы никогда.
+func TestRulesetsApplyKeepsAutoPool(t *testing.T) {
+	s, _ := newServer(t)
+	s.SetNikkiClient(newFakeNikkiSelectorClient())
+
+	before := mixin.Config{
+		Policy:   mixin.PolicyDirect,
+		Download: mixin.DownloadDirect,
+		Sets:     []mixin.Set{{Name: "youtube", Action: mixin.ActionTunnel}},
+		Auto: mixin.AutoConfig{Mode: mixin.AutoAllow,
+			Nodes: []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2"}},
+	}
+	writeMixin(t, s, mixin.Render(before))
+	// Движок отчитывается, что новый набор скачан: иначе джоб честно
+	// упадёт на проверке загрузки, не дойдя до предмета теста.
+	nikkiFake(t, s).ruleProviders = loadedProviders(mixin.Set{Name: "openai", Action: mixin.ActionTunnel})
+
+	rec := putRulesets(t, s,
+		`{"policy":"direct","sets":[{"name":"openai","action":"tunnel"}]}`,
+		mixin.Fingerprint(before))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d: %s", rec.Code, rec.Body.String())
+	}
+	if state, msg := jobOutcome(t, s); state != job.Done {
+		t.Fatalf("джоб %s: %s", state, msg)
+	}
+
+	raw, ok := mixinBytes(t, s)
+	if !ok {
+		t.Fatal("файл наборов не создан")
+	}
+	got, _, err := mixin.Parse(raw)
+	if err != nil {
+		t.Fatalf("разбор файла: %v\n%s", err, raw)
+	}
+	if got.Auto.Mode != mixin.AutoAllow {
+		t.Errorf("режим пула после применения наборов: %q", got.Auto.Mode)
+	}
+	if len(got.Auto.Nodes) != 2 {
+		t.Errorf("узлов в пуле осталось %d, было 2: %v", len(got.Auto.Nodes), got.Auto.Nodes)
+	}
+	// И наборы при этом действительно применились — иначе тест проходил
+	// бы на файле, который просто не переписали.
+	if len(got.Sets) != 1 || got.Sets[0].Name != "openai" {
+		t.Errorf("наборы не применились: %+v", got.Sets)
 	}
 }
