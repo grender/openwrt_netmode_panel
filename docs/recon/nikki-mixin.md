@@ -54,7 +54,7 @@ yq eval-all '... | . as $item ireduce ({}; . * $item) | .rules = .nikki-rules + 
 семь ручных провайдеров владельца в `main.yml`.
 
 Поэтому при нуле выбранных наборов `Render` рубрику **не пишет вовсе**
-(`internal/rulesets/rulesets.go`, ветка `len(c.Sets) > 0`); стережёт
+(`internal/mixin/sets.go`, ветка `len(c.Sets) > 0`); стережёт
 `TestRenderEmptySetsHasNoProviders`.
 
 **Это вывод из формы команды `yq`, а не наблюдение.** Проверить на роутере

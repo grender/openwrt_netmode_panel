@@ -17,8 +17,8 @@ import (
 	"netmoded/internal/executor"
 	"netmoded/internal/geosite"
 	"netmoded/internal/job"
+	"netmoded/internal/mixin"
 	"netmoded/internal/nikki"
-	"netmoded/internal/rulesets"
 )
 
 // standCommit — sha корневого дерева, которым отвечает подставной GitHub.
@@ -123,13 +123,13 @@ func setByName(t *testing.T, body map[string]any, name string) map[string]any {
 // и литерал в тесте разошёлся бы с ним от первой же правки формата — тест
 // начал бы проверять форму, которой демон уже не пишет.
 func onlyMixin() []byte {
-	return rulesets.Render(rulesets.Config{
-		Policy:   rulesets.PolicyDirect,
-		Download: rulesets.DownloadDirect,
-		Sets: []rulesets.Set{
-			{Name: "youtube", Action: rulesets.ActionTunnel},
-			{Name: "telegram", IP: true, Action: rulesets.ActionTunnel},
-			{Name: "openai", Action: rulesets.ActionTunnel},
+	return mixin.Render(mixin.Config{
+		Policy:   mixin.PolicyDirect,
+		Download: mixin.DownloadDirect,
+		Sets: []mixin.Set{
+			{Name: "youtube", Action: mixin.ActionTunnel},
+			{Name: "telegram", IP: true, Action: mixin.ActionTunnel},
+			{Name: "openai", Action: mixin.ActionTunnel},
 		},
 	})
 }
@@ -144,17 +144,17 @@ func TestRulesetsFreshInstallIsProfile(t *testing.T) {
 
 	body := rulesetsGet(t, s)
 
-	if body["policy"] != string(rulesets.PolicyProfile) {
-		t.Errorf("policy %v, ожидалась %q", body["policy"], rulesets.PolicyProfile)
+	if body["policy"] != string(mixin.PolicyProfile) {
+		t.Errorf("policy %v, ожидалась %q", body["policy"], mixin.PolicyProfile)
 	}
-	if body["download"] != string(rulesets.DownloadDirect) {
-		t.Errorf("download %v, ожидалось %q", body["download"], rulesets.DownloadDirect)
+	if body["download"] != string(mixin.DownloadDirect) {
+		t.Errorf("download %v, ожидалось %q", body["download"], mixin.DownloadDirect)
 	}
 	if body["foreign"] != false {
 		t.Errorf("foreign %v: отсутствующий файл нашим быть не перестаёт", body["foreign"])
 	}
-	if body["tunnel_group"] != rulesets.TunnelGroup {
-		t.Errorf("tunnel_group %v, ожидалась %q", body["tunnel_group"], rulesets.TunnelGroup)
+	if body["tunnel_group"] != mixin.TunnelGroup {
+		t.Errorf("tunnel_group %v, ожидалась %q", body["tunnel_group"], mixin.TunnelGroup)
 	}
 	// Отпечаток есть и на пустом выборе: без него первый же PUT панели
 	// нечем сопроводить в If-Match, и запись отбилась бы навсегда.
@@ -203,7 +203,7 @@ func TestRulesetsReportsEngineState(t *testing.T) {
 	if body["live"] != true {
 		t.Fatalf("live %v: движок ответил, состояние сверено", body["live"])
 	}
-	if body["policy"] != string(rulesets.PolicyDirect) {
+	if body["policy"] != string(mixin.PolicyDirect) {
 		t.Errorf("policy %v", body["policy"])
 	}
 
@@ -295,7 +295,7 @@ func TestRulesetsForeignFileIsNotOurs(t *testing.T) {
 	if body["foreign"] != true {
 		t.Fatalf("foreign %v: в файле чужое содержимое без нашей шапки", body["foreign"])
 	}
-	if body["policy"] != string(rulesets.PolicyProfile) {
+	if body["policy"] != string(mixin.PolicyProfile) {
 		t.Errorf("policy %v: чужой файл наборов не выбирает", body["policy"])
 	}
 	if sets, _ := body["sets"].([]any); len(sets) != 0 {
@@ -606,7 +606,7 @@ func putRulesets(t *testing.T, s *Server, body, ifMatch string) *httptest.Respon
 
 // rulesetsFP — отпечаток, который панель берёт из GET и кладёт в If-Match.
 //
-// Берётся именно из ответа, а не считается тестом по rulesets.Fingerprint:
+// Берётся именно из ответа, а не считается тестом по mixin.Fingerprint:
 // иначе проверка сверяла бы отпечаток сам с собой, а разрыв «GET отдаёт одно,
 // PUT ждёт другое» остался бы невидимым — то есть панель не смогла бы
 // записать ничего никогда.
@@ -628,20 +628,20 @@ func rulesetsFP(t *testing.T, s *Server) string {
 func addBypass(t *testing.T, s *Server) {
 	t.Helper()
 	f := nikkiFake(t, s)
-	f.all[rulesets.TunnelGroup] = nikki.Proxy{
-		Name: rulesets.TunnelGroup, Type: "Selector", Alive: true,
+	f.all[mixin.TunnelGroup] = nikki.Proxy{
+		Name: mixin.TunnelGroup, Type: "Selector", Alive: true,
 		Members: []string{"DIRECT", "PROXY"}, Now: "PROXY", Selectable: true,
 	}
 }
 
 // loadedProviders — движок, который скачал ВСЕ провайдеры перечисленных
-// наборов: у каждого ненулевое время, иначе rulesets.Verify считает набор
+// наборов: у каждого ненулевое время, иначе mixin.Verify считает набор
 // недокачанным.
-func loadedProviders(sets ...rulesets.Set) map[string]nikki.RuleProvider {
+func loadedProviders(sets ...mixin.Set) map[string]nikki.RuleProvider {
 	at := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
 	out := map[string]nikki.RuleProvider{}
 	for _, set := range sets {
-		for _, name := range rulesets.ProviderNames(set) {
+		for _, name := range mixin.ProviderNames(set) {
 			out[name] = nikki.RuleProvider{Name: name, RuleCount: 100, UpdatedAt: at}
 		}
 	}
@@ -705,9 +705,9 @@ func callCount(calls []string, want string) int {
 func TestRulesetsPutAppliesFileFlagAndRestart(t *testing.T) {
 	s, f := newServer(t)
 	addBypass(t, s)
-	want := rulesets.Config{
-		Policy: rulesets.PolicyDirect, Download: rulesets.DownloadDirect,
-		Sets: []rulesets.Set{{Name: "youtube", Action: rulesets.ActionTunnel}, {Name: "telegram", IP: true, Action: rulesets.ActionTunnel}},
+	want := mixin.Config{
+		Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
+		Sets: []mixin.Set{{Name: "youtube", Action: mixin.ActionTunnel}, {Name: "telegram", IP: true, Action: mixin.ActionTunnel}},
 	}
 	nikkiFake(t, s).ruleProviders = loadedProviders(want.Sets...)
 
@@ -724,9 +724,9 @@ func TestRulesetsPutAppliesFileFlagAndRestart(t *testing.T) {
 	if !ok {
 		t.Fatal("файл наборов не создан")
 	}
-	if string(got) != string(rulesets.Render(want)) {
+	if string(got) != string(mixin.Render(want)) {
 		t.Errorf("файл не совпал с Render:\n--- на диске ---\n%s\n--- ожидалось ---\n%s",
-			got, rulesets.Render(want))
+			got, mixin.Render(want))
 	}
 
 	iSet, iCommit, iApply := callIndex(f.Calls, "set nikki.mixin.mixin_file_content=1"),
@@ -744,7 +744,7 @@ func TestRulesetsPutAppliesFileFlagAndRestart(t *testing.T) {
 	// выбора, и разойдись запись с чтением, панель показывала бы не то,
 	// что применено.
 	body := rulesetsGet(t, s)
-	if body["policy"] != string(rulesets.PolicyDirect) || body["download"] != string(rulesets.DownloadDirect) {
+	if body["policy"] != string(mixin.PolicyDirect) || body["download"] != string(mixin.DownloadDirect) {
 		t.Errorf("GET после записи: policy %v, download %v", body["policy"], body["download"])
 	}
 	if tg := setByName(t, body, "telegram"); tg["ip"] != true {
@@ -763,12 +763,12 @@ func TestRulesetsPutAppliesFileFlagAndRestart(t *testing.T) {
 func TestRulesetsPutWritesCustomRules(t *testing.T) {
 	s, _ := newServer(t)
 	addBypass(t, s)
-	want := rulesets.Config{
-		Policy: rulesets.PolicyDirect, Download: rulesets.DownloadDirect,
-		Sets: []rulesets.Set{{Name: "youtube", Action: rulesets.ActionTunnel}},
-		Rules: []rulesets.Rule{
-			{Kind: rulesets.RuleSuffix, Value: "worldsimseries.com", Action: rulesets.ActionTunnel, Comment: "лига WSS"},
-			{Kind: rulesets.RuleCIDR, Value: "100.64.0.0/10", Action: rulesets.ActionDirect},
+	want := mixin.Config{
+		Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
+		Sets: []mixin.Set{{Name: "youtube", Action: mixin.ActionTunnel}},
+		Rules: []mixin.Rule{
+			{Kind: mixin.RuleSuffix, Value: "worldsimseries.com", Action: mixin.ActionTunnel, Comment: "лига WSS"},
+			{Kind: mixin.RuleCIDR, Value: "100.64.0.0/10", Action: mixin.ActionDirect},
 		},
 	}
 	nikkiFake(t, s).ruleProviders = loadedProviders(want.Sets...)
@@ -785,9 +785,9 @@ func TestRulesetsPutWritesCustomRules(t *testing.T) {
 	}
 
 	got, _ := mixinBytes(t, s)
-	if string(got) != string(rulesets.Render(want)) {
+	if string(got) != string(mixin.Render(want)) {
 		t.Errorf("файл не совпал с Render:\n--- на диске ---\n%s\n--- ожидалось ---\n%s",
-			got, rulesets.Render(want))
+			got, mixin.Render(want))
 	}
 
 	body := rulesetsGet(t, s)
@@ -847,13 +847,13 @@ func TestRulesetsPutRulesOnlyNoSets(t *testing.T) {
 func TestRulesetsPutStaleWhenRulesChanged(t *testing.T) {
 	s, _ := newServer(t)
 	addBypass(t, s)
-	base := rulesets.Config{Policy: rulesets.PolicyDirect, Download: rulesets.DownloadDirect,
-		Sets: []rulesets.Set{{Name: "youtube", Action: rulesets.ActionTunnel}}}
+	base := mixin.Config{Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
+		Sets: []mixin.Set{{Name: "youtube", Action: mixin.ActionTunnel}}}
 	withRule := base
-	withRule.Rules = []rulesets.Rule{{Kind: rulesets.RuleSuffix, Value: "x.com", Action: rulesets.ActionTunnel}}
-	writeMixin(t, s, rulesets.Render(withRule))
+	withRule.Rules = []mixin.Rule{{Kind: mixin.RuleSuffix, Value: "x.com", Action: mixin.ActionTunnel}}
+	writeMixin(t, s, mixin.Render(withRule))
 
-	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, rulesets.Fingerprint(base))
+	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, mixin.Fingerprint(base))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("код %d, ожидался 409; тело %s", rec.Code, rec.Body.String())
 	}
@@ -869,7 +869,7 @@ func TestRulesetsPutStaleWhenRulesChanged(t *testing.T) {
 func TestRulesetsPutWithoutRulesFieldMeansNone(t *testing.T) {
 	s, _ := newServer(t)
 	addBypass(t, s)
-	nikkiFake(t, s).ruleProviders = loadedProviders(rulesets.Set{Name: "youtube", Action: rulesets.ActionTunnel})
+	nikkiFake(t, s).ruleProviders = loadedProviders(mixin.Set{Name: "youtube", Action: mixin.ActionTunnel})
 
 	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
@@ -902,16 +902,16 @@ func TestRulesetsGetLegacyFileReportsDirections(t *testing.T) {
 			"  - 'MATCH,DIRECT'\n"))
 
 	body := rulesetsGet(t, s)
-	if body["policy"] != string(rulesets.PolicyDirect) {
+	if body["policy"] != string(mixin.PolicyDirect) {
 		t.Errorf("policy %v, ожидалась direct", body["policy"])
 	}
 	for _, name := range []string{"youtube", "telegram"} {
-		if set := setByName(t, body, name); set["action"] != string(rulesets.ActionTunnel) {
+		if set := setByName(t, body, name); set["action"] != string(mixin.ActionTunnel) {
 			t.Errorf("%s: action %v, ожидалось tunnel", name, set["action"])
 		}
 	}
-	want := rulesets.Fingerprint(rulesets.Config{Policy: rulesets.PolicyDirect, Download: rulesets.DownloadDirect,
-		Sets: []rulesets.Set{{Name: "youtube", Action: rulesets.ActionTunnel}, {Name: "telegram", IP: true, Action: rulesets.ActionTunnel}}})
+	want := mixin.Fingerprint(mixin.Config{Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
+		Sets: []mixin.Set{{Name: "youtube", Action: mixin.ActionTunnel}, {Name: "telegram", IP: true, Action: mixin.ActionTunnel}}})
 	if body["fingerprint"] != want {
 		t.Errorf("отпечаток старого файла %v, ожидался %s (как после перезаписи)", body["fingerprint"], want)
 	}
@@ -1028,7 +1028,7 @@ func TestRulesetsPutKeepsFlagAlreadyOn(t *testing.T) {
 	s, f := newServer(t)
 	addBypass(t, s)
 	f.UCIValues["nikki.mixin.mixin_file_content"] = "1"
-	nikkiFake(t, s).ruleProviders = loadedProviders(rulesets.Set{Name: "youtube", Action: rulesets.ActionTunnel})
+	nikkiFake(t, s).ruleProviders = loadedProviders(mixin.Set{Name: "youtube", Action: mixin.ActionTunnel})
 
 	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
@@ -1176,12 +1176,12 @@ func TestRulesetsPutRefusesBeforeAnyWrite(t *testing.T) {
 	}, {
 		name: "в профиле нет группы BYPASS",
 		setup: func(t *testing.T, s *Server, f *executor.Fake) {
-			delete(nikkiFake(t, s).all, rulesets.TunnelGroup)
+			delete(nikkiFake(t, s).all, mixin.TunnelGroup)
 		},
 		body:   `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"}]}`,
 		status: http.StatusServiceUnavailable,
 		code:   "group_missing",
-		text:   []string{rulesets.TunnelGroup},
+		text:   []string{mixin.TunnelGroup},
 	}}
 
 	for _, tc := range tests {
@@ -1241,10 +1241,10 @@ func TestRulesetsPutRefusesBeforeAnyWrite(t *testing.T) {
 func TestRulesetsPutAcceptsAppliedNameWithoutCatalog(t *testing.T) {
 	s, _ := newServer(t)
 	addBypass(t, s)
-	applied := rulesets.Set{Name: "telegram", IP: true, Action: rulesets.ActionTunnel}
-	writeMixin(t, s, rulesets.Render(rulesets.Config{
-		Policy: rulesets.PolicyDirect, Download: rulesets.DownloadDirect,
-		Sets: []rulesets.Set{applied},
+	applied := mixin.Set{Name: "telegram", IP: true, Action: mixin.ActionTunnel}
+	writeMixin(t, s, mixin.Render(mixin.Config{
+		Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
+		Sets: []mixin.Set{applied},
 	}))
 	s.catalog = &geosite.Client{BaseURL: newCatalogStand(t, http.StatusInternalServerError).URL, Logf: s.logf}
 	nikkiFake(t, s).ruleProviders = loadedProviders(applied)
@@ -1258,9 +1258,9 @@ func TestRulesetsPutAcceptsAppliedNameWithoutCatalog(t *testing.T) {
 	}
 
 	// Направление сменилось вместе с хвостом, признак подсетей — из файла.
-	want := rulesets.Render(rulesets.Config{
-		Policy: rulesets.PolicyTunnel, Download: rulesets.DownloadDirect,
-		Sets: []rulesets.Set{{Name: applied.Name, IP: applied.IP, Action: rulesets.ActionDirect}},
+	want := mixin.Render(mixin.Config{
+		Policy: mixin.PolicyTunnel, Download: mixin.DownloadDirect,
+		Sets: []mixin.Set{{Name: applied.Name, IP: applied.IP, Action: mixin.ActionDirect}},
 	})
 	got, _ := mixinBytes(t, s)
 	if string(got) != string(want) {
@@ -1362,7 +1362,7 @@ func TestRulesetsPutFailsWhenNothingLoaded(t *testing.T) {
 func TestRulesetsPutDoneWhenPartlyLoaded(t *testing.T) {
 	s, _ := newServer(t)
 	addBypass(t, s)
-	nikkiFake(t, s).ruleProviders = loadedProviders(rulesets.Set{Name: "youtube", Action: rulesets.ActionTunnel})
+	nikkiFake(t, s).ruleProviders = loadedProviders(mixin.Set{Name: "youtube", Action: mixin.ActionTunnel})
 
 	rec := putRulesets(t, s, `{"policy":"direct","sets":[{"name":"youtube","action":"tunnel"},{"name":"openai","action":"tunnel"}]}`, rulesetsFP(t, s))
 	if rec.Code != http.StatusAccepted {
@@ -1397,7 +1397,7 @@ func TestRulesetsPutProfileWritesHeaderOnly(t *testing.T) {
 	}
 
 	got, _ := mixinBytes(t, s)
-	want := rulesets.Render(rulesets.Config{Policy: rulesets.PolicyProfile, Download: rulesets.DownloadDirect})
+	want := mixin.Render(mixin.Config{Policy: mixin.PolicyProfile, Download: mixin.DownloadDirect})
 	if string(got) != string(want) {
 		t.Errorf("файл:\n%s\nожидался из одной шапки:\n%s", got, want)
 	}
@@ -1472,9 +1472,9 @@ func TestRulesetsPutRewritesCorruptFile(t *testing.T) {
 		s, _ := newServer(t)
 		addBypass(t, s)
 		writeMixin(t, s, corruptMixin())
-		want := rulesets.Config{
-			Policy: rulesets.PolicyDirect, Download: rulesets.DownloadDirect,
-			Sets: []rulesets.Set{{Name: "youtube", Action: rulesets.ActionTunnel}},
+		want := mixin.Config{
+			Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
+			Sets: []mixin.Set{{Name: "youtube", Action: mixin.ActionTunnel}},
 		}
 		nikkiFake(t, s).ruleProviders = loadedProviders(want.Sets...)
 
@@ -1486,8 +1486,8 @@ func TestRulesetsPutRewritesCorruptFile(t *testing.T) {
 			t.Fatalf("джоб %s: %s", state, msg)
 		}
 		got, _ := mixinBytes(t, s)
-		if string(got) != string(rulesets.Render(want)) {
-			t.Errorf("файл:\n%s\nожидался:\n%s", got, rulesets.Render(want))
+		if string(got) != string(mixin.Render(want)) {
+			t.Errorf("файл:\n%s\nожидался:\n%s", got, mixin.Render(want))
 		}
 	})
 
@@ -1595,7 +1595,7 @@ func TestRulesetsPutWaitsForDownloads(t *testing.T) {
 	// Первый ответ пустой: API уже отвечает, .mrs ещё качаются.
 	f.onRuleProviders = func(n int) {
 		if n >= 2 {
-			f.ruleProviders = loadedProviders(rulesets.Set{Name: "youtube", Action: rulesets.ActionTunnel})
+			f.ruleProviders = loadedProviders(mixin.Set{Name: "youtube", Action: mixin.ActionTunnel})
 		}
 	}
 

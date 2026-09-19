@@ -13,8 +13,8 @@ import (
 	"netmoded/internal/atomicfile"
 	"netmoded/internal/geosite"
 	"netmoded/internal/job"
+	"netmoded/internal/mixin"
 	"netmoded/internal/nikki"
-	"netmoded/internal/rulesets"
 	"netmoded/internal/uci"
 )
 
@@ -36,7 +36,7 @@ func (s *Server) handleRulesetsGet(w http.ResponseWriter, r *http.Request) {
 
 // readMixin читает выбор наборов с диска.
 //
-// Три исхода разделены по той же границе, что и в rulesets.Parse, и разница
+// Три исхода разделены по той же границе, что и в mixin.Parse, и разница
 // между ними не косметическая:
 //
 //   - файла нет — свежая установка, «правила из профиля». Это НОРМАЛЬНОЕ
@@ -47,8 +47,8 @@ func (s *Server) handleRulesetsGet(w http.ResponseWriter, r *http.Request) {
 //     предложить кнопку «Применить», которая молча затрёт чужую работу;
 //   - файл наш, но испорчен — 500. Отпечаток врал бы, а PUT с ним записал
 //     бы поверх непонятно чего.
-func (s *Server) readMixin() (rulesets.Config, bool, *httpErr) {
-	profile := rulesets.Config{Policy: rulesets.PolicyProfile, Download: rulesets.DownloadDirect}
+func (s *Server) readMixin() (mixin.Config, bool, *httpErr) {
+	profile := mixin.Config{Policy: mixin.PolicyProfile, Download: mixin.DownloadDirect}
 
 	b, err := os.ReadFile(s.cfg.MixinPath)
 	switch {
@@ -62,7 +62,7 @@ func (s *Server) readMixin() (rulesets.Config, bool, *httpErr) {
 			"Файл наборов " + s.cfg.MixinPath + " не читается: " + err.Error()}
 	}
 
-	cfg, foreign, err := rulesets.Parse(b)
+	cfg, foreign, err := mixin.Parse(b)
 	if err != nil {
 		// Ветвления по виду ошибки нет намеренно: Parse отдаёт только
 		// ErrCorrupt, и вторая ветка была бы недостижимой строкой, про
@@ -84,7 +84,7 @@ func (s *Server) readMixin() (rulesets.Config, bool, *httpErr) {
 // null, а не false и не ноль. «Набор не загружен» и «неизвестно, загружен
 // ли» — разные утверждения, и подменять второе первым значит соврать ровно
 // там, где владелец ищет причину неработающего обхода.
-func (s *Server) rulesetsBody(ctx context.Context, cfg rulesets.Config, foreign bool) map[string]any {
+func (s *Server) rulesetsBody(ctx context.Context, cfg mixin.Config, foreign bool) map[string]any {
 	var live map[string]nikki.RuleProvider
 	haveLive := false
 	if s.nikki != nil {
@@ -100,14 +100,14 @@ func (s *Server) rulesetsBody(ctx context.Context, cfg rulesets.Config, foreign 
 		}
 	}
 
-	// «Загружен» считает rulesets.Verify, а не этот файл: правило
+	// «Загружен» считает mixin.Verify, а не этот файл: правило
 	// («загружены ВСЕ провайдеры набора, у каждого ненулевое время») живёт
 	// в пакете, который эти провайдеры и порождает. Второй экземпляр
 	// правила здесь разошёлся бы с ним от первой правки — и панель
 	// показывала бы готовым набор, который движок считает недокачанным.
 	loadedNames := make(map[string]bool, len(cfg.Sets))
 	if haveLive {
-		loaded, _ := rulesets.Verify(cfg.Sets, live)
+		loaded, _ := mixin.Verify(cfg.Sets, live)
 		for _, set := range loaded {
 			loadedNames[set.Name] = true
 		}
@@ -134,7 +134,7 @@ func (s *Server) rulesetsBody(ctx context.Context, cfg rulesets.Config, foreign 
 			// справка, а не критерий: три набора в репозитории пусты и
 			// скачиваются с нулём правил.
 			rules := 0
-			for _, name := range rulesets.ProviderNames(set) {
+			for _, name := range mixin.ProviderNames(set) {
 				if p, found := live[name]; found {
 					rules += p.RuleCount
 				}
@@ -144,7 +144,7 @@ func (s *Server) rulesetsBody(ctx context.Context, cfg rulesets.Config, foreign 
 				// Время доменного провайдера: он есть у любого набора, а
 				// у набора с подсетями оба времени всё равно ставит одно
 				// и то же скачивание.
-				item["updated_at"] = live[rulesets.ProviderSitePrefix+set.Name].UpdatedAt.UTC().Format(time.RFC3339)
+				item["updated_at"] = live[mixin.ProviderSitePrefix+set.Name].UpdatedAt.UTC().Format(time.RFC3339)
 			}
 		}
 		sets = append(sets, item)
@@ -153,17 +153,17 @@ func (s *Server) rulesetsBody(ctx context.Context, cfg rulesets.Config, foreign 
 	return map[string]any{
 		// Отпечаток есть и у пустого выбора: без него первый же PUT панели
 		// нечем сопроводить в If-Match.
-		"fingerprint": rulesets.Fingerprint(cfg),
+		"fingerprint": mixin.Fingerprint(cfg),
 		"policy":      string(cfg.Policy),
 		"download":    string(cfg.Download),
 		// Имя группы «в туннель» отдаётся, а не зашивается в панель: оно
 		// одно на весь профиль mihomo, и разъехаться эти два места не
 		// должны.
-		"tunnel_group": rulesets.TunnelGroup,
+		"tunnel_group": mixin.TunnelGroup,
 		"sets":         sets,
 		// Пустой массив, а не nil, по той же причине, что и sets. Поля
-		// правила — из тегов json типа rulesets.Rule: {kind, value, action}.
-		"rules":   append([]rulesets.Rule{}, cfg.Rules...),
+		// правила — из тегов json типа mixin.Rule: {kind, value, action}.
+		"rules":   append([]mixin.Rule{}, cfg.Rules...),
 		"live":    haveLive,
 		"foreign": foreign,
 	}
@@ -190,7 +190,7 @@ func (s *Server) RulesetProviderNames(context.Context) []string {
 	}
 	var names []string
 	for _, set := range cfg.Sets {
-		names = append(names, rulesets.ProviderNames(set)...)
+		names = append(names, mixin.ProviderNames(set)...)
 	}
 	return names
 }
@@ -387,7 +387,7 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 		// Умолчание, а не отказ: «откуда качать» спрашивают редко, и
 		// требовать поле на каждой записи значило бы заставлять панель
 		// помнить его ради одного случая из ста.
-		in.Download = string(rulesets.DownloadDirect)
+		in.Download = string(mixin.DownloadDirect)
 	}
 	// Форма до ADR-0041: политика only/except и наборы строками. Отбить с
 	// подсказкой, а не общим «неизвестная политика»: владелец с curl или
@@ -398,12 +398,12 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 				"(sets — объекты {name, action}), а policy — куда идёт остальное: direct, tunnel или profile.")
 		return
 	}
-	want := rulesets.Config{
-		Policy:   rulesets.Policy(in.Policy),
-		Download: rulesets.Download(in.Download),
+	want := mixin.Config{
+		Policy:   mixin.Policy(in.Policy),
+		Download: mixin.Download(in.Download),
 		// Пустой срез, а не nil: дальше он идёт в Render и в отпечаток, и
 		// разница «наборов нет» / «поле не пришло» там ничего не значит.
-		Sets: make([]rulesets.Set, 0, len(in.Sets)),
+		Sets: make([]mixin.Set, 0, len(in.Sets)),
 	}
 	for _, raw := range in.Sets {
 		var set struct {
@@ -419,11 +419,11 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "bad_request", "Набор в sets не разбирается: ожидается объект {name, action}")
 			return
 		}
-		want.Sets = append(want.Sets, rulesets.Set{Name: set.Name, Action: rulesets.RuleAction(set.Action)})
+		want.Sets = append(want.Sets, mixin.Set{Name: set.Name, Action: mixin.RuleAction(set.Action)})
 	}
 	for _, rule := range in.Rules {
-		want.Rules = append(want.Rules, rulesets.Rule{
-			Kind: rulesets.RuleKind(rule.Kind), Value: rule.Value, Action: rulesets.RuleAction(rule.Action),
+		want.Rules = append(want.Rules, mixin.Rule{
+			Kind: mixin.RuleKind(rule.Kind), Value: rule.Value, Action: mixin.RuleAction(rule.Action),
 			Comment: rule.Comment,
 		})
 	}
@@ -434,7 +434,7 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 	// её после похода за каталогом, владелец без аплинка получал бы
 	// «каталог недоступен» вместо «в правиле опечатка» и чинил бы не то.
 	// Номер строки в тексте: панель подсвечивает именно её.
-	if err := rulesets.ValidateRules(want); err != nil {
+	if err := mixin.ValidateRules(want); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_rule", ruleErrText(err))
 		return
 	}
@@ -480,7 +480,7 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 				"Нужен заголовок If-Match с отпечатком из GET /api/nikki/rulesets: "+
 					"без него запись не докажет, что видела нынешний выбор.")
 			return
-		case got != rulesets.Fingerprint(cur):
+		case got != mixin.Fingerprint(cur):
 			writeErr(w, http.StatusConflict, "stale_rulesets",
 				"Выбор наборов изменился, пока вы его правили: перечитайте "+
 					"GET /api/nikki/rulesets и повторите с новым отпечатком.")
@@ -514,15 +514,15 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Форма выбора и существование имён.
-	if err := rulesets.Validate(want, cat, cur.Sets); err != nil {
+	if err := mixin.Validate(want, cat, cur.Sets); err != nil {
 		// Правила уже проверены шагом 1а, но Validate — единая проверка
 		// формы, и сюда её отказ по правилу тоже может прийти; код тот же.
-		var bad *rulesets.RuleError
+		var bad *mixin.RuleError
 		if errors.As(err, &bad) {
 			writeErr(w, http.StatusBadRequest, "bad_rule", ruleErrText(err))
 			return
 		}
-		var unknown *rulesets.UnknownSetsError
+		var unknown *mixin.UnknownSetsError
 		if errors.As(err, &unknown) {
 			// Имена перечислены: панель подсвечивает именно эти чипы, а
 			// «неверный запрос» не сказало бы владельцу, какое из тридцати
@@ -532,7 +532,7 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 					". Имена берутся из репозитория MetaCubeX/meta-rules-dat, ветка meta.")
 			return
 		}
-		// Сюда же попал бы rulesets.ErrNoCatalog, но попасть не может:
+		// Сюда же попал бы mixin.ErrNoCatalog, но попасть не может:
 		// новые имена без каталога отбиты шагом 4, а без новых имён этот
 		// сентинел не рождается.
 		//
@@ -543,7 +543,7 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 			"Выбор наборов не принят: "+strings.TrimPrefix(err.Error(), "rulesets: "))
 		return
 	}
-	want = rulesets.Resolve(want, cat, cur.Sets)
+	want = mixin.Resolve(want, cat, cur.Sets)
 
 	// 6. Чужие незакоммиченные правки в nikki.
 	//
@@ -572,11 +572,11 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 	// запретить из-за этого запись значило бы поставить выбор наборов в
 	// зависимость от работающего mihomo. При profile группа не нужна
 	// вовсе — правил мы не пишем.
-	if want.Policy != rulesets.PolicyProfile && s.nikki != nil {
+	if want.Policy != mixin.PolicyProfile && s.nikki != nil {
 		if all, err := s.nikki.Proxies(r.Context()); err == nil {
-			if _, ok := all[rulesets.TunnelGroup]; !ok {
+			if _, ok := all[mixin.TunnelGroup]; !ok {
 				writeErr(w, http.StatusServiceUnavailable, "group_missing",
-					"В профиле mihomo нет группы "+rulesets.TunnelGroup+
+					"В профиле mihomo нет группы "+mixin.TunnelGroup+
 						" — правила наборов применить не к чему. Поправьте профиль.")
 				return
 			}
@@ -605,7 +605,7 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 // номеру, а владелец по причине понимает, что править. Приставка пакета
 // срезается, как и у bad_request.
 func ruleErrText(err error) string {
-	var bad *rulesets.RuleError
+	var bad *mixin.RuleError
 	if !errors.As(err, &bad) {
 		return "Своё правило не принято: " + strings.TrimPrefix(err.Error(), "rulesets: ")
 	}
@@ -618,7 +618,7 @@ func ruleErrText(err error) string {
 // Отдельная функция, а не догадка по ошибке Validate: там «нечего сверять»
 // и «сверили, не нашли» уже слиты в один проход, а решение «идти ли в
 // GitHub» принимается ДО него.
-func needsCatalog(want []rulesets.Set, cat *geosite.Catalog, applied []rulesets.Set) bool {
+func needsCatalog(want []mixin.Set, cat *geosite.Catalog, applied []mixin.Set) bool {
 	known := make(map[string]bool, len(applied))
 	for _, set := range applied {
 		known[set.Name] = true
@@ -652,10 +652,10 @@ func needsCatalog(want []rulesets.Set, cat *geosite.Catalog, applied []rulesets.
 // Индикацию правит только разбор отказа netmode-apply (modeApplyFailed) —
 // там она часть разбора кодов скрипта, и заводить ради неё второй экземпляр
 // этого разбора было бы хуже.
-func (s *Server) applyRulesets(ctx context.Context, want rulesets.Config) error {
+func (s *Server) applyRulesets(ctx context.Context, want mixin.Config) error {
 	// a. Файл. Атомарно: читатель (nikki.init при склейке) не должен
 	//    увидеть половину записи, а обрыв питания — оставить пустой файл.
-	if err := atomicfile.Write(s.cfg.MixinPath, rulesets.Render(want), 0o644); err != nil {
+	if err := atomicfile.Write(s.cfg.MixinPath, mixin.Render(want), 0o644); err != nil {
 		return fmt.Errorf("наборы не записаны, ничего не изменено: %w", err)
 	}
 
@@ -692,7 +692,7 @@ func (s *Server) applyRulesets(ctx context.Context, want rulesets.Config) error 
 	}
 
 	// e. Сверять нечего: правил мы не писали.
-	if want.Policy == rulesets.PolicyProfile || len(want.Sets) == 0 {
+	if want.Policy == mixin.PolicyProfile || len(want.Sets) == 0 {
 		return nil
 	}
 
@@ -722,7 +722,7 @@ func (s *Server) applyRulesets(ctx context.Context, want rulesets.Config) error 
 	// правил нет, и обход не работает. Часть — успех: mihomo докачает
 	// остальное сам по своему циклу, а какие наборы недокачаны, видно в
 	// GET полем loaded.
-	loaded, missing := rulesets.Verify(want.Sets, wait.live)
+	loaded, missing := mixin.Verify(want.Sets, wait.live)
 	if len(loaded) == 0 {
 		return fmt.Errorf("наборы записаны, но движок не скачал ни одного из %d (%s): "+
 			"проверьте, доступен ли с роутера raw.githubusercontent.com, "+
@@ -744,9 +744,9 @@ func (s *Server) applyRulesets(ctx context.Context, want rulesets.Config) error 
 //
 // Запись тем же значением стоила бы коммита пакета nikki на флеше и заодно
 // опубликовала бы всё, что накопил в стейджинге кто-то ещё.
-func (s *Server) switchMixinFlag(ctx context.Context, p rulesets.Policy) error {
+func (s *Server) switchMixinFlag(ctx context.Context, p mixin.Policy) error {
 	want := "1"
-	if p == rulesets.PolicyProfile {
+	if p == mixin.PolicyProfile {
 		// Правила целиком из профиля: файл из одной шапки, и склеивать его
 		// не нужно вовсе.
 		want = "0"
@@ -828,7 +828,7 @@ type ruleProvidersWait struct {
 // цикл провайдеров докачает остальное сам, а панель всё это время под
 // замком джоба. Поэтому по истечении окна сверка идёт по последнему снимку —
 // часть наборов это «применено», ноль наборов это отказ.
-func (s *Server) awaitRuleProviders(ctx context.Context, want []rulesets.Set) ruleProvidersWait {
+func (s *Server) awaitRuleProviders(ctx context.Context, want []mixin.Set) ruleProvidersWait {
 	if s.nikki == nil {
 		return ruleProvidersWait{err: errNoNikkiClient}
 	}
@@ -842,7 +842,7 @@ func (s *Server) awaitRuleProviders(ctx context.Context, want []rulesets.Set) ru
 		} else {
 			out.live, out.answered, out.err = live, true, nil
 			// Всё на месте — ждать больше нечего.
-			if loaded, _ := rulesets.Verify(want, live); len(loaded) == len(want) {
+			if loaded, _ := mixin.Verify(want, live); len(loaded) == len(want) {
 				return out
 			}
 		}
@@ -862,7 +862,7 @@ func (s *Server) awaitRuleProviders(ctx context.Context, want []rulesets.Set) ru
 }
 
 // setNames — имена наборов в порядке выбора.
-func setNames(sets []rulesets.Set) []string {
+func setNames(sets []mixin.Set) []string {
 	out := make([]string, 0, len(sets))
 	for _, set := range sets {
 		out = append(out, set.Name)

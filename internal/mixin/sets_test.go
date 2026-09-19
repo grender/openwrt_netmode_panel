@@ -1,4 +1,4 @@
-package rulesets
+package mixin
 
 import (
 	"errors"

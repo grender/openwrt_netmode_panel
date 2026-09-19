@@ -11,8 +11,8 @@
 роутере не разворачивался, и создавать конфигурацию за чужой пакет мы не
 станем.
 
-Формат порождается пакетом `internal/rulesets` (`Render`), читается им же
-(`Parse`); golden-фикстуры — `internal/rulesets/testdata/*.yaml`.
+Формат порождается пакетом `internal/mixin` (`Render`), читается им же
+(`Parse`); golden-фикстуры — `internal/mixin/testdata/*.yaml`.
 
 ## Файл целиком
 

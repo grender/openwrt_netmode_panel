@@ -473,7 +473,7 @@ internal/subs         наша политика: порядок и вид стр
 internal/sched        расписание подписки
 internal/logs         журнал обновлений
 internal/geosite      живой каталог имён наборов с GitHub, кэш только в памяти
-internal/rulesets     выбор наборов ↔ `/etc/nikki/mixin.yaml`
+internal/mixin        владелец `/etc/nikki/mixin.yaml`: наборы и авто-пул
 internal/atomicfile   запись файла через temp + fsync + rename
 internal/httpapi      HTTP-слой и панель через go:embed
 internal/safe         перехват паники на границе фоновых горутин
