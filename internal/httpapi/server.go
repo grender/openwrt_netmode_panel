@@ -574,6 +574,10 @@ type manifestRefresher struct {
 func (m *manifestRefresher) Update(ctx context.Context) (happ.Summary, error) {
 	sum, err := m.up.Update(ctx)
 	m.srv.reloadManifest()
+	// Режим авто-пула «как в подписке» обязан следовать за подпиской —
+	// иначе он врал бы названием. Только здесь: это единственная точка,
+	// через которую проходят и расписание, и кнопка в панели.
+	m.srv.resyncProviderPool(ctx)
 	return sum, err
 }
 

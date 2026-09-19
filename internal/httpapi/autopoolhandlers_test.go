@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -294,5 +295,84 @@ func TestAutopoolTurnsMixinFlagOnEvenWithProfilePolicy(t *testing.T) {
 	}
 	if callIndex(f.Calls, "set nikki.mixin.mixin_file_content=1") < 0 {
 		t.Errorf("флаг склейки не включён, файл лежит мёртвым грузом: %v", f.Calls)
+	}
+}
+
+// Режим «как в подписке» обязан следовать за подпиской: провайдер
+// добавил сервер в свой балансировщик — он появился и у нас. Иначе режим
+// врал бы названием.
+func TestProviderPoolFollowsSubscription(t *testing.T) {
+	s, f := newServer(t)
+	s.SetNikkiClient(newFakeNikkiSelectorClient())
+	seedManifest(t, s, threeNodes())
+	writeMixin(t, s, mixin.Render(mixin.Config{
+		Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
+		Auto: mixin.AutoConfig{Mode: mixin.AutoProvider, Nodes: []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2"}},
+	}))
+
+	// Провайдер добавил Россию в свой балансировщик.
+	grown := threeNodes()
+	grown[0].Pool = []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2", "🇷🇺💳Россия"}
+	seedManifest(t, s, grown)
+
+	s.resyncProviderPool(context.Background())
+
+	raw, _ := mixinBytes(t, s)
+	got, _, err := mixin.Parse(raw)
+	if err != nil {
+		t.Fatalf("разбор: %v", err)
+	}
+	if len(got.Auto.Nodes) != 3 {
+		t.Errorf("состав пула %v, ожидалось 3 имени", got.Auto.Nodes)
+	}
+	if callIndex(f.Calls, "apply-mode nikki") < 0 {
+		t.Error("состав изменился, а движок не перезапущен — новый пул не действует")
+	}
+}
+
+// А вот от НЕИЗМЕНИВШЕГОСЯ состава движок трогать нельзя. Обновление
+// подписки идёт раз в двенадцать часов, и гасить обход на каждое из них
+// ради файла, который не поменялся, значит платить перерывом связи за
+// ничто. Перестановка изменением не считается: порядок участников группы
+// решает mihomo.
+func TestProviderPoolDoesNotRestartOnSameComposition(t *testing.T) {
+	s, f := newServer(t)
+	s.SetNikkiClient(newFakeNikkiSelectorClient())
+	seedManifest(t, s, threeNodes())
+	writeMixin(t, s, mixin.Render(mixin.Config{
+		Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
+		Auto: mixin.AutoConfig{Mode: mixin.AutoProvider, Nodes: []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2"}},
+	}))
+
+	shuffled := threeNodes()
+	shuffled[0].Pool = []string{"🇨🇭⚡Швейцария 2", "🇵🇱⚡Польша"}
+	seedManifest(t, s, shuffled)
+
+	s.resyncProviderPool(context.Background())
+
+	if callIndex(f.Calls, "apply-mode nikki") >= 0 {
+		t.Errorf("движок перезапущен из-за перестановки имён: %v", f.Calls)
+	}
+}
+
+// Ручной выбор подписка трогать не смеет: владелец отметил узлы сам.
+func TestManualPoolIgnoresSubscription(t *testing.T) {
+	s, f := newServer(t)
+	s.SetNikkiClient(newFakeNikkiSelectorClient())
+	before := mixin.Config{Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
+		Auto: mixin.AutoConfig{Mode: mixin.AutoAllow, Nodes: []string{"🇵🇱⚡Польша"}}}
+	writeMixin(t, s, mixin.Render(before))
+	grown := threeNodes()
+	grown[0].Pool = []string{"🇵🇱⚡Польша", "🇨🇭⚡Швейцария 2", "🇷🇺💳Россия"}
+	seedManifest(t, s, grown)
+
+	s.resyncProviderPool(context.Background())
+
+	raw, _ := mixinBytes(t, s)
+	if string(raw) != string(mixin.Render(before)) {
+		t.Errorf("ручной выбор переписан обновлением подписки:\n%s", raw)
+	}
+	if callIndex(f.Calls, "apply-mode nikki") >= 0 {
+		t.Error("движок перезапущен из-за чужого режима")
 	}
 }
