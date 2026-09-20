@@ -1336,6 +1336,12 @@ async function handleAPI(req, res, u) {
 			// Отпечаток обязан смениться: иначе оптимистичная блокировка в
 			// моке ненастоящая, и путь stale_autopool в панели не нажать.
 			state.overlay.autopool = { mode: body.mode, nodes, pool_size: left, fingerprint: nextFingerprint() };
+			// Свой finish отменяет умолчание startJob, поэтому «done» ставится
+			// здесь руками. Без этой строки джоб уходил из статуса прямо из
+			// running, панель перехода в done не видела НИ РАЗУ — и ни тоста
+			// с числом узлов, ни перечитывания после применения на моке не
+			// существовало. Ровно та же строка стоит у наборов.
+			state.job.state = 'done';
 		});
 		return send(res, 202, { job: state.job });
 	}

@@ -187,6 +187,14 @@ export function App() {
 		if (status && rulesets.value === undefined) void rulesets.load();
 	}, [status, rulesets]);
 
+	// Авто-пул грузится по тому же правилу и по той же причине: состав узлов
+	// он берёт из манифеста подписки, а не у mihomo, и живой размер группы
+	// трёхзначен. Ждать svcNikki значило бы гасить раздел ровно тогда, когда
+	// в него и лезут — разбираться, почему обход ушёл не через тот узел.
+	useEffect(() => {
+		if (status && autopool.value === undefined) void autopool.load();
+	}, [status, autopool]);
+
 	// Список устройств грузится при заходе на экран и после остановки
 	// наблюдения: между этими моментами он не меняется настолько, чтобы
 	// платить за него запросом каждую секунду.
@@ -214,9 +222,13 @@ export function App() {
 			// нёс live:false и null вместо загрузки, и без перечитывания
 			// панель до F5 утверждала бы «неизвестно» про уже загруженное.
 			void rulesets.load();
+			// И пул — по тому же счёту: pool_size у молчащего движка приезжал
+			// null, и без перечитывания раздел до F5 утверждал бы «движок не
+			// ответил» про уже собранную группу.
+			void autopool.load();
 		}
 		wasUp.current.nikki = svcNikki === 'up';
-	}, [svcNikki, nikki, rulesets]);
+	}, [svcNikki, nikki, rulesets, autopool]);
 	useEffect(() => {
 		if (svcB4 === 'up' && !wasUp.current.b4) void sets.load();
 		wasUp.current.b4 = svcB4 === 'up';
@@ -492,6 +504,13 @@ export function App() {
 			async () => {
 				await logs.load({ query: { n: '5' } });
 				await nikki.load();
+				// Пул перечитывается вместе с узлами: available, missing и
+				// provider_pool читаются из манифеста, который обновление
+				// только что переписало. Дело не только в свежести списка —
+				// демон после обновления сам пересобирает провайдерский пул,
+				// и отпечаток у панели на руках становится чужим. Без этой
+				// строки следующее «Применить» уходило бы в stale_autopool.
+				await autopool.load();
 			},
 		);
 
