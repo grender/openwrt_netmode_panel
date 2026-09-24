@@ -6,8 +6,10 @@ import type {
 	RulesetsCatalog,
 	RulesetsResponse,
 	SetAction,
+	Job,
 } from '../api/types';
 import type { Key, Lang, T } from '../i18n';
+import { jobOn } from '../state/job';
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
 import { Confirm, Skel, Spin } from './bits';
@@ -46,6 +48,8 @@ export interface RulesetsProps {
 	lang: Lang;
 	lock: Lock;
 	locked: boolean;
+	/** Идущий джоб: кнопка держит кольцо до конца операции, а не до 202. */
+	running: Job | null;
 	t: T;
 	onApply(d: RulesDraft): void;
 	onLoadCatalog(): void;
@@ -250,7 +254,7 @@ export function Rulesets(p: RulesetsProps) {
 
 	const eff = p.draft ?? draftOf(applied);
 	const dirty = dirtyCount(applied, p.draft);
-	const busy = p.lock.on('rulesets');
+	const busy = p.lock.on('rulesets') || jobOn(p.running, 'rulesets');
 	const problems = eff.rules.map((r, i) => ruleProblem(r, eff.rules, i));
 	const invalid = problems.filter((x) => x !== null).length;
 	const profile = eff.policy === 'profile';

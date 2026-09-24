@@ -91,6 +91,7 @@ export function Settings(p: SettingsProps) {
 					lang={p.lang}
 					lock={p.lock}
 					locked={p.locked}
+					running={p.running}
 					t={t}
 					onApply={p.onApplyRules}
 					onLoadCatalog={p.onLoadCatalog}
@@ -107,6 +108,7 @@ export function Settings(p: SettingsProps) {
 					setDraft={p.setPoolDraft}
 					lock={p.lock}
 					locked={p.locked}
+					running={p.running}
 					t={t}
 					onApply={p.onApplyPool}
 				/>
@@ -143,6 +145,7 @@ export function Settings(p: SettingsProps) {
 					bridge={p.bridge}
 					lock={p.lock}
 					locked={p.locked}
+					running={p.running}
 					t={t}
 					onProbe={p.onBridgeProbe}
 					onAccess={p.onBridgeAccess}

@@ -497,7 +497,11 @@ export function App() {
 		void lock.act('bridge:probe', () => bridge.load({ query: { probe: '1' } }));
 
 	const onBridgeAccess = (on: boolean) =>
-		void lock.act('bridge:access', () => postBridge('bridgeAccess', { enabled: on }), () => bridge.load());
+		void lock.act(
+			`bridge:access-${on ? 'on' : 'off'}`,
+			() => postBridge('bridgeAccess', { enabled: on }),
+			() => bridge.load(),
+		);
 
 	const onBridgeDisable = () =>
 		void lock.act('bridge:disable', () => postBridge('bridgeDisable', null), () => bridge.load());
@@ -833,6 +837,7 @@ export function App() {
 						onApplyRules={onApplyRules}
 						lock={lock}
 						locked={locked}
+						running={running}
 						t={t}
 						lang={lang}
 					/>
@@ -1024,10 +1029,10 @@ export function App() {
 										data-anchor={`mode-${m}`}
 										aria-pressed={status.mode === m}
 										disabled={locked || status.mode === m}
-										aria-busy={lock.on('mode', m)}
+										aria-busy={lock.on('mode', m) || jobOn(running, 'mode', m)}
 										onClick={() => onMode(m)}
 									>
-										{lock.on('mode', m) ? <Spin /> : null} {t(`mode.${m}`)}
+										{lock.on('mode', m) || jobOn(running, 'mode', m) ? <Spin /> : null} {t(`mode.${m}`)}
 									</button>
 								))}
 							</div>
@@ -1091,6 +1096,7 @@ export function App() {
 							status={status}
 							lock={lock}
 							locked={locked}
+							running={running}
 							t={t}
 							onScan={onScan}
 							onConnect={onConnect}
@@ -1120,6 +1126,7 @@ export function App() {
 							status={status}
 							lock={lock}
 							locked={locked}
+							running={running}
 							t={t}
 							onPickProxy={onPickProxy}
 							onToggleSet={onToggleSet}

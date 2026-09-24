@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type {
 	CustomRule,
+	Job,
 	Mode,
 	RulesDraft,
 	RulesetsResponse,
@@ -13,6 +14,7 @@ import type {
 } from '../api/types';
 import type { Key, Lang, T } from '../i18n';
 import type { Side } from '../state/side';
+import { jobOn } from '../state/job';
 import type { Lock } from '../state/lock';
 import { Confirm, Spin } from './bits';
 import { draftOf, MAX_COMMENT, MAX_RULES, plural } from './Rulesets';
@@ -232,6 +234,8 @@ export interface WatchProps {
 	onApplyRules: (d: RulesDraft) => void;
 	lock: Lock;
 	locked: boolean;
+	/** Идущий джоб: «Применить» держит кольцо до конца операции, а не до 202. */
+	running: Job | null;
 	t: T;
 	lang: Lang;
 }
@@ -514,7 +518,7 @@ export function Watch(p: WatchProps) {
 					onApply={() => p.onApplyRules(eff)}
 					onDrop={() => p.setDraft({ ...eff, rules: appliedRules.map((r) => ({ ...r })) })}
 					onRemove={(r) => p.setDraft({ ...eff, rules: eff.rules.filter((x) => !(x.kind === r.kind && x.value === r.value)) })}
-					busy={p.lock.on('rulesets')}
+					busy={p.lock.on('rulesets') || jobOn(p.running, 'rulesets')}
 					locked={p.locked}
 					t={t}
 					lang={lang}

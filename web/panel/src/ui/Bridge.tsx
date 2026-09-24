@@ -1,7 +1,8 @@
 import { useState } from 'preact/hooks';
+import { jobOn } from '../state/job';
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
-import type { BridgeState } from '../api/types';
+import type { BridgeState, Job } from '../api/types';
 import type { T } from '../i18n';
 import { Confirm, Skel, Spin } from './bits';
 
@@ -9,6 +10,8 @@ export interface BridgeProps {
 	bridge: Side<BridgeState>;
 	lock: Lock;
 	locked: boolean;
+	/** Идущий джоб: кнопка держит кольцо до конца операции, а не до 202. */
+	running: Job | null;
 	t: T;
 	onProbe(): void;
 	onAccess(on: boolean): void;
@@ -39,7 +42,11 @@ export function bridgeProblem(bridge: Side<BridgeState>): 'gateway' | 'pc' | nul
  * Раньше первыми встречали восемь строк техданных, и владелец, пришедший
  * с вопросом «работает или нет», читал их все, чтобы догадаться.
  */
-export function Bridge({ bridge, lock, locked, t, onProbe, onAccess, onDisable, onOpenForm }: BridgeProps) {
+export function Bridge({ bridge, lock, locked, running, t, onProbe, onAccess, onDisable, onOpenForm }: BridgeProps) {
+	// Ключ замка и arg джоба совпадают (access-on, access-off, disable,
+	// enable): кольцо стоит на той кнопке, которую нажали, от клика до
+	// конца операции у демона.
+	const doing = (arg: string) => lock.on('bridge', arg) || jobOn(running, 'bridge', arg);
 	const [ask, setAsk] = useState(false);
 	const [details, setDetails] = useState(false);
 
@@ -66,20 +73,20 @@ export function Bridge({ bridge, lock, locked, t, onProbe, onAccess, onDisable, 
 							type="button"
 							aria-pressed={!bridge.ap_access}
 							disabled={locked || !bridge.ap_access}
-							aria-busy={lock.on('bridge', 'access')}
+							aria-busy={doing('access-off')}
 							onClick={() => onAccess(false)}
 						>
-							{t('bridge.access.off')}
+							{doing('access-off') ? <Spin /> : null} {t('bridge.access.off')}
 						</button>
 						<button
 							type="button"
 							class="accent"
 							aria-pressed={bridge.ap_access}
 							disabled={locked || bridge.ap_access}
-							aria-busy={lock.on('bridge', 'access')}
+							aria-busy={doing('access-on')}
 							onClick={() => onAccess(true)}
 						>
-							{t('bridge.access.on')}
+							{doing('access-on') ? <Spin /> : null} {t('bridge.access.on')}
 						</button>
 					</div>
 					<p class="hint">
@@ -94,10 +101,10 @@ export function Bridge({ bridge, lock, locked, t, onProbe, onAccess, onDisable, 
 						type="button"
 						class="wide danger"
 						disabled={locked}
-						aria-busy={lock.on('bridge', 'disable')}
+						aria-busy={doing('disable')}
 						onClick={() => setAsk(true)}
 					>
-						{lock.on('bridge', 'disable') ? (
+						{doing('disable') ? (
 							<>
 								<Spin /> {t('bridge.disabling')}
 							</>
@@ -106,8 +113,14 @@ export function Bridge({ bridge, lock, locked, t, onProbe, onAccess, onDisable, 
 						)}
 					</button>
 				) : (
-					<button type="button" class="wide primary" disabled={locked} onClick={onOpenForm}>
-						{t('bridge.enable')}
+					<button type="button" class="wide primary" disabled={locked} aria-busy={doing('enable')} onClick={onOpenForm}>
+						{doing('enable') ? (
+							<>
+								<Spin /> {t('bridge.enabling')}
+							</>
+						) : (
+							t('bridge.enable')
+						)}
 					</button>
 				)}
 				<button

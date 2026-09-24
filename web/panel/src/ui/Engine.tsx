@@ -1,7 +1,7 @@
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
-import type { SvcState } from '../state/job';
-import type { Mode, ProxiesResponse, SetsResponse, Status } from '../api/types';
+import { jobOn, type SvcState } from '../state/job';
+import type { Job, Mode, ProxiesResponse, SetsResponse, Status } from '../api/types';
 import type { T } from '../i18n';
 import { Meter, Skel, Spin } from './bits';
 
@@ -14,6 +14,8 @@ export interface EngineProps {
 	status: Status;
 	lock: Lock;
 	locked: boolean;
+	/** Идущий джоб: кнопка держит кольцо до конца операции, а не до 202. */
+	running: Job | null;
 	t: T;
 	onPickProxy(name: string): void;
 	onToggleSet(id: string, enabled: boolean): void;
@@ -284,7 +286,8 @@ function B4({ sets, svcB4, lock, locked, t, onToggleSet }: EngineProps) {
 
 // ─────────── выключено ───────────
 
-function Off({ status, nikki, sets, locked, t, onMode }: EngineProps) {
+function Off({ status, nikki, sets, lock, locked, running, t, onMode }: EngineProps) {
+	const to = (m: Mode) => lock.on('mode', m) || jobOn(running, 'mode', m);
 	const nk = status.nikki;
 	const nodes = nikki?.members.filter((m) => m.kind === 'node').length;
 	const b4on = sets?.sets.filter((x) => x.enabled).map((x) => x.name) ?? [];
@@ -310,11 +313,11 @@ function Off({ status, nikki, sets, locked, t, onMode }: EngineProps) {
 				</div>
 			</div>
 			<div class="form-row">
-				<button type="button" class="wide primary" disabled={locked} onClick={() => onMode('nikki')}>
-					{t('engine.off.on.nikki')}
+				<button type="button" class="wide primary" disabled={locked} aria-busy={to('nikki')} onClick={() => onMode('nikki')}>
+					{to('nikki') ? <Spin /> : null} {t('engine.off.on.nikki')}
 				</button>
-				<button type="button" class="wide" disabled={locked} onClick={() => onMode('b4')}>
-					{t('engine.off.on.b4')}
+				<button type="button" class="wide" disabled={locked} aria-busy={to('b4')} onClick={() => onMode('b4')}>
+					{to('b4') ? <Spin /> : null} {t('engine.off.on.b4')}
 				</button>
 			</div>
 		</>
