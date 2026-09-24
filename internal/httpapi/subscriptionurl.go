@@ -148,7 +148,11 @@ func (s *Server) handleSubscriptionPut(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.ex.UCISet(r.Context(), "netmode", "main", "subscription_url", in.URL); err != nil {
+	// Отвязано от отмены запроса: оборванный между set и commit запрос
+	// оставлял бы секретный адрес висеть в стейджинге (writeCtx).
+	ctx, cancel := writeCtx(r)
+	defer cancel()
+	if err := s.ex.UCISet(ctx, "netmode", "main", "subscription_url", in.URL); err != nil {
 		// Текст ошибки исполнителя наружу НЕ уходит: в неудачной команде
 		// uci set есть само значение, то есть секрет (ADR-0012). По той же
 		// причине его нет и в журнале демона.
@@ -162,7 +166,7 @@ func (s *Server) handleSubscriptionPut(w http.ResponseWriter, r *http.Request) {
 	// в LuCI и уедет в систему при первом чужом коммите пакета netmode.
 	// Один код на оба отказа отправил бы владельца искать неудавшуюся
 	// запись, которой не было (docs/contracts/errors.md).
-	if err := s.ex.UCICommit(r.Context(), "netmode"); err != nil {
+	if err := s.ex.UCICommit(ctx, "netmode"); err != nil {
 		s.logf("подписка: commit netmode не удался, адрес остался в черновике")
 		writeErr(w, http.StatusInternalServerError, "commit_failed",
 			"Адрес записан, но не закоммичен. В конфигурации остался черновик — "+

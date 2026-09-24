@@ -34,6 +34,40 @@ func (s *Server) handleRulesetsGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.rulesetsBody(r.Context(), cfg, foreign))
 }
 
+// mixinState — состояние файла наборов для повторной сверки внутри джоба.
+//
+// Обе секции сразу: файл пишется ЦЕЛИКОМ, и джоб наборов несёт авто-пул,
+// прочитанный обработчиком, а джоб пула — наборы. Испорченный файл —
+// отдельное состояние: его отпечаток бессмыслен, но «был испорчен, стал
+// читаемым» — тоже чужая запись.
+func mixinState(cfg mixin.Config, herr *httpErr) string {
+	if herr != nil {
+		return "error:" + herr.code
+	}
+	return mixin.Fingerprint(cfg) + "|" + mixin.AutoFingerprint(cfg.Auto)
+}
+
+// mixinStill — повторная сверка файла наборов перед записью (ADR-0011).
+//
+// Обработчик сверяет If-Match с тем, что прочитал, но джоб пишет позже — а
+// между ними у обработчика наборов ещё и поход за каталогом в сеть. Если за
+// это время файл переписал кто-то другой (вторая вкладка применила пул,
+// плановое обновление пересобрало провайдерский пул), запись по старому
+// снимку молча откатила бы его работу — ровно то, что отпечаток и должен
+// ловить. Так же поступают аплинк и проброс.
+func (s *Server) mixinStill(seen string) error {
+	cur, foreign, herr := s.readMixin()
+	if foreign {
+		return errors.New("файл наборов " + s.cfg.MixinPath + " стал чужим между проверкой и записью — " +
+			"ничего не изменено")
+	}
+	if mixinState(cur, herr) != seen {
+		return errors.New("файл наборов изменился между проверкой и записью — ничего не изменено; " +
+			"перечитайте страницу и повторите")
+	}
+	return nil
+}
+
 // readMixin читает выбор наборов с диска.
 //
 // Три исхода разделены по той же границе, что и в mixin.Parse, и разница
@@ -591,8 +625,14 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 8. Джоб. Arg пустой: применение наборов одно, уточнять в нём нечего.
+	seen := mixinState(cur, herr)
 	j, err := s.jobs.Start("rulesets", "", "Применение наборов geosite", rulesetsETASec,
-		func(ctx context.Context) error { return s.applyRulesets(ctx, want) })
+		func(ctx context.Context) error {
+			if err := s.mixinStill(seen); err != nil {
+				return err
+			}
+			return s.applyRulesets(ctx, want)
+		})
 	if errors.Is(err, job.ErrBusy) {
 		writeErr(w, http.StatusConflict, "job_busy",
 			"Уже идёт другая операция. Дождитесь её завершения.")

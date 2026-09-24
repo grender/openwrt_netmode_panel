@@ -349,12 +349,23 @@ func newStatusReader(r *StatusReader, logf func(string, ...any)) *StatusReader {
 // меняет копию, а не то, на что она смотрит. Дописать элемент в s.Conflict
 // или поправить *s.ConfiguredSSID означало бы испортить кэш заново, уже
 // другим способом; такой правке нужен глубокий клон здесь же.
+// statusBuildTimeout — бюджет одной сборки статуса. Панель ждёт ответа
+// четыре секунды; сверх этого снимок всё равно никто не дождётся.
+const statusBuildTimeout = 4 * time.Second
+
 func (r *StatusReader) Read(ctx context.Context) (*Status, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.cached == nil || r.now().Sub(r.at) >= StatusCacheTTL {
-		s := r.build(ctx)
+		// Сборка идёт на СВОЁМ контексте, отвязанном от запроса: снимок
+		// общий для всех клиентов, а ушедший со страницы клиент отменял бы
+		// чтения посреди сборки — и полсекунды каждый опрос получал бы
+		// mode:"unknown" и «Nikki недоступен» про живой роутер. Медленный
+		// источник по-прежнему ограничен: бюджетом сборки и своими таймаутами.
+		bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statusBuildTimeout)
+		s := r.build(bctx)
+		cancel()
 		r.cached, r.at = s, r.now()
 	}
 

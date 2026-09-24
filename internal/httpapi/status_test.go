@@ -754,3 +754,24 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// Ушедший клиент не портит общий снимок: сборка идёт на своём контексте, и
+// отменённый запрос получает (и кладёт в кэш) полный статус, а не
+// mode:"unknown" с «Nikki недоступен» про живой роутер.
+func TestCancelledReadDoesNotPoisonCache(t *testing.T) {
+	r, _ := newReader(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	st, err := r.Read(ctx)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if st.Mode != "nikki" {
+		t.Errorf("mode=%q после отменённого чтения, ожидался nikki", st.Mode)
+	}
+	again, _ := r.Read(context.Background())
+	if again.Mode != "nikki" {
+		t.Errorf("кэш отравлен отменённым чтением: mode=%q", again.Mode)
+	}
+}
