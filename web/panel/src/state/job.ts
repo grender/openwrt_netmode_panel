@@ -87,3 +87,14 @@ export function useSvc() {
 		return (g[name] as number) > Date.now() ? 'starting' : 'down';
 	};
 }
+
+/**
+ * Идёт ли джоб, которого ждёт именно этот элемент.
+ *
+ * Замок act снимается сразу после 202, а сама операция идёт у демона ещё
+ * десятки секунд. Без этой проверки кольцо на кнопке гасло через кадр после
+ * нажатия, и владелец смотрел на неподвижную кнопку, пока роутер работал.
+ */
+export function jobOn(running: Job | null, kind: string, arg?: string): boolean {
+	return !!running && running.kind === kind && (arg == null || running.arg === arg);
+}
