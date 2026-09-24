@@ -8,6 +8,11 @@
 #   ./scripts/deploy.sh --run           залить и запустить в консоли
 #   ./scripts/deploy.sh --no-restart    залить и оставить демон погашенным
 #   ./scripts/deploy.sh --host root@10.0.0.1 --port 8089
+#   ./scripts/deploy.sh --host root@127.0.0.1 --ssh-port 18022 \
+#       --panel-url http://127.0.0.1:18088   тестовая VM (docs/vm-utm.md)
+#
+# DEPLOY_SSH_OPTS — дополнительные опции ssh для мастер-соединения
+# (например, отдельный known_hosts для VM).
 #
 # Вход по паролю: ssh спросит его ОДИН раз. Дальше все команды идут через
 # то же соединение (ControlMaster), поэтому повторных запросов не будет.
@@ -47,6 +52,8 @@ set -eu
 
 HOST=root@192.168.9.1
 PORT=8088
+SSHPORT=
+PANEL_URL=
 RUN=no
 INSTALL=no
 RESTART=yes
@@ -63,13 +70,19 @@ while [ $# -gt 0 ]; do
 		--no-restart) RESTART=no ;;
 		--host)       HOST=$2; shift ;;
 		--port)       PORT=$2; shift ;;
-		-h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		--ssh-port)   SSHPORT=$2; shift ;;
+		--panel-url)  PANEL_URL=$2; shift ;;
+		-h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		*) echo "неизвестный аргумент: $1" >&2; exit 2 ;;
 	esac
 	shift
 done
 
 cd "$(dirname "$0")/.."
+
+# Как войти на роутер руками — для подсказок в выводе. С нестандартным
+# ssh-портом (VM за пробросом) голое `ssh $HOST` вело бы не туда.
+SSHHINT="ssh${SSHPORT:+ -p $SSHPORT} $HOST"
 
 # Что уедет на роутер при --install, проверяем ДО сборки и до запроса пароля.
 # Половинчатая установка — демон новый, а скрипта применения нет — выглядит
@@ -116,10 +129,10 @@ cleanup() {
 		echo "  ⚠ деплой прерван после остановки демона — пробую поднять его обратно" >&2
 		if sh_ "[ -x $INITD ] && $INITD start" >/dev/null 2>&1; then
 			echo "    init.d start прошёл; проверьте, какая версия поднялась:" >&2
-			echo "        ssh $HOST $REMOTE -version" >&2
+			echo "        $SSHHINT $REMOTE -version" >&2
 		else
 			echo "    не вышло — демон на роутере НЕ работает. Поднять руками:" >&2
-			echo "        ssh $HOST $INITD start" >&2
+			echo "        $SSHHINT $INITD start" >&2
 		fi
 	fi
 	ssh -S "$CTL" -O exit "$HOST" 2>/dev/null || true
@@ -127,7 +140,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 say "Подключение к $HOST — введите пароль (спросят один раз)"
-ssh -M -S "$CTL" -o ControlPersist=180 -fN "$HOST"
+# shellcheck disable=SC2086 # DEPLOY_SSH_OPTS — список опций, делится намеренно
+ssh -M -S "$CTL" -o ControlPersist=180 ${SSHPORT:+-p "$SSHPORT"} ${DEPLOY_SSH_OPTS:-} -fN "$HOST"
 
 sh_() { ssh -S "$CTL" "$HOST" "$@"; }
 put() { sh_ "cat > $2.new && chmod $3 $2.new && mv $2.new $2"; }
@@ -140,7 +154,10 @@ ARCH=$(sh_ 'uname -m')
 [ "$ARCH" = aarch64 ] || { echo "  ✗ архитектура $ARCH, бинарь под aarch64" >&2; exit 1; }
 echo "  ✓ архитектура: $ARCH"
 
-FREE=$(sh_ "df -k /usr/local 2>/dev/null || df -k /" | awk 'NR==2{print $4}')
+# На свежей системе /usr/local ещё нет, и busybox df на нём печатает
+# заголовок и падает: через `||` выходило два заголовка подряд, и в FREE
+# попадало слово «Available». Поэтому каталог выбирается ДО вызова df.
+FREE=$(sh_ "if [ -d /usr/local ]; then df -k /usr/local; else df -k /; fi" | awk 'NR==2{print $4}')
 [ "${FREE:-0}" -ge 7168 ] || { echo "  ✗ свободно ${FREE} КБ, нужно ~7168" >&2; exit 1; }
 echo "  ✓ свободно: $((FREE / 1024)) МБ"
 
@@ -176,7 +193,7 @@ echo "  ✓ LAN-адрес: $LAN"
 # сменить режим, ни сменить внешнюю сеть, то есть панель на нём — витрина.
 sh_ "command -v flock >/dev/null 2>&1" || {
 	echo "  ✗ на роутере нет flock — без него ни смена режима, ни смена сети не применяются" >&2
-	echo "    поставьте его: opkg update && opkg install flock  (или включите апплет в busybox)" >&2
+	echo "    поставьте его: apk update && apk add flock  (или включите апплет в busybox)" >&2
 	exit 1
 }
 echo "  ✓ flock есть — применение сможет взять замок"
@@ -279,7 +296,7 @@ if [ "$INSTALL" = yes ]; then
 	else
 		echo "  ⚠ ssh отказал на уборке старого конвертера, он мог остаться" >&2
 		echo "    уберите руками:" >&2
-		echo "        ssh $HOST 'rm -f /usr/local/bin/happ2clash /etc/nikki/happ2clash.jq'" >&2
+		echo "        $SSHHINT 'rm -f /usr/local/bin/happ2clash /etc/nikki/happ2clash.jq'" >&2
 	fi
 
 	# Сид конфига НЕ перезаписывает существующий: там уже может быть
@@ -365,14 +382,16 @@ tail_log() { sh_ "logread -e netmoded 2>/dev/null | tail -20" >&2 || true; }
 print_panel() {
 	[ -n "${TOKEN:-}" ] || TOKEN=$(sh_ "cat /etc/netmoded/token 2>/dev/null" || true)
 	if [ -n "$TOKEN" ]; then
-		echo "Панель: http://${BIND:-$LAN}:${RPORT:-$PORT}/?token=$TOKEN"
+		# --panel-url: снаружи демон виден не по своему адресу (VM за
+		# пробросом портов) — печатаем тот, что откроется в браузере.
+		echo "Панель: ${PANEL_URL:-http://${BIND:-$LAN}:${RPORT:-$PORT}}/?token=$TOKEN"
 		# Совета про жёсткую перезагрузку здесь больше нет, и это не
 		# упущение: точка входа отдаётся с no-store, а адреса ассетов
 		# несут версию содержимого. Обычного обновления вкладки хватает.
 	else
 		echo "Демон запущен, но токен ещё не создан. Посмотрите:"
 		echo
-		echo "    ssh $HOST logread -e netmoded"
+		echo "    $SSHHINT logread -e netmoded"
 	fi
 }
 
@@ -392,7 +411,7 @@ if [ "$RUN" = yes ]; then
 	printf '%s\n' \
 		"Консольный запуск закончился, на роутере демон не работает. Поднять:" \
 		"" \
-		"    ssh $HOST $INITD start" \
+		"    $SSHHINT $INITD start" \
 		"" \
 		"Или перезалить с перезапуском: ./scripts/deploy.sh"
 elif [ "$RESTART" = no ]; then
@@ -400,7 +419,7 @@ elif [ "$RESTART" = no ]; then
 	printf '%s\n' \
 		"Бинарь залит, демон оставлен погашенным (--no-restart). Поднять:" \
 		"" \
-		"    ssh $HOST $INITD start"
+		"    $SSHHINT $INITD start"
 elif ! sh_ "[ -x $INITD ]"; then
 	STOPPED=no # поднимать нечем: ветка сама говорит, что делать
 	say "Готово"
@@ -412,7 +431,7 @@ elif ! sh_ "[ -x $INITD ]"; then
 		"" \
 		"Запустить вручную и посмотреть лог:" \
 		"" \
-		"    ssh $HOST $REMOTE"
+		"    $SSHHINT $REMOTE"
 else
 	say "Перезапуск"
 
@@ -458,7 +477,7 @@ if [ "$INSTALL" = yes ]; then
 1. Задать адрес подписки. Без него расписание МОЛЧИТ: демон работает и
    панель открывается, но вместо кнопки обновления там подсказка.
 
-    ssh $HOST
+    $SSHHINT
     uci set netmode.main.subscription_url='…' && uci commit netmode
     /etc/init.d/netmoded restart
 
@@ -470,7 +489,7 @@ if [ "$INSTALL" = yes ]; then
 
 2. Убрать строку happ2clash из crontab — чужой crontab демон не правит:
 
-    ssh $HOST 'crontab -l | grep -v happ2clash | crontab -'
+    $SSHHINT 'crontab -l | grep -v happ2clash | crontab -'
 
    Сам /usr/local/bin/happ2clash деплой только что удалил: подписку
    скачивает демон (ADR-0031). Оставленная строка cron будет звать

@@ -449,11 +449,12 @@ Nikki веб-морда живёт на том же слушателе, кото
 ## Разработка
 
 ```sh
-make verify                  # весь гейт: тесты, сборка, четырнадцать охранников
+make verify                  # весь гейт: тесты, сборка, пятнадцать охранников
 make panel                   # собрать панель в go:embed и переписать манифест
 make geometry                # замер геометрии панели (нужен Chrome, вне verify)
 go run ./cmd/netmoded-dev    # настоящие обработчики против фикстур роутера
 docker compose up            # панель против node-мока
+make vm-up                   # OpenWrt в UTM на Mac с настоящим демоном (docs/vm-utm.md)
 ```
 
 `make verify` **не** собирает панель и не зависит от неё: он обязан работать
@@ -463,6 +464,16 @@ docker compose up            # панель против node-мока
 этом красным и назовёт команду.
 
 Подробности по панели — [`web/README.md`](web/README.md).
+
+### Тестовая VM
+
+`make vm-up` поднимает ванильный OpenWrt 25.12 (`armsr/armv8`) в UTM на Mac
+с Apple Silicon и ставит туда демон тем же `deploy.sh --install`; `make
+vm-qemu` — то же без UTM, чистым QEMU. Панель — `http://127.0.0.1:18088`,
+ssh — `make vm-ssh`. WiFi имитируется `mac80211_hwsim`, так что переключение
+внешней сети проверяется без риска для домашней. nikki и b4 в VM нет.
+Подробности и отличия от роутера — [`docs/vm-utm.md`](docs/vm-utm.md),
+[ADR-0045](docs/adr/0045-vm-test-rig.md).
 
 ### Механические охранники
 
@@ -485,6 +496,7 @@ docker compose up            # панель против node-мока
 | `check-netmode-seed` | секция `netmode.main` в сиде **именованная**: с анонимной `uci get` падает, и переключение режима отказывает мгновенно |
 | `check-netmode-bridge` | синтаксис `netmode-bridge` и одиннадцать сценариев проброса на подставных `ubus`/`ping`/`apk`: замок, идемпотентный демонтаж, отсутствие запрещённых форм вроде `network restart` ([ADR-0030](docs/adr/0030-bridge-layer2-teardown.md)) |
 | `check-netmode-apply` | синтаксис `netmode-apply` и его поведение на подставных `/etc/init.d/*`: коды возврата и то, что при неудавшемся `firewall restart` туннель НЕ поднимается ([ADR-0020](docs/adr/0020-netmode-apply-exit-codes.md)) |
+| `check-vm-scripts` | скрипты тестовой VM синтаксически целы, порты и подсеть в UTM- и QEMU-вариантах берутся из одного `scripts/vm/common.sh`, а `deploy.sh` передаёт `--ssh-port` мастер-соединению ([ADR-0045](docs/adr/0045-vm-test-rig.md)) |
 | `check-panel-build` | `internal/httpapi/panel/` собран из того исходника, что лежит рядом в этом же коммите — иначе `go:embed` увезёт на роутер прежнюю панель, а `TestPanelIsEmbedded` ловит только отсутствие каталога. Четыре яруса: форма манифеста, целостность артефакта, свежесть исходника в дереве и то же самое в `HEAD` |
 
 Вне `verify` — две оснастки, и обе намеренно: `make geometry`
