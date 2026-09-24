@@ -5,7 +5,7 @@ TARGET   := $(BUILDDIR)/$(BIN)
 GOFLAGS_TARGET := GOOS=linux GOARCH=arm64 CGO_ENABLED=0
 LDFLAGS        := -s -w
 
-.PHONY: all verify fmt vet test api panel panel-next dev preview build size checks probe-check geometry clean help
+.PHONY: all verify fmt vet test api panel panel-next dev preview build size checks probe-check geometry vm-up vm-qemu vm-deploy vm-ssh vm-down vm-destroy clean help
 
 all: verify
 
@@ -91,6 +91,7 @@ checks:
 	@scripts/check-netmode-bridge.sh
 	@scripts/check-panel-deps.sh
 	@scripts/check-panel-build.sh
+	@scripts/check-vm-scripts.sh
 
 ## probe-check — песочница измерительной оснастки RQ-03. Не в checks намеренно:
 ## пробник не инвариант плана, он одноразовый и на роутере не остаётся. Но
@@ -106,6 +107,30 @@ probe-check:
 ## скачок в 74px за один кадр пропускается.
 geometry: panel
 	@node scripts/measure-geometry.mjs
+
+## vm-up — тестовая VM с OpenWrt в UTM (Mac на Apple Silicon): образ,
+## VM, первичная настройка, deploy.sh --install. Панель — 127.0.0.1:18088,
+## ssh — 127.0.0.1:18022. См. docs/vm-utm.md.
+vm-up:
+	@scripts/vm/up.sh --utm
+
+## vm-qemu — то же, но VM запускается чистым QEMU в фоне, без UTM.
+vm-qemu:
+	@scripts/vm/up.sh --qemu
+
+## vm-deploy — перезалить только бинарь в уже поднятую VM.
+vm-deploy:
+	@scripts/vm/deploy.sh
+
+vm-ssh:
+	@scripts/vm/ssh.sh
+
+vm-down:
+	@scripts/vm/down.sh
+
+## vm-destroy — удалить VM и её диск (скачанный образ остаётся в кэше).
+vm-destroy:
+	@scripts/vm/destroy.sh
 
 clean:
 	@rm -rf $(BUILDDIR)
