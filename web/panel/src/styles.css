@@ -592,8 +592,6 @@ button.row { cursor: pointer; }
    своим содержимым, — классический способ не быть озвученной. Место она при
    этом занимать не должна, поэтому пустая теряет отступы. display:none тут
    был бы ошибкой: скрытая область выпадает из дерева доступности. */
-.live { position: relative; }
-.live:empty { display: contents; }
 
 .note { border-radius: var(--r-lg); padding: 14px 16px; border: 1px solid; }
 .note h3 { margin: 0 0 6px; font: 600 15px/1.35 var(--sans); }

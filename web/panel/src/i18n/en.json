@@ -114,6 +114,7 @@
 	"err.generic": "Error",
 	"err.busy": "Another operation is already running. Wait for it to finish.",
 	"err.timeout": "The daemon did not answer in time. Try again — the panel cannot tell whether the request got through.",
+	"err.network": "The daemon did not answer: no connection to the router. Check that you are on its network and retry.",
 	"err.unavailable": "The service is unavailable right now. Try again in a few seconds.",
 	"err.ubus": "ubus does not respond — the wireless state cannot be read.",
 	"err.uci": "UCI does not respond — the configuration cannot be read or written.",

@@ -50,7 +50,7 @@ const MODES: Mode[] = ['nikki', 'b4', 'off'];
  * закладок — тоже подписка), #settings — настройки с первым разделом; всё
  * остальное — главная, где хеш по-прежнему раскрывает аккордеон (fromHash).
  */
-type Route = { screen: 'main' } | { screen: 'settings'; row: SettingsRow } | { screen: 'watch' };
+type Route = { screen: 'main' } | { screen: 'settings'; row: SettingsRow | '' } | { screen: 'watch' };
 
 function routeOf(hash: string): Route {
 	const h = hash.replace(/^#/, '');
@@ -540,8 +540,13 @@ export function App() {
 		}
 	};
 
+	// Проба — прямой запрос, а не bridge.load: load глотает отказ и пишет
+	// null, то есть медленная проба молча гасила раздел до «не отвечает»,
+	// уносила колокольчик и закрывала открытую форму — без единого тоста.
 	const onBridgeProbe = () =>
-		void lock.act('bridge:probe', () => bridge.load({ query: { probe: '1' } }));
+		void lock.act('bridge:probe', async () => {
+			bridge.put(await api<BridgeState>('bridge', { query: { probe: '1' }, timeoutMs: BUDGET.SIDE }));
+		});
 
 	const onBridgeAccess = (on: boolean) =>
 		void lock.act(
@@ -694,14 +699,25 @@ export function App() {
 		});
 	}, [catalogValue, loadCatalog]);
 
-	const onSaveURL = (url: string) =>
+	// Форма закрывается только успехом (done), а отказ показывается в ней
+	// самой (setErr) и ровно один раз: закрытая до ответа, она при 400
+	// «адрес не разбирается» уносила вставленный адрес с токеном, и его
+	// приходилось искать и вставлять заново.
+	const onSaveURL = (url: string, setErr: (s: string) => void, done: () => void) =>
 		void lock.act(
 			'suburl',
 			async () => {
-				const r = await api<SubscriptionURL>('subscription', {
-					method: 'PUT',
-					body: JSON.stringify({ url }),
-				});
+				let r: SubscriptionURL;
+				try {
+					r = await api<SubscriptionURL>('subscription', {
+						method: 'PUT',
+						body: JSON.stringify({ url }),
+					});
+				} catch (e) {
+					setErr(describe(e, t));
+					return;
+				}
+				done();
 				sub.put(r);
 				// Кнопка обещает «Сохранить и скачать», а PUT только пишет
 				// адрес. Скачивание запускается здесь же, под тем же замком:
@@ -805,7 +821,10 @@ export function App() {
 	const openRow = (id: SettingsRow) => {
 		// На широком экране раскрыты все — переключать нечего.
 		const next = !wide && route.screen === 'settings' && route.row === id ? '' : id;
-		setRoute({ screen: 'settings', row: (next || 'routes') as SettingsRow });
+		// Пустой раздел — законное «всё свёрнуто». Подстановка 'routes' на
+		// его место делала закрытие любого раздела открытием «Что в
+		// туннель», а сам тот раздел не закрывался вовсе.
+		setRoute({ screen: 'settings', row: next as SettingsRow | '' });
 		history.replaceState(null, '', `#${next || 'settings'}`);
 	};
 	const w = watchSummary(status.watch, t);
@@ -845,7 +864,9 @@ export function App() {
 	// Живая область висит ПОСТОЯННО, на каждом экране и вне слота: область,
 	// вставленная вместе со своим содержимым, не озвучивается.
 	const live = (
-		<div class="live" role="status" aria-live="polite" style={{ display: 'none' }}>
+		// sr-only, а не display:none: скрытый так узел выпадает из дерева
+		// доступности, и область не озвучивала ничего.
+		<div class="sr-only" role="status" aria-live="polite">
 			{lock.toast ? lock.toast.msg : ''}
 		</div>
 	);

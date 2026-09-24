@@ -55,7 +55,7 @@ export interface SettingsProps {
 	logs: Side<LogsResponse>;
 	nikki: Side<ProxiesResponse>;
 	onUpdateSub(): void;
-	onSaveURL(url: string): void;
+	onSaveURL(url: string, setErr: (s: string) => void, done: () => void): void;
 
 	bridge: Side<BridgeState>;
 	onBridgeProbe(): void;

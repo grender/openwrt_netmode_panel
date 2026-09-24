@@ -18,7 +18,7 @@ export interface SubProps {
 	running: Job | null;
 	t: T;
 	onUpdate(): void;
-	onSaveURL(url: string): void;
+	onSaveURL(url: string, setErr: (s: string) => void, done: () => void): void;
 }
 
 export function subSummary(status: Status, lang: Lang, t: T): string {
@@ -53,13 +53,13 @@ export function Subscription({
 }: SubProps) {
 	const [editing, setEditing] = useState(false);
 	const [draft, setDraft] = useState('');
+	const [err, setErr] = useState('');
 	// Журнал свёрнут: обновление в норме заканчивается тостом, а журнал
 	// нужен, когда «обновлена вчера» противоречит «нажимал сегодня».
 	const [showLog, setShowLog] = useState(false);
 	const s = status.subscription;
 	const unset = s ? !s.configured : false;
 	const updating = lock.on('sub') || jobOn(running, 'subscription');
-	const savingURL = lock.on('suburl');
 
 	// Строки, которые не стали узлами. Показывается только когда движок
 	// ответил и виды строк известны: при выключенном Nikki их взять неоткуда,
@@ -81,9 +81,13 @@ export function Subscription({
 							placeholder={t('sub.url.placeholder')}
 							autocomplete="off"
 							spellcheck={false}
-							onInput={(e) => setDraft((e.target as HTMLInputElement).value)}
+							onInput={(e) => {
+								setDraft((e.target as HTMLInputElement).value);
+								setErr('');
+							}}
 						/>
 					</label>
+					{err ? <p class="hint" style={{ color: 'var(--bad)' }}>{err}</p> : null}
 					<p class="hint">{t('sub.url.hint')}</p>
 					<div class="form-row">
 						<button
@@ -91,10 +95,7 @@ export function Subscription({
 							class="wide primary"
 							disabled={locked}
 							aria-busy={lock.on('suburl')}
-							onClick={() => {
-								onSaveURL(draft);
-								setEditing(false);
-							}}
+							onClick={() => onSaveURL(draft, setErr, () => setEditing(false))}
 						>
 							{lock.on('suburl') ? <Spin /> : null} {t('sub.url.save')}
 						</button>
@@ -109,18 +110,8 @@ export function Subscription({
 					    параметров. Ни одного символа секрета (ADR-0012,
 					    ADR-0034) — «хвостик из четырёх знаков» это утечка
 					    четырёх знаков, а не мера защиты. */}
-					<span class="name" title={sub?.masked ?? ''} aria-busy={savingURL}>
-						{/* Форма закрывается в момент нажатия, и без кольца здесь
-						    строка до восьми секунд показывала бы СТАРЫЙ адрес. */}
-						{savingURL ? (
-							<>
-								<Spin /> {t('wifi.saving')}
-							</>
-						) : sub === undefined ? (
-							'…'
-						) : (
-							sub?.masked || t('sub.url.none')
-						)}
+					<span class="name" title={sub?.masked ?? ''}>
+						{sub === undefined ? '…' : sub?.masked || t('sub.url.none')}
 					</span>
 					<span class="acts" style={{ width: 'auto' }}>
 						<button
@@ -132,6 +123,7 @@ export function Subscription({
 								// не адрес, и отправить её обратно значило бы
 								// записать многоточия вместо токена.
 								setDraft('');
+								setErr('');
 								setEditing(true);
 							}}
 						>

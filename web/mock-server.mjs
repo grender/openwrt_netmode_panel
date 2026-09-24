@@ -1109,7 +1109,10 @@ async function handleAPI(req, res, u) {
 		if (busyJob()) return fail(res, 409, 'job_busy', 'Уже идёт другая операция');
 
 		const reason = BRIDGE_REASON[state.scenario];
-		const arg = action === 'access' ? 'access-on' : action;
+		// arg — как у демона (bridgehandler.go, p.action): access-on или
+		// access-off по запрошенному состоянию. Постоянное access-on ставило
+		// кольцо панели после 202 не на тот сегмент.
+		const arg = action === 'access' ? (body.enabled ? 'access-on' : 'access-off') : action;
 		const eta = action === 'enable' ? 30 : action === 'disable' ? 20 : 10;
 		startJob('bridge', arg, 'Операция проброса: ' + arg, eta, reason ? () => {
 			state.job.state = 'failed';
