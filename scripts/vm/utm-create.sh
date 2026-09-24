@@ -20,7 +20,6 @@ START=yes
 
 [ "$(uname -s)" = Darwin ] || die "UTM есть только на macOS; на этой машине — ./scripts/vm/up.sh --qemu"
 [ -x "$UTMCTL" ] || die "нет $UTMCTL — поставьте UTM (https://mac.getutm.app) в /Applications"
-[ -f "$VM_DISK" ] || die "нет диска $VM_DISK — сначала ./scripts/vm/fetch-image.sh"
 
 utm_has_vm() { "$UTMCTL" status "$VM_NAME" >/dev/null 2>&1; }
 
@@ -44,6 +43,9 @@ else
 		die "$VM_BUNDLE уже есть, но UTM его не знает — удалите: ./scripts/vm/destroy.sh"
 	fi
 
+	# Диск нужен только при сборке: зарегистрированная VM держит его уже
+	# внутри бандла, и повторный up.sh не должен на этом спотыкаться.
+	[ -f "$VM_DISK" ] || die "нет диска $VM_DISK — сначала ./scripts/vm/fetch-image.sh"
 	VARS=$(efi_vars_template) || die "не нашёл edk2-arm-vars.fd ни в UTM.app, ни в brew qemu"
 	mkdir -p "$VM_BUNDLE/Data"
 	# Диск ПЕРЕНОСИТСЯ в бандл, а не копируется: второй копии qcow2 с
@@ -55,7 +57,9 @@ else
 	UUID=$(uuidgen)
 	DISK_ID=$(uuidgen)
 	# Локально администрируемый MAC: младшие биты первого октета 10.
-	MAC=$(od -An -N5 -tx1 /dev/urandom | awk '{printf "52:%s:%s:%s:%s:%s", $1, $2, $3, $4, $5}' | tr a-f A-F)
+	# BSD od на macOS дописывает пустую строку — без «NF…exit» awk напечатал
+	# бы шаблон дважды, и QEMU не принял бы «52:xx:…:xx52:::::».
+	MAC=$(od -An -N5 -tx1 /dev/urandom | awk 'NF { printf "52:%s:%s:%s:%s:%s", $1, $2, $3, $4, $5; exit }' | tr a-f A-F)
 
 	cat > "$VM_BUNDLE/config.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -215,6 +219,23 @@ else
 			<string>Terminal</string>
 			<key>Target</key>
 			<string>Auto</string>
+			<!-- Обязателен при Mode=Terminal: окно консоли UTM разворачивает
+			     его через «terminal!» и без него падает вместе с VM
+			     (VMDisplayQemuTerminalWindowController.swift, UTM 4.7.5).
+			     Значения — умолчания UTMConfigurationTerminal. -->
+			<key>Terminal</key>
+			<dict>
+				<key>ForegroundColor</key>
+				<string>#ffffff</string>
+				<key>BackgroundColor</key>
+				<string>#000000</string>
+				<key>Font</key>
+				<string>Menlo</string>
+				<key>FontSize</key>
+				<integer>12</integer>
+				<key>CursorBlink</key>
+				<true/>
+			</dict>
 		</dict>
 	</array>
 	<key>Sound</key>
@@ -241,7 +262,15 @@ fi
 case "$("$UTMCTL" status "$VM_NAME" 2>/dev/null)" in
 	started) echo "  · VM уже запущена" ;;
 	*)
-		"$UTMCTL" start "$VM_NAME"
+		# utmctl выходит с 0, даже если UTM упал на запуске («OSStatus
+		# error -609»), — верим только статусу.
+		"$UTMCTL" start "$VM_NAME" || true
+		i=0
+		until [ "$("$UTMCTL" status "$VM_NAME" 2>/dev/null)" = started ]; do
+			[ "$i" -lt 15 ] || die "UTM не запустил $VM_NAME — см. ~/Library/Logs/DiagnosticReports/UTM-*.ips; лог QEMU: включите QEMU → DebugLog в $VM_BUNDLE/config.plist"
+			sleep 1
+			i=$((i + 1))
+		done
 		echo "  ✓ VM запущена (консоль — окно Serial в UTM)"
 		;;
 esac
