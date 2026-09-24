@@ -5,6 +5,7 @@ import type {
 	AutopoolDraft,
 	AutopoolResponse,
 	BridgeState,
+	Job,
 	JobAccepted,
 	LogsResponse,
 	Mode,
@@ -25,7 +26,7 @@ import { bridgeReason, upstreamReason } from '../api/reasons.gen';
 import { fmtTime, loadLang, makeT, saveLang, type Lang } from '../i18n';
 import { RETRY_MS } from '../state/consts';
 import { jobOn, resolveJob, useSvc } from '../state/job';
-import { useLock } from '../state/lock';
+import { useLock, type Lock } from '../state/lock';
 import { usePoll } from '../state/poll';
 import { useSide } from '../state/side';
 import { useWatchPoll } from '../state/watch';
@@ -763,6 +764,22 @@ export function App() {
 		</footer>
 	);
 
+	// Живая область висит ПОСТОЯННО, на каждом экране и вне слота: область,
+	// вставленная вместе со своим содержимым, не озвучивается.
+	const live = (
+		<div class="live" role="status" aria-live="polite" style={{ display: 'none' }}>
+			{lock.toast ? lock.toast.msg : ''}
+		</div>
+	);
+
+	// На настройках и в наблюдателе баннера нет, и без этой полосы операция,
+	// запущенная ОТТУДА, шла молча: ни хода, ни итога, ни отказа «занято» —
+	// только строка в подвале. Полоса плавает над страницей и появляется
+	// лишь на время операции или тоста: сдвигать раздел под пальцем нельзя.
+	const floatSlot = (
+		<StatusSlot running={running} failed={failed} lock={lock} locked={locked} skewMs={poll.skewMs} t={t} float />
+	);
+
 	const langSwitch = (
 		<div class="lang">
 			{(['ru', 'en'] as const).map((l) => (
@@ -821,6 +838,8 @@ export function App() {
 					/>
 					{foot}
 				</div>
+				{floatSlot}
+				{live}
 			</div>
 		);
 	}
@@ -874,6 +893,8 @@ export function App() {
 					/>
 					{foot}
 				</div>
+				{floatSlot}
+				{live}
 				{bridgeForm && bridge.value ? (
 					<BridgeForm
 						state={bridge.value}
@@ -1011,58 +1032,9 @@ export function App() {
 								))}
 							</div>
 
-							{/* Слот: занята / результат / покой — три состояния
-							    одного места. Высоту держит призрак, и держит
-							    только под «занята»: тост перекрывает. */}
-							<div class="slot" data-part="hero-status" data-status={running ? 'busy' : lock.toast ? 'result' : 'calm'}>
-								{/* Призрак собран из ТОЙ ЖЕ разметки и с ТЕМ ЖЕ текстом,
-								    что «занята». Пробел вместо подписи давал одну строку
-								    там, где настоящая на 320px переносится на две:
-								    четырнадцать пикселей прыжка ровно в тот момент, когда
-								    владелец смотрит, сработало ли нажатие. Число сюда
-								    вписать нельзя: оно сложилось бы из пяти констант и
-								    разошлось бы МОЛЧА с первой же правкой шрифта. */}
-								<div class="job ghost" aria-hidden="true">
-									<div class="job-row">
-										<span>{' '}</span>
-										<span>{' '}</span>
-									</div>
-									<div class="bar" />
-									<div class="job-note">{t('job.locked.note')}</div>
-								</div>
-
-								{running ? (
-									<JobBar job={running} skewMs={poll.skewMs} t={t} />
-								) : failed ? (
-									<div class="result err">
-										<span aria-hidden="true">✕</span>
-										<span>{failText(failed, t)}</span>
-									</div>
-								) : lock.toast ? (
-									<div class={`result ${lock.toast.kind === 'ok' ? '' : lock.toast.kind}`}>
-										<span aria-hidden="true">{lock.toast.kind === 'ok' ? '✓' : '·'}</span>
-										<span>{lock.toast.msg}</span>
-										{lock.toast.href ? (
-											<a class="cta" href={lock.toast.href} target="_blank" rel="noreferrer" onClick={() => setTimeout(lock.dropToast, 0)}>
-												{lock.toast.cta}
-											</a>
-										) : null}
-										<button type="button" class="x" onClick={lock.dropToast} title={t('ui.dismiss')} aria-label={t('ui.dismiss')}>
-											✕
-										</button>
-									</div>
-								) : (
-									<div class="calm">{locked ? t('mode.hint.busy') : t('mode.hint')}</div>
-								)}
-							</div>
+							<StatusSlot running={running} failed={failed} lock={lock} locked={locked} skewMs={poll.skewMs} t={t} />
 						</div>
 					</section>
-
-					{/* Живая область висит ПОСТОЯННО и вне слота: область,
-					    вставленная вместе со своим содержимым, не озвучивается. */}
-					<div class="live" role="status" aria-live="polite" style={{ display: 'none' }}>
-						{lock.toast ? lock.toast.msg : ''}
-					</div>
 
 					{/* ─── проблемы за колокольчиком ─── */}
 					{bellOpen ? (
@@ -1180,6 +1152,7 @@ export function App() {
 
 				{foot}
 			</div>
+			{live}
 
 			{netForm ? (
 				<NetworkForm
@@ -1204,6 +1177,84 @@ export function App() {
 					onClose={() => setBridgeForm(false)}
 				/>
 			) : null}
+		</div>
+	);
+}
+
+/**
+ * Слот состояния операции: занята / провал / результат / покой — четыре
+ * состояния ОДНОГО места.
+ *
+ * В баннере высоту держит призрак, и держит только под «занята»: тост
+ * перекрывает. На прочих экранах (float) слот плавает над страницей и
+ * рисуется, только когда есть что сказать: постоянная полоса «покоя» там
+ * отнимала бы место у разделов ради того, что видно изредка.
+ */
+function StatusSlot({
+	running,
+	failed,
+	lock,
+	locked,
+	skewMs,
+	t,
+	float,
+}: {
+	running: Job | null;
+	failed: Job | null;
+	lock: Lock;
+	locked: boolean;
+	skewMs: number;
+	t: ReturnType<typeof makeT>;
+	float?: boolean;
+}) {
+	const toast = lock.toast;
+	if (float && !running && !failed && !toast) return null;
+	return (
+		<div
+			class={`slot${float ? ' slot-float' : ''}`}
+			data-part="hero-status"
+			data-status={running ? 'busy' : toast ? 'result' : 'calm'}
+		>
+			{/* Призрак собран из ТОЙ ЖЕ разметки и с ТЕМ ЖЕ текстом, что
+			    «занята». Пробел вместо подписи давал одну строку там, где
+			    настоящая на 320px переносится на две: четырнадцать пикселей
+			    прыжка ровно в тот момент, когда владелец смотрит, сработало ли
+			    нажатие. Число сюда вписать нельзя: оно сложилось бы из пяти
+			    констант и разошлось бы МОЛЧА с первой же правкой шрифта. */}
+			{float ? null : (
+				<div class="job ghost" aria-hidden="true">
+					<div class="job-row">
+						<span>{' '}</span>
+						<span>{' '}</span>
+					</div>
+					<div class="bar" />
+					<div class="job-note">{t('job.locked.note')}</div>
+				</div>
+			)}
+
+			{running ? (
+				<JobBar job={running} skewMs={skewMs} t={t} />
+			) : failed ? (
+				<div class="result err">
+					<span aria-hidden="true">✕</span>
+					<span>{failText(failed, t)}</span>
+				</div>
+			) : toast ? (
+				<div class={`result ${toast.kind === 'ok' ? '' : toast.kind}`}>
+					<span aria-hidden="true">{toast.kind === 'ok' ? '✓' : '·'}</span>
+					<span>{toast.msg}</span>
+					{toast.href ? (
+						<a class="cta" href={toast.href} target="_blank" rel="noreferrer" onClick={() => setTimeout(lock.dropToast, 0)}>
+							{toast.cta}
+						</a>
+					) : null}
+					<button type="button" class="x" onClick={lock.dropToast} title={t('ui.dismiss')} aria-label={t('ui.dismiss')}>
+						✕
+					</button>
+				</div>
+			) : (
+				<div class="calm">{locked ? t('mode.hint.busy') : t('mode.hint')}</div>
+			)}
 		</div>
 	);
 }
