@@ -54,7 +54,7 @@ function dirty(a: AutopoolResponse, d: AutopoolDraft | null): boolean {
 
 /** Сводка для полки и заголовка раздела. */
 export function poolSummary(v: Side<AutopoolResponse>, d: AutopoolDraft | null, t: T): string {
-	if (v === undefined) return '';
+	if (v === undefined) return '…';
 	if (v === null) return t('pool.sum.unknown');
 	if (v.foreign) return t('pool.sum.foreign');
 	const eff = d ?? draftOf(v);

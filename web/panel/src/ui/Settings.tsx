@@ -40,6 +40,7 @@ export interface SettingsProps {
 
 	rulesets: Side<RulesetsResponse>;
 	catalog: Side<RulesetsCatalog>;
+	catalogLoading: boolean;
 	draft: RulesDraft | null;
 	setDraft(d: RulesDraft | null): void;
 	onApplyRules(d: RulesDraft): void;
@@ -86,6 +87,7 @@ export function Settings(p: SettingsProps) {
 				<Rulesets
 					applied={p.rulesets}
 					catalog={p.catalog}
+					catalogLoading={p.catalogLoading}
 					draft={p.draft}
 					setDraft={p.setDraft}
 					lang={p.lang}

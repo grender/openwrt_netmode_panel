@@ -18,8 +18,6 @@ export type Side<T> = T | null | undefined;
 
 export interface SideList<T> {
 	value: Side<T>;
-	/** Идёт самый свежий запрос. Нужен повтору после отказа: значение там null, и без флага повтор молчит. */
-	loading: boolean;
 	/** Перечитать. Ответ, обогнанный более свежим запросом, не пишет НИЧЕГО. */
 	load(opts?: ApiOptions): Promise<void>;
 	/** Положить значение, полученное из ответа на собственную запись. */
@@ -36,20 +34,16 @@ export interface SideList<T> {
  */
 export function useSide<T>(route: RouteName): SideList<T> {
 	const [value, setValue] = useState<Side<T>>(undefined);
-	const [loading, setLoading] = useState(false);
 	const seq = useRef(0);
 
 	const load = useCallback<SideList<T>['load']>(
 		async (opts) => {
 			const n = ++seq.current;
-			setLoading(true);
 			try {
 				const d = await api<T>(route, { timeoutMs: T.SIDE, ...opts });
 				if (n === seq.current) setValue(d);
 			} catch {
 				if (n === seq.current) setValue(null);
-			} finally {
-				if (n === seq.current) setLoading(false);
 			}
 		},
 		[route],
@@ -61,8 +55,7 @@ export function useSide<T>(route: RouteName): SideList<T> {
 	const put = useCallback((v: T) => {
 		seq.current++;
 		setValue(v);
-		setLoading(false);
 	}, []);
 
-	return { value, loading, load, put };
+	return { value, load, put };
 }

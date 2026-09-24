@@ -448,7 +448,7 @@ export function App() {
 
 	const onSaveConnect = (body: NetBody, setErr: (s: string) => void) =>
 		void lock.act(
-			'save',
+			'save:connect',
 			async () => {
 				// Снимок id ДО записи: свою запись мы находим диффом по id, а
 				// не поиском по ssid — одинаковые ssid штатны (ADR-0005), и
@@ -464,7 +464,7 @@ export function App() {
 					return;
 				}
 				// Ключ занятости переезжает на строку сети ПЕРЕД вторым
-				// вызовом: пока он был 'save', форма уже закрыта, а признака
+				// вызовом: пока он был 'save:connect', форма уже закрыта, а признака
 				// работы нет — до восьми секунд молчания после нажатия.
 				const target = fresh[0];
 				if (!target) return;
@@ -598,7 +598,7 @@ export function App() {
 			async () => {},
 		);
 
-	const onApplyRules = (d: RulesDraft) =>
+	const onApplyRules = (d: RulesDraft, then?: () => void) =>
 		void lock.act(
 			'rulesets',
 			async () => {
@@ -620,16 +620,27 @@ export function App() {
 				}
 				setRulesDraft(null);
 			},
-			async () => {},
+			// then идёт после снятия замка: наблюдатель так останавливает
+			// сессию следом за применением, и остановка не отбивается «занято».
+			async () => then?.(),
 		);
 
 	// Каталог тянется лениво и ровно один раз: 60 КБ имён ради вкладки, куда
 	// заходят редко. «Повторить» проходит сюда же — после отказа значение
 	// null, а не объект, и запрет на повтор его бы и заблокировал.
+	//
+	// Зависимости — значение и load, а не сам catalog: useSide отдаёт новый
+	// объект на каждой отрисовке, и колбэк от него менялся с каждым тиком
+	// опроса. Эффект шага «Наборы» перезапускался вместе с ним, и отказавший
+	// каталог молча перезапрашивался раз в секунду.
+	const [catalogLoading, setCatalogLoading] = useState(false);
+	const catalogValue = catalog.value;
+	const loadCatalog = catalog.load;
 	const onLoadCatalog = useCallback(() => {
-		if (catalog.value) return;
-		void catalog.load();
-	}, [catalog]);
+		if (catalogValue) return;
+		setCatalogLoading(true);
+		void loadCatalog().finally(() => setCatalogLoading(false));
+	}, [catalogValue, loadCatalog]);
 
 	const onSaveURL = (url: string) =>
 		void lock.act(
@@ -660,10 +671,14 @@ export function App() {
 			async () => {},
 		);
 
+	// Ссылка на морду Nikki ходит за адресом с секретом (до восьми секунд),
+	// и без кольца на самой ссылке ожидание видно только в тосте.
+	const [nikkiOpening, setNikkiOpening] = useState(false);
 	const onNikkiPanel = useCallback(
 		async (e: MouseEvent) => {
 			if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
 			e.preventDefault();
+			setNikkiOpening(true);
 			// Окно открывается ДО await: после него браузер уже не считает
 			// это жестом владельца и блокирует вкладку.
 			const w = window.open('', '_blank');
@@ -677,6 +692,8 @@ export function App() {
 			} catch (err) {
 				if (w) w.close();
 				lock.flash(describe(err, t, 'links.err'), WHY_CODES.has(errCode(err)) ? 'warn' : 'err');
+			} finally {
+				setNikkiOpening(false);
 			}
 		},
 		[lock, t],
@@ -691,6 +708,11 @@ export function App() {
 					<div class="grid">
 						<div class="card full">
 							<Skel n={3} />
+							{/* Строка под скелетом: без неё экран до первого ответа
+							    и экран «демон молчит» были одинаковой пустотой. */}
+							<p class={`hint${poll.stale ? ' bad' : ''}`} role="status">
+								{poll.stale ? t('foot.stale') : t('boot')}
+							</p>
 						</div>
 					</div>
 				</div>
@@ -880,6 +902,7 @@ export function App() {
 						setPoolDraft={setPoolDraft}
 						onApplyPool={onApplyPool}
 						catalog={catalog.value}
+						catalogLoading={catalogLoading}
 						draft={rulesDraft}
 						setDraft={setRulesDraft}
 						onApplyRules={onApplyRules}
@@ -937,9 +960,10 @@ export function App() {
 								rel="noreferrer"
 								title={t('links.nikki')}
 								aria-label={t('links.nikki')}
+								aria-busy={nikkiOpening}
 								onClick={(e) => void onNikkiPanel(e as unknown as MouseEvent)}
 							>
-								{t('links.nikki.short')} <span aria-hidden="true">↗</span>
+								{nikkiOpening ? <Spin /> : null} {t('links.nikki.short')} <span aria-hidden="true">↗</span>
 							</a>
 						) : null}
 						{links.b4 && status.b4.available ? (

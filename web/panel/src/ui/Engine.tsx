@@ -157,6 +157,9 @@ function Nikki({ nikki, svcNikki, status, lock, locked, t, onPickProxy, onTest }
 					}
 					const isActive = active === m.name;
 					const busy = lock.on('proxy', m.name);
+					// Замер переписывает задержку КАЖДОГО узла: старое число на
+					// время замера читалось бы как уже полученный ответ.
+					const measuring = lock.on('test');
 					return (
 						<button
 							key={m.name}
@@ -172,7 +175,7 @@ function Nikki({ nikki, svcNikki, status, lock, locked, t, onPickProxy, onTest }
 									{pinned ? `📌 ${t('srv.tag.pinned')}` : t('srv.tag.auto')}
 								</span>
 							) : null}
-							<Meter ms={m.delay_ms} busy={busy} />
+							<Meter ms={m.delay_ms} busy={busy || measuring} />
 						</button>
 					);
 				})}

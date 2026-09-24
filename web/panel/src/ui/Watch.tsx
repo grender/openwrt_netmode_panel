@@ -16,7 +16,7 @@ import type { Key, Lang, T } from '../i18n';
 import type { Side } from '../state/side';
 import { jobOn } from '../state/job';
 import type { Lock } from '../state/lock';
-import { Confirm, Spin } from './bits';
+import { Confirm, Skel, Spin } from './bits';
 import { draftOf, MAX_COMMENT, MAX_RULES, plural } from './Rulesets';
 
 /**
@@ -231,7 +231,8 @@ export interface WatchProps {
 	setDraft: (d: RulesDraft) => void;
 	onStart: (ip: string) => void;
 	onStop: () => void;
-	onApplyRules: (d: RulesDraft) => void;
+	/** then — что сделать ПОСЛЕ применения, когда замок уже снят. */
+	onApplyRules: (d: RulesDraft, then?: () => void) => void;
 	lock: Lock;
 	locked: boolean;
 	/** Идущий джоб: «Применить» держит кольцо до конца операции, а не до 202. */
@@ -333,6 +334,8 @@ export function Watch(p: WatchProps) {
 		(r) => !appliedRules.some((a) => a.kind === r.kind && a.value === r.value && a.action === r.action),
 	);
 
+	const stopping = p.lock.on('watch');
+
 	const stopOrAsk = (what: Exclude<Leave, null>) => {
 		if (pendingRules.length > 0) {
 			setLeave(what);
@@ -356,8 +359,19 @@ export function Watch(p: WatchProps) {
 		);
 	}
 
+	// ── ещё ни одного ответа ──
+	// Без этой ветки идущая сессия на секунду выглядела бы как «выберите
+	// устройство»: undefined проваливался в выбор, будто наблюдения нет.
+	if (state === undefined) {
+		return (
+			<div class="watch" data-part="watch">
+				<Skel n={4} />
+			</div>
+		);
+	}
+
 	// ── выбор устройства ──
-	if (!state?.active) {
+	if (!state.active) {
 		return (
 			<div class="watch" data-part="watch">
 				<p class="hint">{t('watch.pick.hint')}</p>
@@ -379,11 +393,11 @@ export function Watch(p: WatchProps) {
 					{t(`watch.engine.${engine}` as Key)}
 				</span>
 				<span class="w-acts">
-					<button type="button" class="mini" onClick={() => stopOrAsk('change')}>
+					<button type="button" class="mini" disabled={p.locked} aria-busy={stopping} onClick={() => stopOrAsk('change')}>
 						{t('watch.sess.change')}
 					</button>
-					<button type="button" class="mini" onClick={() => stopOrAsk('stop')}>
-						{t('watch.sess.stop')}
+					<button type="button" class="mini" disabled={p.locked} aria-busy={stopping} onClick={() => stopOrAsk('stop')}>
+						{stopping ? <Spin /> : null} {t('watch.sess.stop')}
 					</button>
 				</span>
 			</div>
@@ -534,9 +548,12 @@ export function Watch(p: WatchProps) {
 					danger
 					forAction="watch-leave"
 					onGo={() => {
-						p.onApplyRules(eff);
+						// Остановка идёт ПОСЛЕ применения, а не рядом: оба
+						// действия берут один замок, и вторая строка подряд
+						// отбивалась «занято» — сессия так и не
+						// останавливалась, хотя кнопка обещала уйти.
+						p.onApplyRules(eff, p.onStop);
 						setLeave(null);
-						p.onStop();
 					}}
 					onCancel={() => setLeave(null)}
 				/>
@@ -593,7 +610,7 @@ function HostList({
 	locked: boolean;
 	t: T;
 }) {
-	if (hosts === undefined) return <div class="rows" aria-hidden="true" data-part="skeleton" />;
+	if (hosts === undefined) return <Skel n={3} />;
 	if (hosts === null) return <p class="hint bad">{t('watch.pick.down')}</p>;
 	if (hosts.hosts.length === 0) return <p class="hint">{t('watch.pick.none')}</p>;
 	return (
