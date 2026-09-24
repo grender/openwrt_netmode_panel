@@ -24,7 +24,7 @@ import type {
 import { bridgeReason, upstreamReason } from '../api/reasons.gen';
 import { fmtTime, loadLang, makeT, saveLang, type Lang } from '../i18n';
 import { RETRY_MS } from '../state/consts';
-import { resolveJob, useSvc } from '../state/job';
+import { jobOn, resolveJob, useSvc } from '../state/job';
 import { useLock } from '../state/lock';
 import { usePoll } from '../state/poll';
 import { useSide } from '../state/side';
@@ -195,6 +195,24 @@ export function App() {
 		if (status && autopool.value === undefined) void autopool.load();
 	}, [status, autopool]);
 
+	// Подписка обновилась — журнал, узлы и пул перечитываются ПО ФАКТУ, а не
+	// по нажатию. last_update — метка последней строки журнала (status.go):
+	// она сдвигается и на удачном обновлении, и на провале, и на обновлении
+	// по расписанию. Перечитывание сразу после 202 читало СТАРОЕ: джоб к тому
+	// моменту едва начался, и журнал не менялся до F5.
+	const subAt = status ? (status.subscription?.last_update ?? '') : undefined;
+	const seenSubAt = useRef<string | undefined>(undefined);
+	useEffect(() => {
+		if (subAt === undefined) return;
+		const prev = seenSubAt.current;
+		seenSubAt.current = subAt;
+		// Первый статус — не событие: списки и так грузятся сами.
+		if (prev === undefined || prev === subAt) return;
+		void logs.load({ query: { n: '5' } });
+		if (svcNikki === 'up') void nikki.load();
+		void autopool.load();
+	}, [subAt, svcNikki, logs, nikki, autopool]);
+
 	// Список устройств грузится при заходе на экран и после остановки
 	// наблюдения: между этими моментами он не меняется настолько, чтобы
 	// платить за него запросом каждую секунду.
@@ -265,6 +283,20 @@ export function App() {
 			})();
 			return;
 		}
+		// У подписки тоже свой тост: важно не «готово», а сколько узлов
+		// приехало. Строка журнала пишется ВНУТРИ джоба, поэтому статус,
+		// сообщивший done, уже несёт её итог.
+		if (j.kind === 'subscription') {
+			const s = status?.subscription;
+			if (s && s.status === 'ok') {
+				lock.flash(t('sub.done', { n: s.nodes }), 'ok');
+				return;
+			}
+			if (s && s.status === 'fail') {
+				lock.flash(t('sub.done.fail', { why: s.error || '—' }), 'warn');
+				return;
+			}
+		}
 		if (j.kind === 'rulesets') {
 			void (async () => {
 				try {
@@ -301,7 +333,7 @@ export function App() {
 				: t('job.done', { what: jobText(j, t) }),
 			'ok',
 		);
-	}, [status?.job, lock, t, rulesets]);
+	}, [status?.job, status?.subscription, lock, t, rulesets]);
 
 	// ─── действия ───
 
@@ -495,24 +527,16 @@ export function App() {
 			() => bridge.load(),
 		);
 
+	// Журнал, узлы и пул здесь НЕ перечитываются: 202 приходит, когда джоб
+	// едва начался, и перечитывание читало бы старое. Их перечитывает
+	// наблюдатель за last_update выше — когда строка журнала уже записана.
+	// Пул обязан перечитаться: демон после обновления пересобирает
+	// провайдерский пул, и без свежего отпечатка следующее «Применить»
+	// уходило бы в stale_autopool.
 	const onUpdateSub = () =>
-		void lock.act(
-			'sub',
-			async () => {
-				poll.sow(await post<JobAccepted>('subscriptionUpdate', {}));
-			},
-			async () => {
-				await logs.load({ query: { n: '5' } });
-				await nikki.load();
-				// Пул перечитывается вместе с узлами: available, missing и
-				// provider_pool читаются из манифеста, который обновление
-				// только что переписало. Дело не только в свежести списка —
-				// демон после обновления сам пересобирает провайдерский пул,
-				// и отпечаток у панели на руках становится чужим. Без этой
-				// строки следующее «Применить» уходило бы в stale_autopool.
-				await autopool.load();
-			},
-		);
+		void lock.act('sub', async () => {
+			poll.sow(await post<JobAccepted>('subscriptionUpdate', {}));
+		});
 
 	const onWatchStart = (ip: string) =>
 		void lock.act(
@@ -606,13 +630,27 @@ export function App() {
 		void lock.act(
 			'suburl',
 			async () => {
-				sub.put(
-					await api<SubscriptionURL>('subscription', {
-						method: 'PUT',
-						body: JSON.stringify({ url }),
-					}),
-				);
-				lock.flash(t('sub.url.saved'), 'ok');
+				const r = await api<SubscriptionURL>('subscription', {
+					method: 'PUT',
+					body: JSON.stringify({ url }),
+				});
+				sub.put(r);
+				// Кнопка обещает «Сохранить и скачать», а PUT только пишет
+				// адрес. Скачивание запускается здесь же, под тем же замком:
+				// иначе владелец видел «сохранено» и ждал узлов, которых
+				// никто не качал до расписания.
+				if (!r.configured) {
+					lock.flash(t('sub.url.saved'), 'ok');
+					return;
+				}
+				lock.rekey('sub');
+				try {
+					poll.sow(await post<JobAccepted>('subscriptionUpdate', {}));
+				} catch (e) {
+					// Адрес СОХРАНЁН — общее «не удалось» читалось бы как
+					// «ничего не записалось».
+					lock.flash(t('sub.url.saved.nofetch', { why: describe(e, t) }), 'warn');
+				}
 			},
 			async () => {},
 		);
@@ -810,6 +848,7 @@ export function App() {
 						lang={lang}
 						lock={lock}
 						locked={locked}
+						running={running}
 						status={status}
 						rulesets={rulesets.value}
 						autopool={autopool.value}

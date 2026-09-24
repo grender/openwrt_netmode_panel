@@ -3,6 +3,7 @@ import type {
 	AutopoolDraft,
 	AutopoolResponse,
 	BridgeState,
+	Job,
 	LogsResponse,
 	ProxiesResponse,
 	RulesDraft,
@@ -33,6 +34,8 @@ export interface SettingsProps {
 	lang: Lang;
 	lock: Lock;
 	locked: boolean;
+	/** Идущий джоб — чтобы кнопка держала кольцо до конца операции, а не до 202. */
+	running: Job | null;
 	status: Status;
 
 	rulesets: Side<RulesetsResponse>;
@@ -118,6 +121,7 @@ export function Settings(p: SettingsProps) {
 					lang={p.lang}
 					lock={p.lock}
 					locked={p.locked}
+					running={p.running}
 					t={t}
 					onUpdate={p.onUpdateSub}
 					onSaveURL={p.onSaveURL}

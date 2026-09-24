@@ -1,7 +1,8 @@
 import { useState } from 'preact/hooks';
+import { jobOn } from '../state/job';
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
-import type { LogsResponse, ProxiesResponse, Status, SubscriptionURL } from '../api/types';
+import type { Job, LogsResponse, ProxiesResponse, Status, SubscriptionURL } from '../api/types';
 import { fmtTime, type Lang, type T } from '../i18n';
 import { Skel, Spin } from './bits';
 
@@ -13,6 +14,8 @@ export interface SubProps {
 	lang: Lang;
 	lock: Lock;
 	locked: boolean;
+	/** Идущий джоб: кольцо на кнопке держится до конца обновления, а не до 202. */
+	running: Job | null;
 	t: T;
 	onUpdate(): void;
 	onSaveURL(url: string): void;
@@ -43,6 +46,7 @@ export function Subscription({
 	lang,
 	lock,
 	locked,
+	running,
 	t,
 	onUpdate,
 	onSaveURL,
@@ -54,6 +58,8 @@ export function Subscription({
 	const [showLog, setShowLog] = useState(false);
 	const s = status.subscription;
 	const unset = s ? !s.configured : false;
+	const updating = lock.on('sub') || jobOn(running, 'subscription');
+	const savingURL = lock.on('suburl');
 
 	// Строки, которые не стали узлами. Показывается только когда движок
 	// ответил и виды строк известны: при выключенном Nikki их взять неоткуда,
@@ -103,8 +109,18 @@ export function Subscription({
 					    параметров. Ни одного символа секрета (ADR-0012,
 					    ADR-0034) — «хвостик из четырёх знаков» это утечка
 					    четырёх знаков, а не мера защиты. */}
-					<span class="name" title={sub?.masked ?? ''}>
-						{sub === undefined ? '…' : sub?.masked || t('sub.url.none')}
+					<span class="name" title={sub?.masked ?? ''} aria-busy={savingURL}>
+						{/* Форма закрывается в момент нажатия, и без кольца здесь
+						    строка до восьми секунд показывала бы СТАРЫЙ адрес. */}
+						{savingURL ? (
+							<>
+								<Spin /> {t('wifi.saving')}
+							</>
+						) : sub === undefined ? (
+							'…'
+						) : (
+							sub?.masked || t('sub.url.none')
+						)}
 					</span>
 					<span class="acts" style={{ width: 'auto' }}>
 						<button
@@ -131,10 +147,10 @@ export function Subscription({
 				type="button"
 				class="wide"
 				disabled={locked || unset}
-				aria-busy={lock.on('sub')}
+				aria-busy={updating}
 				onClick={onUpdate}
 			>
-				{lock.on('sub') ? (
+				{updating ? (
 					<>
 						<Spin /> {t('sub.updating')}
 					</>

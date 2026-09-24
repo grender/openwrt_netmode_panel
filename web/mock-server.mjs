@@ -62,6 +62,10 @@ const SCENARIOS = {
 	// увидеть его на роутере можно ровно один раз, а чинить панель для него
 	// приходится всегда.
 	'sub-unset': 'status-single.json',
+	// Обновление подписки проваливается: джоб failed, в журнале — строка
+	// fail. Проверяет, что панель перечитывает журнал и после провала, а не
+	// только после удачи.
+	'sub-fail': 'status-single.json',
 	// Адрес роутера не выводится из Host. Статус обычный и движок отвечает —
 	// смотреть надо именно на шапку: кнопки нет, хотя движок жив.
 	'host-unknown': 'status-single.json',
@@ -902,8 +906,14 @@ async function handleAPI(req, res, u) {
 		// кнопку обновления можно было бы увидеть только на роутере с пустым
 		// netmode.main.subscription_url, то есть один раз в жизни, при первой
 		// установке — ровно в тот момент, когда панель открывают впервые.
+		// Строки журнала, дописанные обновлениями в моке. Демон берёт
+		// last_update/status/nodes из ПОСЛЕДНЕЙ строки журнала (status.go),
+		// и мок обязан делать то же: иначе обновление в моке не двигало бы
+		// ни сводку, ни журнал, и панель было бы нечем проверить.
+		const last = state.sub.log && state.sub.log[0];
 		s.subscription = {
 			...s.subscription,
+			...(last ? { last_update: last.ts, status: last.status, nodes: last.nodes, error: last.err || null } : {}),
 			configured: state.sub.configured !== undefined
 				? state.sub.configured
 				: state.scenario !== 'sub-unset',
@@ -1556,13 +1566,32 @@ async function handleAPI(req, res, u) {
 
 	if (p === '/api/subscription/update' && method === 'POST') {
 		if (busyJob()) return fail(res, 409, 'job_busy', 'Уже идёт другая операция');
-		startJob('subscription', '', 'Обновление подписки', 4);
+		// Строка журнала пишется В КОНЦЕ джоба, как у демона (sched.RunOnce):
+		// до этого момента журнал и сводка обязаны показывать старое.
+		startJob('subscription', '', 'Обновление подписки', 4, () => {
+			const failing = state.scenario === 'sub-fail';
+			state.sub.log = [
+				failing
+					? { ts: nowISO(), nodes: 0, status: 'fail', err: 'конвертер вернул 0 узлов, файл провайдера не перезаписан' }
+					: { ts: nowISO(), nodes: 42, status: 'ok', err: '' },
+				...(state.sub.log || []),
+			];
+			if (failing) {
+				state.job.state = 'failed';
+				state.job.error = 'конвертер вернул 0 узлов';
+			} else {
+				state.job.state = 'done';
+			}
+		});
 		return send(res, 202, { job: state.job });
 	}
 	if (p === '/api/logs' && method === 'GET') {
 		const d = await readJSON('logs.json');
 		// Свежая установка не может иметь истории обновлений.
 		if (state.scenario === 'empty') { d.lines = []; d.n = 0; }
+		const n = Number(u.searchParams.get('n')) || 50;
+		d.lines = [...(state.sub.log || []), ...d.lines].slice(0, n);
+		d.n = d.lines.length;
 		return send(res, 200, d);
 	}
 
