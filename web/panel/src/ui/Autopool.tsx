@@ -1,6 +1,7 @@
 import { useState } from 'preact/hooks';
-import type { AutopoolDraft, AutopoolMode, AutopoolResponse } from '../api/types';
+import type { AutopoolDraft, AutopoolMode, AutopoolResponse, Job } from '../api/types';
 import type { Key, T } from '../i18n';
+import { jobOn } from '../state/job';
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
 import { Skel, Spin } from './bits';
@@ -23,6 +24,8 @@ export interface AutopoolProps {
 	setDraft(d: AutopoolDraft | null): void;
 	lock: Lock;
 	locked: boolean;
+	/** Идущий джоб: кнопка держит кольцо до конца операции, а не до 202. */
+	running: Job | null;
 	t: T;
 	onApply(d: AutopoolDraft): void;
 }
@@ -51,7 +54,7 @@ function dirty(a: AutopoolResponse, d: AutopoolDraft | null): boolean {
 
 /** Сводка для полки и заголовка раздела. */
 export function poolSummary(v: Side<AutopoolResponse>, d: AutopoolDraft | null, t: T): string {
-	if (v === undefined) return '';
+	if (v === undefined) return '…';
 	if (v === null) return t('pool.sum.unknown');
 	if (v.foreign) return t('pool.sum.foreign');
 	const eff = d ?? draftOf(v);
@@ -73,7 +76,7 @@ export function Autopool(p: AutopoolProps) {
 	const frozen = applied.foreign;
 	const off = p.locked || frozen;
 	const eff = p.draft ?? draftOf(applied);
-	const busy = p.lock.on('autopool');
+	const busy = p.lock.on('autopool') || jobOn(p.running, 'autopool');
 	const left = poolLeft(eff, applied.available);
 	const changed = dirty(applied, p.draft);
 	// Режим «как в подписке» предлагается, только если провайдер прислал

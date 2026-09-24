@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"netmoded/internal/uci"
@@ -49,6 +50,22 @@ var writableEncryption = map[string]bool{
 // needsKey сообщает, обязателен ли пароль для этого шифрования.
 func needsKey(enc string) bool { return enc != "none" }
 
+// uciWriteTimeout — бюджет синхронной цепочки записи в UCI (set…commit
+// или откат). С запасом: каждый вызов uci ограничен исполнителем.
+const uciWriteTimeout = 30 * time.Second
+
+// writeCtx — контекст цепочки записи, отвязанный от отмены запроса.
+//
+// Исполнитель запускает uci через CommandContext: закрытая посреди записи
+// вкладка убивала бы процесс, а откат (revertDraft) шёл бы с тем же мёртвым
+// контекстом и тоже не выполнялся. В стейджинге оставалась бы полусекция —
+// ещё без disabled=1, то есть ВКЛЮЧЁННАЯ, — и каждая следующая запись
+// отбивалась бы foreign_staged_changes, пока кто-то не сделает uci revert
+// по ssh (ADR-0028). Начатую цепочку доводим до конца или откатываем сами.
+func writeCtx(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(r.Context()), uciWriteTimeout)
+}
+
 func (s *Server) handleWifiWrite(w http.ResponseWriter, r *http.Request) {
 	var in NetworkWrite
 	if errResp := decodeStrict(r, &in); errResp != nil {
@@ -56,22 +73,26 @@ func (s *Server) handleWifiWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer s.lockPkg("wireless")()
 	g, errResp := s.openWriteForSaved(r)
 	if errResp != nil {
 		errResp.send(w)
 		return
 	}
 
+	ctx, cancel := writeCtx(r)
+	defer cancel()
 	if in.ID == "" {
-		s.createNetwork(w, r.Context(), g, in)
+		s.createNetwork(w, ctx, g, in)
 		return
 	}
-	s.editNetwork(w, r.Context(), g, in)
+	s.editNetwork(w, ctx, g, in)
 }
 
 func (s *Server) handleWifiDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
+	defer s.lockPkg("wireless")()
 	g, errResp := s.openWriteForSaved(r)
 	if errResp != nil {
 		errResp.send(w)
@@ -83,7 +104,8 @@ func (s *Server) handleWifiDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
+	ctx, cancel := writeCtx(r)
+	defer cancel()
 	if err := s.ex.UCIDelete(ctx, "wireless", sec.Name, ""); err != nil {
 		s.revertDraft(ctx, sec.Name)
 		writeErr(w, http.StatusInternalServerError, "write_failed", err.Error())

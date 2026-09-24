@@ -981,3 +981,14 @@ func TestPanelHost(t *testing.T) {
 		}
 	}
 }
+
+// Тело сверх потолка не читается целиком: запрос отбивается, а не копится
+// в памяти роутера.
+func TestOversizedBodyIsRefused(t *testing.T) {
+	s, _ := newServer(t)
+	big := `{"url":"https://example.invalid/` + strings.Repeat("a", maxBody) + `"}`
+	rec := put(t, s, "/api/subscription", big)
+	if rec.Code < 400 || rec.Code >= 500 {
+		t.Errorf("тело в %d Б принято с кодом %d", len(big), rec.Code)
+	}
+}

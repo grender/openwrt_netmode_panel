@@ -59,6 +59,17 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"job": j})
 }
 
+// commitMode пишет и коммитит режим под замком пакета netmode: запись
+// адреса подписки идёт мимо менеджера операций, и её set не должен
+// опубликоваться нашим commit (или наоборот). Скрипт — уже без замка.
+func (s *Server) commitMode(ctx context.Context, mode string) error {
+	defer s.lockPkg("netmode")()
+	if err := s.ex.UCISet(ctx, "netmode", "main", "mode", mode); err != nil {
+		return err
+	}
+	return s.ex.UCICommit(ctx, "netmode")
+}
+
 // applyMode выполняет переключение.
 //
 // Порядок именно такой: сначала намерение в UCI, потом скрипт. UCI —
@@ -74,11 +85,7 @@ func (s *Server) applyMode(ctx context.Context, mode string) error {
 	// что нажатие принято, ещё до того как переключение завершится.
 	s.setLED(led.ApplyingForMode(mode))
 
-	if err := s.ex.UCISet(ctx, "netmode", "main", "mode", mode); err != nil {
-		s.flashLED(mode)
-		return err
-	}
-	if err := s.ex.UCICommit(ctx, "netmode"); err != nil {
+	if err := s.commitMode(ctx, mode); err != nil {
 		s.flashLED(mode)
 		return err
 	}

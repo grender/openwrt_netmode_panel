@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type {
 	CustomRule,
+	Job,
 	Mode,
 	RulesDraft,
 	RulesetsResponse,
@@ -13,9 +14,10 @@ import type {
 } from '../api/types';
 import type { Key, Lang, T } from '../i18n';
 import type { Side } from '../state/side';
+import { jobOn } from '../state/job';
 import type { Lock } from '../state/lock';
-import { Confirm, Spin } from './bits';
-import { draftOf, MAX_COMMENT, MAX_RULES, plural } from './Rulesets';
+import { Confirm, Skel, Spin } from './bits';
+import { draftOf, MAX_COMMENT, MAX_RULES, plural, policyWith, ruleProblem } from './Rulesets';
 
 /**
  * Наблюдатель трафика устройства — третий экран панели (ADR-0043).
@@ -229,9 +231,12 @@ export interface WatchProps {
 	setDraft: (d: RulesDraft) => void;
 	onStart: (ip: string) => void;
 	onStop: () => void;
-	onApplyRules: (d: RulesDraft) => void;
+	/** then — что сделать ПОСЛЕ применения, когда замок уже снят. */
+	onApplyRules: (d: RulesDraft, then?: () => void) => void;
 	lock: Lock;
 	locked: boolean;
+	/** Идущий джоб: «Применить» держит кольцо до конца операции, а не до 202. */
+	running: Job | null;
 	t: T;
 	lang: Lang;
 }
@@ -329,8 +334,16 @@ export function Watch(p: WatchProps) {
 		(r) => !appliedRules.some((a) => a.kind === r.kind && a.value === r.value && a.action === r.action),
 	);
 
+	const stopping = p.lock.on('watch');
+
+	const invalidRules = eff.rules.some((r, i) => ruleProblem(r, eff.rules, i) !== null);
+
 	const stopOrAsk = (what: Exclude<Leave, null>) => {
-		if (pendingRules.length > 0) {
+		// Предложить «применить и уйти» можно, только когда применить
+		// получится: при занятой панели или битом черновике «Применить»
+		// отбилось бы, а остановка ушла бы следом — черновик остался бы
+		// висеть, а владелец думал бы, что он применён.
+		if (pendingRules.length > 0 && !p.locked && !invalidRules) {
 			setLeave(what);
 			return;
 		}
@@ -338,7 +351,11 @@ export function Watch(p: WatchProps) {
 	};
 
 	// ── наблюдать нечего ──
-	if (p.mode !== 'nikki') {
+	// Только когда сессии нет. Живая сессия при сменённом режиме остаётся на
+	// экране (над ней — «движок остановлен»): накопленное можно дочитать, и
+	// главное — остановить. Раньше экран прятал её целиком, опрос продлевал
+	// её TTL, а кнопки «Стоп» не было.
+	if (p.mode !== 'nikki' && !state?.active) {
 		return (
 			<div class="watch" data-part="watch">
 				<div class="note warn full" data-part="watch-off">
@@ -352,8 +369,19 @@ export function Watch(p: WatchProps) {
 		);
 	}
 
+	// ── ещё ни одного ответа ──
+	// Без этой ветки идущая сессия на секунду выглядела бы как «выберите
+	// устройство»: undefined проваливался в выбор, будто наблюдения нет.
+	if (state === undefined) {
+		return (
+			<div class="watch" data-part="watch">
+				<Skel n={4} />
+			</div>
+		);
+	}
+
 	// ── выбор устройства ──
-	if (!state?.active) {
+	if (!state.active) {
 		return (
 			<div class="watch" data-part="watch">
 				<p class="hint">{t('watch.pick.hint')}</p>
@@ -375,11 +403,11 @@ export function Watch(p: WatchProps) {
 					{t(`watch.engine.${engine}` as Key)}
 				</span>
 				<span class="w-acts">
-					<button type="button" class="mini" onClick={() => stopOrAsk('change')}>
+					<button type="button" class="mini" disabled={p.locked} aria-busy={stopping} onClick={() => stopOrAsk('change')}>
 						{t('watch.sess.change')}
 					</button>
-					<button type="button" class="mini" onClick={() => stopOrAsk('stop')}>
-						{t('watch.sess.stop')}
+					<button type="button" class="mini" disabled={p.locked} aria-busy={stopping} onClick={() => stopOrAsk('stop')}>
+						{stopping ? <Spin /> : null} {t('watch.sess.stop')}
 					</button>
 				</span>
 			</div>
@@ -393,7 +421,7 @@ export function Watch(p: WatchProps) {
 				</div>
 			) : null}
 
-			{engine === 'off' ? (
+			{engine === 'off' || p.mode !== 'nikki' ? (
 				<div class="note warn full" data-part="watch-engine-off">
 					<h3>{t('watch.gone.title')}</h3>
 					<p>{t('watch.gone.text')}</p>
@@ -514,8 +542,9 @@ export function Watch(p: WatchProps) {
 					onApply={() => p.onApplyRules(eff)}
 					onDrop={() => p.setDraft({ ...eff, rules: appliedRules.map((r) => ({ ...r })) })}
 					onRemove={(r) => p.setDraft({ ...eff, rules: eff.rules.filter((x) => !(x.kind === r.kind && x.value === r.value)) })}
-					busy={p.lock.on('rulesets')}
+					busy={p.lock.on('rulesets') || jobOn(p.running, 'rulesets')}
 					locked={p.locked}
+					invalid={invalidRules}
 					t={t}
 					lang={lang}
 				/>
@@ -530,9 +559,12 @@ export function Watch(p: WatchProps) {
 					danger
 					forAction="watch-leave"
 					onGo={() => {
-						p.onApplyRules(eff);
+						// Остановка идёт ПОСЛЕ применения, а не рядом: оба
+						// действия берут один замок, и вторая строка подряд
+						// отбивалась «занято» — сессия так и не
+						// останавливалась, хотя кнопка обещала уйти.
+						p.onApplyRules(eff, p.onStop);
 						setLeave(null);
-						p.onStop();
 					}}
 					onCancel={() => setLeave(null)}
 				/>
@@ -589,7 +621,7 @@ function HostList({
 	locked: boolean;
 	t: T;
 }) {
-	if (hosts === undefined) return <div class="rows" aria-hidden="true" data-part="skeleton" />;
+	if (hosts === undefined) return <Skel n={3} />;
 	if (hosts === null) return <p class="hint bad">{t('watch.pick.down')}</p>;
 	if (hosts.hosts.length === 0) return <p class="hint">{t('watch.pick.none')}</p>;
 	return (
@@ -878,7 +910,8 @@ function RuleForm(p: RowProps & { cov: Covered | null }) {
 	const add = () => {
 		const rule: CustomRule = { kind, value, action: f.to, comment: f.comment.trim() };
 		// Второе правило на ту же цель недостижимо — заменяем, а не копим.
-		p.setDraft({ ...p.eff, rules: [...p.eff.rules.filter((r) => !(r.kind === rule.kind && r.value === rule.value)), rule] });
+		const rules = [...p.eff.rules.filter((r) => !(r.kind === rule.kind && r.value === rule.value)), rule];
+		p.setDraft({ ...p.eff, policy: policyWith(p.eff.policy, true), rules });
 		p.setForm(null);
 	};
 
@@ -966,6 +999,7 @@ function DraftBar({
 	onRemove,
 	busy,
 	locked,
+	invalid,
 	t,
 	lang,
 }: {
@@ -977,6 +1011,8 @@ function DraftBar({
 	onRemove: (r: CustomRule) => void;
 	busy: boolean;
 	locked: boolean;
+	/** В общем черновике есть строка, которую демон отобьёт bad_rule. */
+	invalid: boolean;
 	t: T;
 	lang: Lang;
 }) {
@@ -1012,8 +1048,12 @@ function DraftBar({
 					<p class="hint">{t('watch.draft.note')}</p>
 				</div>
 			) : null}
+			{/* Черновик общий с настройками, и там можно было оставить
+			    недописанную строку. Кнопка гаснет так же, как на экране
+			    наборов, а не ждёт отказа демона. */}
+			{invalid ? <p class="hint bad">{t('rules.dirty.invalid')}</p> : null}
 			<div class="buttons">
-				<button type="button" class="go" disabled={locked} aria-busy={busy} onClick={onApply}>
+				<button type="button" class="go" disabled={locked || invalid} aria-busy={busy} onClick={onApply}>
 					{busy ? <Spin /> : null}
 					{t(busy ? 'watch.draft.applying' : 'watch.draft.apply')}
 				</button>

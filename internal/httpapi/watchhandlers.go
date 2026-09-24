@@ -216,9 +216,17 @@ func (s *Server) handleWatchStart(w http.ResponseWriter, r *http.Request) {
 		Mode: func(c context.Context) (string, error) { return s.ex.UCIGet(c, "netmode", "main", "mode") },
 		Logf: s.logf,
 	})
+	// Подмена — одной операцией под замком, и прежнее гасится ЗДЕСЬ, а не
+	// только выше. Два одновременных POST оба проходили stopWatch впустую,
+	// оба запускали сессию, и вторая молча затирала первую — осиротевший
+	// поток к /logs mihomo жил бы до TTL, и Close его не нашёл бы.
 	s.watchMu.Lock()
+	prev := s.watch
 	s.watch = sess
 	s.watchMu.Unlock()
+	if prev != nil {
+		prev.Stop()
+	}
 
 	writeJSON(w, http.StatusOK, sess.State())
 }

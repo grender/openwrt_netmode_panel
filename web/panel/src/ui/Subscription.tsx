@@ -1,7 +1,8 @@
 import { useState } from 'preact/hooks';
+import { jobOn } from '../state/job';
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
-import type { LogsResponse, ProxiesResponse, Status, SubscriptionURL } from '../api/types';
+import type { Job, LogsResponse, ProxiesResponse, Status, SubscriptionURL } from '../api/types';
 import { fmtTime, type Lang, type T } from '../i18n';
 import { Skel, Spin } from './bits';
 
@@ -13,9 +14,11 @@ export interface SubProps {
 	lang: Lang;
 	lock: Lock;
 	locked: boolean;
+	/** Идущий джоб: кольцо на кнопке держится до конца обновления, а не до 202. */
+	running: Job | null;
 	t: T;
 	onUpdate(): void;
-	onSaveURL(url: string): void;
+	onSaveURL(url: string, setErr: (s: string) => void, done: () => void): void;
 }
 
 export function subSummary(status: Status, lang: Lang, t: T): string {
@@ -43,17 +46,20 @@ export function Subscription({
 	lang,
 	lock,
 	locked,
+	running,
 	t,
 	onUpdate,
 	onSaveURL,
 }: SubProps) {
 	const [editing, setEditing] = useState(false);
 	const [draft, setDraft] = useState('');
+	const [err, setErr] = useState('');
 	// Журнал свёрнут: обновление в норме заканчивается тостом, а журнал
 	// нужен, когда «обновлена вчера» противоречит «нажимал сегодня».
 	const [showLog, setShowLog] = useState(false);
 	const s = status.subscription;
 	const unset = s ? !s.configured : false;
+	const updating = lock.on('sub') || jobOn(running, 'subscription');
 
 	// Строки, которые не стали узлами. Показывается только когда движок
 	// ответил и виды строк известны: при выключенном Nikki их взять неоткуда,
@@ -75,9 +81,13 @@ export function Subscription({
 							placeholder={t('sub.url.placeholder')}
 							autocomplete="off"
 							spellcheck={false}
-							onInput={(e) => setDraft((e.target as HTMLInputElement).value)}
+							onInput={(e) => {
+								setDraft((e.target as HTMLInputElement).value);
+								setErr('');
+							}}
 						/>
 					</label>
+					{err ? <p class="hint" style={{ color: 'var(--bad)' }}>{err}</p> : null}
 					<p class="hint">{t('sub.url.hint')}</p>
 					<div class="form-row">
 						<button
@@ -85,10 +95,7 @@ export function Subscription({
 							class="wide primary"
 							disabled={locked}
 							aria-busy={lock.on('suburl')}
-							onClick={() => {
-								onSaveURL(draft);
-								setEditing(false);
-							}}
+							onClick={() => onSaveURL(draft, setErr, () => setEditing(false))}
 						>
 							{lock.on('suburl') ? <Spin /> : null} {t('sub.url.save')}
 						</button>
@@ -116,6 +123,7 @@ export function Subscription({
 								// не адрес, и отправить её обратно значило бы
 								// записать многоточия вместо токена.
 								setDraft('');
+								setErr('');
 								setEditing(true);
 							}}
 						>
@@ -131,10 +139,10 @@ export function Subscription({
 				type="button"
 				class="wide"
 				disabled={locked || unset}
-				aria-busy={lock.on('sub')}
+				aria-busy={updating}
 				onClick={onUpdate}
 			>
-				{lock.on('sub') ? (
+				{updating ? (
 					<>
 						<Spin /> {t('sub.updating')}
 					</>

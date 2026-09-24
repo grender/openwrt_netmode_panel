@@ -108,6 +108,11 @@ export function describe(e: unknown, t: T, fallback?: Key): string {
 	// Прерванный по таймауту запрос даёт DOMException с сообщением браузера
 	// («The user aborted a request») — оно и неверно по сути, и не переводится.
 	if (e instanceof DOMException && e.name === 'AbortError') return t('err.timeout');
+	// fetch отказывает TypeError, когда ответа нет вовсе (сеть, демон лежит),
+	// и его текст — «Failed to fetch» на языке браузера, а не панели. Только
+	// сетевые тексты трёх движков: TypeError из ошибки в самой панели
+	// «связью с роутером» называть нельзя.
+	if (e instanceof TypeError && /failed to fetch|networkerror|load failed/i.test(e.message)) return t('err.network');
 
 	if (e instanceof ApiError) {
 		// Object.hasOwn, а не просто истинность: код приходит с сервера, и

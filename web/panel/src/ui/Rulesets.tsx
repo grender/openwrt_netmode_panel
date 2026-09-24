@@ -6,8 +6,10 @@ import type {
 	RulesetsCatalog,
 	RulesetsResponse,
 	SetAction,
+	Job,
 } from '../api/types';
 import type { Key, Lang, T } from '../i18n';
+import { jobOn } from '../state/job';
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
 import { Confirm, Skel, Spin } from './bits';
@@ -39,6 +41,8 @@ export interface RulesetsProps {
 	applied: Side<RulesetsResponse>;
 	/** Имена с GitHub. Грузится лениво: 60 КБ ради шага, куда заходят редко. */
 	catalog: Side<RulesetsCatalog>;
+	/** Каталог грузится: после отказа значение null, и без флага «Повторить» молчала бы. */
+	catalogLoading: boolean;
 	/** null означает «совпадает с применённым», а не «пусто». */
 	draft: RulesDraft | null;
 	setDraft(d: RulesDraft | null): void;
@@ -46,9 +50,24 @@ export interface RulesetsProps {
 	lang: Lang;
 	lock: Lock;
 	locked: boolean;
+	/** Идущий джоб: кнопка держит кольцо до конца операции, а не до 202. */
+	running: Job | null;
 	t: T;
 	onApply(d: RulesDraft): void;
 	onLoadCatalog(): void;
+}
+
+/**
+ * Политика после правки черновика.
+ *
+ * Первый выбранный набор или своё правило при политике профиля означают
+ * «маршрут теперь решает панель». Общая функция, а не копия в каждом месте
+ * правки: наблюдатель добавлял правило мимо неё, черновик уходил с
+ * policy:profile и правилами сразу, и демон отбивал его bad_rule — на
+ * свежей установке «Применить» из наблюдателя не работало никогда.
+ */
+export function policyWith(policy: RulesDraft['policy'], any: boolean): RulesDraft['policy'] {
+	return policy === 'profile' && any ? 'direct' : policy;
 }
 
 /**
@@ -148,6 +167,9 @@ export function setsSummary(sets: RulesDraft['sets'], t: T): string {
  * имя без цифр заставляет заходить внутрь, чтобы узнать, надо ли было.
  */
 export function rulesSummary(a: Side<RulesetsResponse>, d: RulesDraft | null, t: T): string {
+	// Пока файл не прочитан, сводка — многоточие, как у проброса. Черновик
+	// из undefined дал бы «по профилю», и полка утверждала бы это как факт.
+	if (a === undefined && !d) return '…';
 	const eff = d ?? draftOf(a);
 	if (eff.policy === 'profile') return t('rules.sum.profile');
 	let s = `${setsSummary(eff.sets, t)} · ${t(`rules.rest.sum.${eff.policy}` as Key)}`;
@@ -240,7 +262,10 @@ export function Rulesets(p: RulesetsProps) {
 	// Каталог нужен только шагу с наборами — и тянется, когда его открыли.
 	useEffect(() => {
 		if (step === 'packs') p.onLoadCatalog();
-	}, [step, p.onLoadCatalog]);
+		// Только шаг: запрос — реакция на ЗАХОД во вкладку. Зависимость от
+		// колбэка перезапрашивала бы каталог при каждой его смене, в том
+		// числе сразу после отказа, — повтор без нажатия «Повторить».
+	}, [step]);
 
 	if (applied === undefined) return <Skel n={3} />;
 	// null — спросили и отказали. Это НЕ «наборов нет»: файл на диске жив,
@@ -250,7 +275,7 @@ export function Rulesets(p: RulesetsProps) {
 
 	const eff = p.draft ?? draftOf(applied);
 	const dirty = dirtyCount(applied, p.draft);
-	const busy = p.lock.on('rulesets');
+	const busy = p.lock.on('rulesets') || jobOn(p.running, 'rulesets');
 	const problems = eff.rules.map((r, i) => ruleProblem(r, eff.rules, i));
 	const invalid = problems.filter((x) => x !== null).length;
 	const profile = eff.policy === 'profile';
@@ -272,7 +297,7 @@ export function Rulesets(p: RulesetsProps) {
 	// Первый выбранный набор или своё правило при политике профиля означают
 	// «маршрут теперь решает панель»: без переключения нажатие меняло бы
 	// только строку, а трафик шёл бы по-прежнему весь в туннель.
-	const leaveProfile = (any: boolean) => (profile && any ? ('direct' as const) : eff.policy);
+	const leaveProfile = (any: boolean) => policyWith(eff.policy, any);
 
 	const applySets = (sets: RulesDraft['sets']) =>
 		p.setDraft({ ...eff, policy: leaveProfile(sets.length > 0), sets });
@@ -547,8 +572,14 @@ export function Rulesets(p: RulesetsProps) {
 						) : catalog === null ? (
 							<>
 								<p class="hint">{t('rules.catalog.down', { why: t('rules.catalog.why') })}</p>
-								<button type="button" class="linkbtn" onClick={p.onLoadCatalog}>
-									{t('rules.catalog.retry')}
+								<button
+									type="button"
+									class="linkbtn"
+									disabled={p.catalogLoading}
+									aria-busy={p.catalogLoading}
+									onClick={p.onLoadCatalog}
+								>
+									{p.catalogLoading ? <Spin /> : null} {t('rules.catalog.retry')}
 								</button>
 								{/* Каталога нет, но применённое показать можно: оно из файла. */}
 								{!q && names.length > 0 ? (

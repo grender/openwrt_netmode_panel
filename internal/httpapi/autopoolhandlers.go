@@ -225,8 +225,14 @@ func (s *Server) handleAutopoolPut(w http.ResponseWriter, r *http.Request) {
 	// 7. Джоб.
 	next := cur
 	next.Auto = want
+	seen := mixinState(cur, herr)
 	j, err := s.jobs.Start("autopool", "", "Применение авто-пула", autopoolETASec,
-		func(ctx context.Context) error { return s.applyAutopool(ctx, next) })
+		func(ctx context.Context) error {
+			if err := s.mixinStill(seen); err != nil {
+				return err
+			}
+			return s.applyAutopool(ctx, next)
+		})
 	if errors.Is(err, job.ErrBusy) {
 		writeErr(w, http.StatusConflict, "job_busy", "Уже идёт другая операция. Дождитесь её завершения.")
 		return

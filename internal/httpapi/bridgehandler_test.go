@@ -325,6 +325,16 @@ func TestBridgeEnableRefusalsWriteNothing(t *testing.T) {
 			body(bLegIP, bPCIP, ""), http.StatusConflict, "foreign_staged_changes",
 		},
 		{
+			// Партия пишет netmode.main.bridge_pc_ip, а откат снимает всё,
+			// что `uci changes netmode` перечисляет: чужой черновик здесь
+			// молча откатился бы или опубликовался бы нашим коммитом.
+			"чужой черновик в netmode",
+			func(t *testing.T, s *Server, f *executor.Fake) {
+				f.Staged["netmode"] = "set netmode.main.subscription_url='x'\n"
+			},
+			body(bLegIP, bPCIP, ""), http.StatusConflict, "foreign_staged_changes",
+		},
+		{
 			"лишнее поле в теле", nil,
 			body(bLegIP, bPCIP, `,"колхоз":1`), http.StatusBadRequest, "unsupported_field",
 		},
@@ -741,7 +751,7 @@ func TestBridgeDisableCleansLeftovers(t *testing.T) {
 		cur = strings.Join(out, "\n")
 	}
 	f.Fixtures["uci show network"] = []byte(cur)
-	f.Errors["ubus network.interface.homelan status"] = errors.New("интерфейса нет")
+	f.Errors["ubus network.interface.homelan status"] = errors.New("Command failed: Not found")
 	f.Fixtures["bridge status"] = scriptStatus(true, false, 1)
 
 	j := runBridgeOp(t, s, "/api/bridge/disable", "")
@@ -1083,4 +1093,18 @@ func TestBridgeDisableRemovesRelaydRules(t *testing.T) {
 	if strings.Contains(calls, "delete network.@rule[2]") {
 		t.Error("снесено ЧУЖОЕ правило в постороннюю таблицу — демонтаж трогает только своё")
 	}
+}
+
+// Отказ ubus, не говорящий «такого объекта нет», исчезновения интерфейса не
+// доказывает: демонтаж, не прочитавший состояния ни разу, — «не удалось
+// проверить», а не «проброс выключен».
+func TestBridgeDisableUbusFailureIsUnverifiable(t *testing.T) {
+	fastBridge(t)
+	s, f := newServer(t)
+	bridgeOn(t, f)
+	f.Errors["ubus network.interface.homelan status"] = errors.New("ubus: exit status 7: Command failed: Request timed out")
+	f.Fixtures["bridge status"] = scriptStatus(true, false, 1)
+
+	j := runBridgeOp(t, s, "/api/bridge/disable", "")
+	wantBridgeFailure(t, s, j, breasonUnverifiable)
 }

@@ -813,3 +813,22 @@ func keysOf(m map[string]Proxy) []string {
 	}
 	return out
 }
+
+// Мёртвый узел — не лежащий движок: пятисотка на /delay — ErrProbeFailed, а
+// не ErrUnavailable, иначе «узел не ответил» читалось бы как «Clash API нет».
+func TestDelayDeadNodeIsProbeFailed(t *testing.T) {
+	for _, code := range []int{http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(`{"message":"An error occurred in the delay test"}`))
+		}))
+		_, err := New(srv.URL, "").Delay(context.Background(), "Узел")
+		srv.Close()
+		if !errors.Is(err, ErrProbeFailed) {
+			t.Errorf("код %d: %v, ожидался ErrProbeFailed", code, err)
+		}
+		if errors.Is(err, ErrUnavailable) {
+			t.Errorf("код %d: мёртвый узел засчитан недоступностью движка", code)
+		}
+	}
+}

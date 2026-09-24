@@ -171,7 +171,11 @@ type Server struct {
 		key string
 		f   *panelFile
 	}
-	mux *http.ServeMux
+	// uciMu — замки цепочек «проверка стейджинга/отпечатка … commit» по
+	// пакетам UCI (lockPkg). Джобы между собой и так не пересекаются, а
+	// синхронные записи (сети, адрес подписки) идут мимо менеджера.
+	uciMu map[string]*sync.Mutex
+	mux   *http.ServeMux
 }
 
 // Пути файлов подписки — константы, а не настройка в /etc/config/netmode.
@@ -246,6 +250,7 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 		logs:   logs.New(cfg.LogPath),
 		fails:  &failStore{},
 		mux:    http.NewServeMux(),
+		uciMu:  map[string]*sync.Mutex{"wireless": {}, "netmode": {}},
 	}
 	s.bridgeFails = &bridgeFailStore{}
 	s.led = led.New(cfg.LEDRoot, s.logf)
@@ -298,6 +303,7 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 		Logf: s.logf,
 	}
 	s.sched = sched.New(&manifestRefresher{up: up, srv: s}, s.logs, cfg.SubInterval, s.logf)
+	s.sched.SetGate(s.schedGate)
 	// Кэш заполняется на старте, а не при первом запросе: пустой манифест —
 	// валидное состояние свежей установки, и отличить его от «ещё не
 	// читали» по самому кэшу было бы нечем.
@@ -445,7 +451,24 @@ func (s *Server) routes() {
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.withToken(s.mux)
+	return s.withToken(limitBody(s.mux))
+}
+
+// maxBody — потолок тела запроса. Самое большое законное тело — выбор
+// наборов с шестьюдесятью четырьмя своими правилами — укладывается в
+// десятки килобайт; четверть мегабайта — с запасом.
+const maxBody = 256 << 10
+
+// limitBody ограничивает тело запроса. json.Decoder копит значение целиком,
+// и без потолка один большой PUT съедал бы память роутера (512 МБ на всё).
+// Стоит ПОСЛЕ проверки токена: тело чужого запроса не читается вовсе.
+func limitBody(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // Addr — адрес прослушивания.
@@ -579,6 +602,50 @@ func (m *manifestRefresher) Update(ctx context.Context) (happ.Summary, error) {
 	// через которую проходят и расписание, и кнопка в панели.
 	m.srv.resyncProviderPool(ctx)
 	return sum, err
+}
+
+// Сколько ждать и сколько раз повторять плановое обновление, наткнувшееся
+// на чужую операцию. Пять минут с запасом покрывают любой джоб (переключение
+// аплинка — до минуты), а пропуск тика стоил бы двенадцати часов.
+// Переменные, а не константы, — ради тестов.
+var (
+	schedBusyRetry   = 30 * time.Second
+	schedBusyRetries = 10
+)
+
+// schedGate проводит обновление по расписанию через менеджер операций —
+// так же, как кнопка «Обновить сейчас».
+//
+// Мимо менеджера оно шло параллельно операциям владельца: пересборка
+// провайдерского пула переписывала mixin.yaml поверх только что
+// применённых наборов и перезапускала Nikki посреди смены режима, а
+// панель об этом не знала вовсе. Через менеджер плановое обновление видно
+// в статусе как обычный джоб и не пересекается ни с чем.
+//
+// Без адреса джоб не заводится: он тут же провалился бы «адрес не задан»,
+// и раз в двенадцать часов панель показывала бы провал того, чего владелец
+// не просил.
+func (s *Server) schedGate(ctx context.Context, run func(context.Context) error) error {
+	if !s.subURL.configured() {
+		return nil
+	}
+	for attempt := 0; ; attempt++ {
+		_, err := s.jobs.Start("subscription", "", "Обновление подписки по расписанию", subscriptionETASec, run)
+		if !errors.Is(err, job.ErrBusy) {
+			return err
+		}
+		if attempt >= schedBusyRetries {
+			s.logf("подписка: плановое обновление пропущено — всё это время шла другая операция")
+			return nil
+		}
+		t := time.NewTimer(schedBusyRetry)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return nil
+		case <-t.C:
+		}
+	}
 }
 
 // manifestEntries отдаёт кэш манифеста для склейки в subs.Order.
@@ -868,6 +935,22 @@ func writeErr(w http.ResponseWriter, code int, errCode, msg string) {
 	writeJSON(w, code, apiError{Code: errCode, Error: msg})
 }
 
+// lockPkg берёт замок цепочки записи в пакет UCI и возвращает его снятие.
+//
+// uci commit публикует ВЕСЬ стейджинг пакета. Без замка запись сети
+// успевала бы положить в стейджинг половину новой секции (ещё без
+// disabled=1, то есть включённую) ровно между сверкой и коммитом джоба
+// аплинка — и тот опубликовал бы её. Держится от проверки до коммита, не
+// дольше: применение (wifi, скрипты) идёт уже без него.
+func (s *Server) lockPkg(pkg string) func() {
+	m, ok := s.uciMu[pkg]
+	if !ok {
+		panic("lockPkg: нет замка для пакета " + pkg)
+	}
+	m.Lock()
+	return m.Unlock
+}
+
 // ListenAndServe запускает сервер.
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	srv := &http.Server{
@@ -875,8 +958,22 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	go s.awaitShutdown(ctx, srv.Shutdown)
-	return srv.ListenAndServe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.awaitShutdown(ctx, srv.Shutdown)
+	}()
+	err := srv.ListenAndServe()
+	if !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	// ErrServerClosed — штатная остановка, а не отказ. ListenAndServe
+	// возвращается сразу после вызова Shutdown, не дожидаясь дочитывания
+	// ответов, поэтому ждём саму остановку: иначе процесс выходил бы
+	// посреди пятисекундного окна, ради которого оно и заведено, — и с
+	// кодом 1, потому что ErrServerClosed не считался чистым выходом.
+	<-done
+	return nil
 }
 
 // awaitShutdown гасит сервер по отмене контекста.

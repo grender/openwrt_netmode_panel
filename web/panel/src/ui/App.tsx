@@ -5,6 +5,7 @@ import type {
 	AutopoolDraft,
 	AutopoolResponse,
 	BridgeState,
+	Job,
 	JobAccepted,
 	LogsResponse,
 	Mode,
@@ -24,8 +25,8 @@ import type {
 import { bridgeReason, upstreamReason } from '../api/reasons.gen';
 import { fmtTime, loadLang, makeT, saveLang, type Lang } from '../i18n';
 import { RETRY_MS } from '../state/consts';
-import { resolveJob, useSvc } from '../state/job';
-import { useLock } from '../state/lock';
+import { jobOn, resolveJob, useSvc } from '../state/job';
+import { useLock, type Lock } from '../state/lock';
 import { usePoll } from '../state/poll';
 import { useSide } from '../state/side';
 import { useWatchPoll } from '../state/watch';
@@ -49,7 +50,7 @@ const MODES: Mode[] = ['nikki', 'b4', 'off'];
  * закладок — тоже подписка), #settings — настройки с первым разделом; всё
  * остальное — главная, где хеш по-прежнему раскрывает аккордеон (fromHash).
  */
-type Route = { screen: 'main' } | { screen: 'settings'; row: SettingsRow } | { screen: 'watch' };
+type Route = { screen: 'main' } | { screen: 'settings'; row: SettingsRow | '' } | { screen: 'watch' };
 
 function routeOf(hash: string): Route {
 	const h = hash.replace(/^#/, '');
@@ -99,6 +100,10 @@ export function App() {
 	// не помнит.
 	const [rulesDraft, setRulesDraft] = useState<RulesDraft | null>(null);
 	const [poolDraft, setPoolDraft] = useState<AutopoolDraft | null>(null);
+	// Какой черновик ушёл каким джобом: снимается он только успехом этого
+	// джоба (эффект конца операции ниже).
+	const rulesApplied = useRef<{ id: string; draft: RulesDraft } | null>(null);
+	const poolApplied = useRef<{ id: string; draft: AutopoolDraft } | null>(null);
 	const [bridgeForm, setBridgeForm] = useState(false);
 	// Наблюдатель опрашивается СВОИМ циклом и только пока его экран открыт:
 	// состояние сессии велико, а нужно оно ровно здесь. И только этот опрос
@@ -147,8 +152,11 @@ export function App() {
 		const now = Date.now();
 		if (now < (retryAt.current['nets'] ?? 0)) return;
 		retryAt.current['nets'] = now + RETRY_MS;
-		void nets.load().then(() => {
-			seenFp.current = wfp;
+		// load не бросает: отказ приходит как false. Отметить отпечаток
+		// после отказа значило бы запереть карточку на «не отвечает» —
+		// ровно то, от чего предостерегает комментарий выше.
+		void nets.load().then((ok) => {
+			if (ok) seenFp.current = wfp;
 		});
 	}, [wfp, nets]);
 
@@ -162,21 +170,26 @@ export function App() {
 	// Списки движков грузятся, только когда движок отвечает: запрос к
 	// лежащему движку — это гарантированный отказ, который панель тут же
 	// покажет как «не отвечает», хотя и так знает это из статуса.
+	//
+	// Первая загрузка идёт через ensure, а не load: эти эффекты срабатывают
+	// на каждом тике опроса, и load отправлял бы новый запрос каждую секунду,
+	// выбрасывая ответ предыдущего (state/side.ts).
+	const hasStatus = !!status;
 	useEffect(() => {
-		if (svcNikki === 'up' && nikki.value === undefined) void nikki.load();
+		if (svcNikki === 'up') nikki.ensure();
 	}, [svcNikki, nikki]);
 	useEffect(() => {
-		if (svcB4 === 'up' && sets.value === undefined) void sets.load();
+		if (svcB4 === 'up') sets.ensure();
 	}, [svcB4, sets]);
 	useEffect(() => {
-		if (status && logs.value === undefined) void logs.load({ query: { n: '5' } });
-	}, [status, logs]);
+		if (hasStatus) logs.ensure({ query: { n: '5' } });
+	}, [hasStatus, logs]);
 	useEffect(() => {
-		if (status && sub.value === undefined) void sub.load();
-	}, [status, sub]);
+		if (hasStatus) sub.ensure();
+	}, [hasStatus, sub]);
 	useEffect(() => {
-		if (status && bridge.value === undefined) void bridge.load();
-	}, [status, bridge]);
+		if (hasStatus) bridge.ensure();
+	}, [hasStatus, bridge]);
 
 	// Наборы — исключение из правила «список движка ждёт живого движка»:
 	// выбор лежит в файле, и демон отдаёт его с live:false, когда Nikki
@@ -184,24 +197,43 @@ export function App() {
 	// а ждать svcNikki значило бы прятать раздел ровно в том случае, ради
 	// которого его и открывают.
 	useEffect(() => {
-		if (status && rulesets.value === undefined) void rulesets.load();
-	}, [status, rulesets]);
+		if (hasStatus) rulesets.ensure();
+	}, [hasStatus, rulesets]);
 
 	// Авто-пул грузится по тому же правилу и по той же причине: состав узлов
 	// он берёт из манифеста подписки, а не у mihomo, и живой размер группы
 	// трёхзначен. Ждать svcNikki значило бы гасить раздел ровно тогда, когда
 	// в него и лезут — разбираться, почему обход ушёл не через тот узел.
 	useEffect(() => {
-		if (status && autopool.value === undefined) void autopool.load();
-	}, [status, autopool]);
+		if (hasStatus) autopool.ensure();
+	}, [hasStatus, autopool]);
 
-	// Список устройств грузится при заходе на экран и после остановки
-	// наблюдения: между этими моментами он не меняется настолько, чтобы
-	// платить за него запросом каждую секунду.
+	// Подписка обновилась — журнал, узлы и пул перечитываются ПО ФАКТУ, а не
+	// по нажатию. last_update — метка последней строки журнала (status.go):
+	// она сдвигается и на удачном обновлении, и на провале, и на обновлении
+	// по расписанию. Перечитывание сразу после 202 читало СТАРОЕ: джоб к тому
+	// моменту едва начался, и журнал не менялся до F5.
+	const subAt = status ? (status.subscription?.last_update ?? '') : undefined;
+	const seenSubAt = useRef<string | undefined>(undefined);
 	useEffect(() => {
-		if (route.screen !== 'watch') return;
-		if (watchHosts.value === undefined) void watchHosts.load();
-	}, [route.screen, watchHosts]);
+		if (subAt === undefined) return;
+		const prev = seenSubAt.current;
+		seenSubAt.current = subAt;
+		// Первый статус — не событие: списки и так грузятся сами.
+		if (prev === undefined || prev === subAt) return;
+		void logs.load({ query: { n: '5' } });
+		if (svcNikki === 'up') void nikki.load();
+		void autopool.load();
+	}, [subAt, svcNikki, logs, nikki, autopool]);
+
+	// Список устройств грузится при КАЖДОМ заходе на экран и после остановки
+	// наблюдения: между этими моментами он не меняется настолько, чтобы
+	// платить за него запросом каждую секунду. Раньше он грузился один раз
+	// за жизнь вкладки, и «говорит сейчас» при втором заходе было вчерашним.
+	const loadWatchHosts = watchHosts.load;
+	useEffect(() => {
+		if (route.screen === 'watch') void loadWatchHosts();
+	}, [route.screen, loadWatchHosts]);
 
 	// Уход из режима nikki уносит черновик: раздел принадлежит режиму, и
 	// вернувшийся владелец не должен обнаружить непринятые правки для
@@ -241,12 +273,46 @@ export function App() {
 	// баннер просто когда-нибудь менялся. Отслеживается ПЕРЕХОД в done, а не
 	// само состояние: демон держит завершённый джоб пять секунд, и без
 	// запоминания id тост показывался бы все пять.
-	const seenDone = useRef('');
+	//
+	// Отслеживается конец ЛЮБОЙ операции — done и failed: черновик и проброс
+	// зависят от исхода, а не только от успеха. Тосты — только на done:
+	// провал и так показывает слот.
+	const seenEnd = useRef<string | null>(null);
 	useEffect(() => {
-		const j = status?.job;
-		if (!j || j.state !== 'done') return;
-		if (seenDone.current === j.id) return;
-		seenDone.current = j.id;
+		if (!status) return;
+		const j = status.job;
+		// Первый статус — не событие: джоб, закончившийся до открытия
+		// вкладки (в другой вкладке, по расписанию), не должен встречать
+		// владельца тостом «готово» про то, чего он не нажимал.
+		if (seenEnd.current === null) {
+			seenEnd.current = j && j.state !== 'running' ? j.id : '';
+			return;
+		}
+		if (!j || j.state === 'running') return;
+		if (seenEnd.current === j.id) return;
+		seenEnd.current = j.id;
+
+		// Черновик снимается только УСПЕХОМ своего джоба: снятый на 202, он
+		// прятал «Применить» с кольцом на всё время джоба, раздел показывал
+		// старое, а провал уносил правки владельца.
+		const ra = rulesApplied.current;
+		const rulesMine = !!ra && ra.id === j.id;
+		if (rulesMine) rulesApplied.current = null;
+		const pa = poolApplied.current;
+		const poolMine = !!pa && pa.id === j.id;
+		if (poolMine) poolApplied.current = null;
+		const dropRules = () => {
+			if (ra && rulesMine) setRulesDraft((cur) => (cur === ra.draft ? null : cur));
+		};
+		const dropPool = () => {
+			if (pa && poolMine) setPoolDraft((cur) => (cur === pa.draft ? null : cur));
+		};
+
+		// Проброс перечитывается по концу джоба, а не на 202: тогда джоб
+		// едва начинался, и раздел до F5 показывал состояние «до».
+		if (j.kind === 'bridge') void bridge.load();
+
+		if (j.state !== 'done') return;
 		// У наборов свой тост: после применения важно не «готово», а какие
 		// наборы не загрузились. Общее «готово» это скрыло бы, и владелец
 		// узнал бы о неработающем правиле только по неработающему сайту.
@@ -258,11 +324,22 @@ export function App() {
 				try {
 					const r = await api<AutopoolResponse>('nikkiAutopool', { timeoutMs: BUDGET.SIDE });
 					autopool.put(r);
+					dropPool();
 					lock.flash(t('pool.done', { n: r.pool_size ?? poolLeft({ mode: r.mode, nodes: r.nodes }, r.available) }), 'ok');
 				} catch {
-					void autopool.load();
+					await autopool.load();
+					dropPool();
 				}
 			})();
+			return;
+		}
+		// У подписки тоже свой тост: важно не «готово», а сколько узлов
+		// приехало. Строка журнала пишется ВНУТРИ джоба, поэтому статус,
+		// сообщивший done, уже несёт её итог.
+		// Провал подписки приходит джобом failed, а не done со строкой fail
+		// (RunOnce возвращает ошибку), — его показывает слот.
+		if (j.kind === 'subscription' && status.subscription?.status === 'ok') {
+			lock.flash(t('sub.done', { n: status.subscription.nodes }), 'ok');
 			return;
 		}
 		if (j.kind === 'rulesets') {
@@ -270,6 +347,7 @@ export function App() {
 				try {
 					const r = await api<RulesetsResponse>('nikkiRulesets', { timeoutMs: BUDGET.SIDE });
 					rulesets.put(r);
+					dropRules();
 					const bad = r.sets.filter((x) => x.loaded === false);
 					if (bad.length === 0) {
 						lock.flash(t('rules.done', { n: r.sets.length }), 'ok');
@@ -286,6 +364,8 @@ export function App() {
 				} catch {
 					// Перечитать не вышло — сказать про завершение всё равно
 					// надо: молчание после нажатия читается как зависание.
+					await rulesets.load();
+					dropRules();
 					lock.flash(t('job.done', { what: jobText(j, t) }), 'ok');
 				}
 			})();
@@ -301,11 +381,11 @@ export function App() {
 				: t('job.done', { what: jobText(j, t) }),
 			'ok',
 		);
-	}, [status?.job, lock, t, rulesets]);
+	}, [status, lock, t, rulesets, autopool, bridge]);
 
 	// ─── действия ───
 
-	const loadNets = useCallback(() => nets.load(), [nets]);
+	const loadNets = nets.load;
 
 	const post = useCallback(
 		<R,>(route: Parameters<typeof api>[0], body: unknown, timeoutMs?: number, ifMatch?: string) =>
@@ -415,7 +495,7 @@ export function App() {
 
 	const onSaveConnect = (body: NetBody, setErr: (s: string) => void) =>
 		void lock.act(
-			'save',
+			'save:connect',
 			async () => {
 				// Снимок id ДО записи: свою запись мы находим диффом по id, а
 				// не поиском по ssid — одинаковые ssid штатны (ADR-0005), и
@@ -431,7 +511,7 @@ export function App() {
 					return;
 				}
 				// Ключ занятости переезжает на строку сети ПЕРЕД вторым
-				// вызовом: пока он был 'save', форма уже закрыта, а признака
+				// вызовом: пока он был 'save:connect', форма уже закрыта, а признака
 				// работы нет — до восьми секунд молчания после нажатия.
 				const target = fresh[0];
 				if (!target) return;
@@ -460,14 +540,22 @@ export function App() {
 		}
 	};
 
+	// Проба — прямой запрос, а не bridge.load: load глотает отказ и пишет
+	// null, то есть медленная проба молча гасила раздел до «не отвечает»,
+	// уносила колокольчик и закрывала открытую форму — без единого тоста.
 	const onBridgeProbe = () =>
-		void lock.act('bridge:probe', () => bridge.load({ query: { probe: '1' } }));
+		void lock.act('bridge:probe', async () => {
+			bridge.put(await api<BridgeState>('bridge', { query: { probe: '1' }, timeoutMs: BUDGET.SIDE }));
+		});
 
 	const onBridgeAccess = (on: boolean) =>
-		void lock.act('bridge:access', () => postBridge('bridgeAccess', { enabled: on }), () => bridge.load());
+		void lock.act(
+			`bridge:access-${on ? 'on' : 'off'}`,
+			() => postBridge('bridgeAccess', { enabled: on }),
+		);
 
 	const onBridgeDisable = () =>
-		void lock.act('bridge:disable', () => postBridge('bridgeDisable', null), () => bridge.load());
+		void lock.act('bridge:disable', () => postBridge('bridgeDisable', null));
 
 	const onBridgeEnable = (body: BridgeBody, setErr: (s: string) => void) =>
 		void lock.act(
@@ -492,27 +580,18 @@ export function App() {
 					}
 				}
 			},
-			() => bridge.load(),
 		);
 
+	// Журнал, узлы и пул здесь НЕ перечитываются: 202 приходит, когда джоб
+	// едва начался, и перечитывание читало бы старое. Их перечитывает
+	// наблюдатель за last_update выше — когда строка журнала уже записана.
+	// Пул обязан перечитаться: демон после обновления пересобирает
+	// провайдерский пул, и без свежего отпечатка следующее «Применить»
+	// уходило бы в stale_autopool.
 	const onUpdateSub = () =>
-		void lock.act(
-			'sub',
-			async () => {
-				poll.sow(await post<JobAccepted>('subscriptionUpdate', {}));
-			},
-			async () => {
-				await logs.load({ query: { n: '5' } });
-				await nikki.load();
-				// Пул перечитывается вместе с узлами: available, missing и
-				// provider_pool читаются из манифеста, который обновление
-				// только что переписало. Дело не только в свежести списка —
-				// демон после обновления сам пересобирает провайдерский пул,
-				// и отпечаток у панели на руках становится чужим. Без этой
-				// строки следующее «Применить» уходило бы в stale_autopool.
-				await autopool.load();
-			},
-		);
+		void lock.act('sub', async () => {
+			poll.sow(await post<JobAccepted>('subscriptionUpdate', {}));
+		});
 
 	const onWatchStart = (ip: string) =>
 		void lock.act(
@@ -549,14 +628,15 @@ export function App() {
 			'autopool',
 			async () => {
 				try {
-					poll.sow(
-						await api<JobAccepted>('nikkiAutopool', {
-							method: 'PUT',
-							body: JSON.stringify(d),
-							headers: { 'If-Match': autopool.value?.fingerprint ?? '' },
-							timeoutMs: BUDGET.MODE,
-						}),
-					);
+					const r = await api<JobAccepted>('nikkiAutopool', {
+						method: 'PUT',
+						body: JSON.stringify(d),
+						headers: { 'If-Match': autopool.value?.fingerprint ?? '' },
+						timeoutMs: BUDGET.MODE,
+					});
+					poll.sow(r);
+					if (r?.job) poolApplied.current = { id: r.job.id, draft: d };
+					else setPoolDraft(null);
 				} catch (e) {
 					// Устаревший отпечаток лечится перечитыванием, а не
 					// повтором: пул изменился, и повтор затёр бы чужую
@@ -564,24 +644,24 @@ export function App() {
 					if (errCode(e) === 'stale_autopool') await autopool.load();
 					throw e;
 				}
-				setPoolDraft(null);
 			},
 			async () => {},
 		);
 
-	const onApplyRules = (d: RulesDraft) =>
+	const onApplyRules = (d: RulesDraft, then?: () => void) =>
 		void lock.act(
 			'rulesets',
 			async () => {
 				try {
-					poll.sow(
-						await api<JobAccepted>('nikkiRulesets', {
-							method: 'PUT',
-							body: JSON.stringify(d),
-							headers: { 'If-Match': rulesets.value?.fingerprint ?? '' },
-							timeoutMs: BUDGET.MODE,
-						}),
-					);
+					const r = await api<JobAccepted>('nikkiRulesets', {
+						method: 'PUT',
+						body: JSON.stringify(d),
+						headers: { 'If-Match': rulesets.value?.fingerprint ?? '' },
+						timeoutMs: BUDGET.MODE,
+					});
+					poll.sow(r);
+					if (r?.job) rulesApplied.current = { id: r.job.id, draft: d };
+					else setRulesDraft(null);
 				} catch (e) {
 					// Устаревший отпечаток лечится перечитыванием, а не
 					// повтором: файл наборов изменился, и повтор затёр бы
@@ -589,38 +669,84 @@ export function App() {
 					if (errCode(e) === 'stale_rulesets') await rulesets.load();
 					throw e;
 				}
-				setRulesDraft(null);
 			},
-			async () => {},
+			// then идёт после снятия замка: наблюдатель так останавливает
+			// сессию следом за применением, и остановка не отбивается «занято».
+			async () => then?.(),
 		);
 
 	// Каталог тянется лениво и ровно один раз: 60 КБ имён ради вкладки, куда
 	// заходят редко. «Повторить» проходит сюда же — после отказа значение
 	// null, а не объект, и запрет на повтор его бы и заблокировал.
+	//
+	// Зависимости — значение и load, а не сам catalog: useSide отдаёт новый
+	// объект на каждой отрисовке, и колбэк от него менялся с каждым тиком
+	// опроса. Эффект шага «Наборы» перезапускался вместе с ним, и отказавший
+	// каталог молча перезапрашивался раз в секунду.
+	const [catalogLoading, setCatalogLoading] = useState(false);
+	const catalogValue = catalog.value;
+	const loadCatalog = catalog.load;
+	// Ref-страж: второй вызов, пока первый в пути, снимал бы флаг раньше
+	// времени своим finally.
+	const catalogBusy = useRef(false);
 	const onLoadCatalog = useCallback(() => {
-		if (catalog.value) return;
-		void catalog.load();
-	}, [catalog]);
+		if (catalogValue || catalogBusy.current) return;
+		catalogBusy.current = true;
+		setCatalogLoading(true);
+		void loadCatalog().finally(() => {
+			catalogBusy.current = false;
+			setCatalogLoading(false);
+		});
+	}, [catalogValue, loadCatalog]);
 
-	const onSaveURL = (url: string) =>
+	// Форма закрывается только успехом (done), а отказ показывается в ней
+	// самой (setErr) и ровно один раз: закрытая до ответа, она при 400
+	// «адрес не разбирается» уносила вставленный адрес с токеном, и его
+	// приходилось искать и вставлять заново.
+	const onSaveURL = (url: string, setErr: (s: string) => void, done: () => void) =>
 		void lock.act(
 			'suburl',
 			async () => {
-				sub.put(
-					await api<SubscriptionURL>('subscription', {
+				let r: SubscriptionURL;
+				try {
+					r = await api<SubscriptionURL>('subscription', {
 						method: 'PUT',
 						body: JSON.stringify({ url }),
-					}),
-				);
-				lock.flash(t('sub.url.saved'), 'ok');
+					});
+				} catch (e) {
+					setErr(describe(e, t));
+					return;
+				}
+				done();
+				sub.put(r);
+				// Кнопка обещает «Сохранить и скачать», а PUT только пишет
+				// адрес. Скачивание запускается здесь же, под тем же замком:
+				// иначе владелец видел «сохранено» и ждал узлов, которых
+				// никто не качал до расписания.
+				if (!r.configured) {
+					lock.flash(t('sub.url.saved'), 'ok');
+					return;
+				}
+				lock.rekey('sub');
+				try {
+					poll.sow(await post<JobAccepted>('subscriptionUpdate', {}));
+				} catch (e) {
+					// Адрес СОХРАНЁН — общее «не удалось» читалось бы как
+					// «ничего не записалось».
+					lock.flash(t('sub.url.saved.nofetch', { why: describe(e, t) }), 'warn');
+				}
 			},
 			async () => {},
 		);
 
+	// Ссылка на морду Nikki ходит за адресом с секретом (до восьми секунд),
+	// и без кольца на самой ссылке ожидание видно только в тосте.
+	const [nikkiOpening, setNikkiOpening] = useState(false);
 	const onNikkiPanel = useCallback(
 		async (e: MouseEvent) => {
 			if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
 			e.preventDefault();
+			setNikkiOpening(true);
 			// Окно открывается ДО await: после него браузер уже не считает
 			// это жестом владельца и блокирует вкладку.
 			const w = window.open('', '_blank');
@@ -634,6 +760,8 @@ export function App() {
 			} catch (err) {
 				if (w) w.close();
 				lock.flash(describe(err, t, 'links.err'), WHY_CODES.has(errCode(err)) ? 'warn' : 'err');
+			} finally {
+				setNikkiOpening(false);
 			}
 		},
 		[lock, t],
@@ -648,6 +776,11 @@ export function App() {
 					<div class="grid">
 						<div class="card full">
 							<Skel n={3} />
+							{/* Строка под скелетом: без неё экран до первого ответа
+							    и экран «демон молчит» были одинаковой пустотой. */}
+							<p class={`hint${poll.stale ? ' bad' : ''}`} role="status">
+								{poll.stale ? t('foot.stale') : t('boot')}
+							</p>
 						</div>
 					</div>
 				</div>
@@ -688,7 +821,10 @@ export function App() {
 	const openRow = (id: SettingsRow) => {
 		// На широком экране раскрыты все — переключать нечего.
 		const next = !wide && route.screen === 'settings' && route.row === id ? '' : id;
-		setRoute({ screen: 'settings', row: (next || 'routes') as SettingsRow });
+		// Пустой раздел — законное «всё свёрнуто». Подстановка 'routes' на
+		// его место делала закрытие любого раздела открытием «Что в
+		// туннель», а сам тот раздел не закрывался вовсе.
+		setRoute({ screen: 'settings', row: next as SettingsRow | '' });
 		history.replaceState(null, '', `#${next || 'settings'}`);
 	};
 	const w = watchSummary(status.watch, t);
@@ -723,6 +859,24 @@ export function App() {
 			</span>
 			<span>{t('foot.updated', { when: fmtTime(status.generated_at, lang) })}</span>
 		</footer>
+	);
+
+	// Живая область висит ПОСТОЯННО, на каждом экране и вне слота: область,
+	// вставленная вместе со своим содержимым, не озвучивается.
+	const live = (
+		// sr-only, а не display:none: скрытый так узел выпадает из дерева
+		// доступности, и область не озвучивала ничего.
+		<div class="sr-only" role="status" aria-live="polite">
+			{lock.toast ? lock.toast.msg : ''}
+		</div>
+	);
+
+	// На настройках и в наблюдателе баннера нет, и без этой полосы операция,
+	// запущенная ОТТУДА, шла молча: ни хода, ни итога, ни отказа «занято» —
+	// только строка в подвале. Полоса плавает над страницей и появляется
+	// лишь на время операции или тоста: сдвигать раздел под пальцем нельзя.
+	const floatSlot = (
+		<StatusSlot running={running} failed={failed} lock={lock} locked={locked} skewMs={poll.skewMs} t={t} float />
 	);
 
 	const langSwitch = (
@@ -778,11 +932,14 @@ export function App() {
 						onApplyRules={onApplyRules}
 						lock={lock}
 						locked={locked}
+						running={running}
 						t={t}
 						lang={lang}
 					/>
 					{foot}
 				</div>
+				{floatSlot}
+				{live}
 			</div>
 		);
 	}
@@ -810,6 +967,7 @@ export function App() {
 						lang={lang}
 						lock={lock}
 						locked={locked}
+						running={running}
 						status={status}
 						rulesets={rulesets.value}
 						autopool={autopool.value}
@@ -817,6 +975,7 @@ export function App() {
 						setPoolDraft={setPoolDraft}
 						onApplyPool={onApplyPool}
 						catalog={catalog.value}
+						catalogLoading={catalogLoading}
 						draft={rulesDraft}
 						setDraft={setRulesDraft}
 						onApplyRules={onApplyRules}
@@ -835,6 +994,8 @@ export function App() {
 					/>
 					{foot}
 				</div>
+				{floatSlot}
+				{live}
 				{bridgeForm && bridge.value ? (
 					<BridgeForm
 						state={bridge.value}
@@ -872,9 +1033,10 @@ export function App() {
 								rel="noreferrer"
 								title={t('links.nikki')}
 								aria-label={t('links.nikki')}
+								aria-busy={nikkiOpening}
 								onClick={(e) => void onNikkiPanel(e as unknown as MouseEvent)}
 							>
-								{t('links.nikki.short')} <span aria-hidden="true">↗</span>
+								{nikkiOpening ? <Spin /> : null} {t('links.nikki.short')} <span aria-hidden="true">↗</span>
 							</a>
 						) : null}
 						{links.b4 && status.b4.available ? (
@@ -964,66 +1126,17 @@ export function App() {
 										data-anchor={`mode-${m}`}
 										aria-pressed={status.mode === m}
 										disabled={locked || status.mode === m}
-										aria-busy={lock.on('mode', m)}
+										aria-busy={lock.on('mode', m) || jobOn(running, 'mode', m)}
 										onClick={() => onMode(m)}
 									>
-										{lock.on('mode', m) ? <Spin /> : null} {t(`mode.${m}`)}
+										{lock.on('mode', m) || jobOn(running, 'mode', m) ? <Spin /> : null} {t(`mode.${m}`)}
 									</button>
 								))}
 							</div>
 
-							{/* Слот: занята / результат / покой — три состояния
-							    одного места. Высоту держит призрак, и держит
-							    только под «занята»: тост перекрывает. */}
-							<div class="slot" data-part="hero-status" data-status={running ? 'busy' : lock.toast ? 'result' : 'calm'}>
-								{/* Призрак собран из ТОЙ ЖЕ разметки и с ТЕМ ЖЕ текстом,
-								    что «занята». Пробел вместо подписи давал одну строку
-								    там, где настоящая на 320px переносится на две:
-								    четырнадцать пикселей прыжка ровно в тот момент, когда
-								    владелец смотрит, сработало ли нажатие. Число сюда
-								    вписать нельзя: оно сложилось бы из пяти констант и
-								    разошлось бы МОЛЧА с первой же правкой шрифта. */}
-								<div class="job ghost" aria-hidden="true">
-									<div class="job-row">
-										<span>{' '}</span>
-										<span>{' '}</span>
-									</div>
-									<div class="bar" />
-									<div class="job-note">{t('job.locked.note')}</div>
-								</div>
-
-								{running ? (
-									<JobBar job={running} skewMs={poll.skewMs} t={t} />
-								) : failed ? (
-									<div class="result err">
-										<span aria-hidden="true">✕</span>
-										<span>{failText(failed, t)}</span>
-									</div>
-								) : lock.toast ? (
-									<div class={`result ${lock.toast.kind === 'ok' ? '' : lock.toast.kind}`}>
-										<span aria-hidden="true">{lock.toast.kind === 'ok' ? '✓' : '·'}</span>
-										<span>{lock.toast.msg}</span>
-										{lock.toast.href ? (
-											<a class="cta" href={lock.toast.href} target="_blank" rel="noreferrer" onClick={() => setTimeout(lock.dropToast, 0)}>
-												{lock.toast.cta}
-											</a>
-										) : null}
-										<button type="button" class="x" onClick={lock.dropToast} title={t('ui.dismiss')} aria-label={t('ui.dismiss')}>
-											✕
-										</button>
-									</div>
-								) : (
-									<div class="calm">{locked ? t('mode.hint.busy') : t('mode.hint')}</div>
-								)}
-							</div>
+							<StatusSlot running={running} failed={failed} lock={lock} locked={locked} skewMs={poll.skewMs} t={t} />
 						</div>
 					</section>
-
-					{/* Живая область висит ПОСТОЯННО и вне слота: область,
-					    вставленная вместе со своим содержимым, не озвучивается. */}
-					<div class="live" role="status" aria-live="polite" style={{ display: 'none' }}>
-						{lock.toast ? lock.toast.msg : ''}
-					</div>
 
 					{/* ─── проблемы за колокольчиком ─── */}
 					{bellOpen ? (
@@ -1080,6 +1193,7 @@ export function App() {
 							status={status}
 							lock={lock}
 							locked={locked}
+							running={running}
 							t={t}
 							onScan={onScan}
 							onConnect={onConnect}
@@ -1109,6 +1223,7 @@ export function App() {
 							status={status}
 							lock={lock}
 							locked={locked}
+							running={running}
 							t={t}
 							onPickProxy={onPickProxy}
 							onToggleSet={onToggleSet}
@@ -1141,6 +1256,7 @@ export function App() {
 
 				{foot}
 			</div>
+			{live}
 
 			{netForm ? (
 				<NetworkForm
@@ -1165,6 +1281,84 @@ export function App() {
 					onClose={() => setBridgeForm(false)}
 				/>
 			) : null}
+		</div>
+	);
+}
+
+/**
+ * Слот состояния операции: занята / провал / результат / покой — четыре
+ * состояния ОДНОГО места.
+ *
+ * В баннере высоту держит призрак, и держит только под «занята»: тост
+ * перекрывает. На прочих экранах (float) слот плавает над страницей и
+ * рисуется, только когда есть что сказать: постоянная полоса «покоя» там
+ * отнимала бы место у разделов ради того, что видно изредка.
+ */
+function StatusSlot({
+	running,
+	failed,
+	lock,
+	locked,
+	skewMs,
+	t,
+	float,
+}: {
+	running: Job | null;
+	failed: Job | null;
+	lock: Lock;
+	locked: boolean;
+	skewMs: number;
+	t: ReturnType<typeof makeT>;
+	float?: boolean;
+}) {
+	const toast = lock.toast;
+	if (float && !running && !failed && !toast) return null;
+	return (
+		<div
+			class={`slot${float ? ' slot-float' : ''}`}
+			data-part="hero-status"
+			data-status={running ? 'busy' : toast ? 'result' : 'calm'}
+		>
+			{/* Призрак собран из ТОЙ ЖЕ разметки и с ТЕМ ЖЕ текстом, что
+			    «занята». Пробел вместо подписи давал одну строку там, где
+			    настоящая на 320px переносится на две: четырнадцать пикселей
+			    прыжка ровно в тот момент, когда владелец смотрит, сработало ли
+			    нажатие. Число сюда вписать нельзя: оно сложилось бы из пяти
+			    констант и разошлось бы МОЛЧА с первой же правкой шрифта. */}
+			{float ? null : (
+				<div class="job ghost" aria-hidden="true">
+					<div class="job-row">
+						<span>{' '}</span>
+						<span>{' '}</span>
+					</div>
+					<div class="bar" />
+					<div class="job-note">{t('job.locked.note')}</div>
+				</div>
+			)}
+
+			{running ? (
+				<JobBar job={running} skewMs={skewMs} t={t} />
+			) : failed ? (
+				<div class="result err">
+					<span aria-hidden="true">✕</span>
+					<span>{failText(failed, t)}</span>
+				</div>
+			) : toast ? (
+				<div class={`result ${toast.kind === 'ok' ? '' : toast.kind}`}>
+					<span aria-hidden="true">{toast.kind === 'ok' ? '✓' : '·'}</span>
+					<span>{toast.msg}</span>
+					{toast.href ? (
+						<a class="cta" href={toast.href} target="_blank" rel="noreferrer" onClick={() => setTimeout(lock.dropToast, 0)}>
+							{toast.cta}
+						</a>
+					) : null}
+					<button type="button" class="x" onClick={lock.dropToast} title={t('ui.dismiss')} aria-label={t('ui.dismiss')}>
+						✕
+					</button>
+				</div>
+			) : (
+				<div class="calm">{locked ? t('mode.hint.busy') : t('mode.hint')}</div>
+			)}
 		</div>
 	);
 }

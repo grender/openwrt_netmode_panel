@@ -29,6 +29,24 @@ import (
 	"time"
 )
 
+// IsUbusNotFound — ответил ли ubus «такого объекта нет».
+//
+// ubus сообщает об этом кодом 4 (UBUS_STATUS_NOT_FOUND) и строкой
+// «Command failed: … (Not found)» на stderr (docs/recon/raw/29-rq03-events.txt).
+// Отличать это от прочих отказов обязательно там, где исчезновение объекта
+// и есть ожидаемый исход: «ubus не ответил» доказывает не исчезновение, а
+// только то, что мы ничего не узнали.
+func IsUbusNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 4 {
+		return true
+	}
+	return strings.Contains(err.Error(), "Not found")
+}
+
 // ErrNotFound — записи UCI не существует.
 //
 // Отличать её от ошибки выполнения обязательно: отсутствие опции `disabled`

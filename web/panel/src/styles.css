@@ -269,6 +269,19 @@ button[aria-busy="true"]:disabled { opacity: 1; }
 
 .calm { font: 12px var(--mono); opacity: .82; padding: 3px 0; }
 
+/* Тот же слот на экранах без баннера: плавает у нижнего края и не двигает
+   раздел, в котором владелец только что нажал кнопку. Подложка сплошная —
+   полупрозрачные .job и .result рассчитаны на цветной баннер, а поверх
+   текста страницы они читались бы кашей. */
+.slot-float {
+	position: fixed; z-index: 30; left: 50%; bottom: 16px; margin: 0;
+	transform: translateX(-50%); width: min(560px, calc(100% - 32px));
+	background: var(--card); color: var(--fg); border-radius: 10px;
+	box-shadow: 0 8px 28px rgba(0, 0, 0, .55), 0 0 0 1px var(--line-2);
+}
+.slot-float .job { background: var(--sel-bg); }
+.slot-float .bar > i { background: var(--link); }
+
 /* ─────────── полоса аномалии ─────────── */
 
 .problem {
@@ -579,8 +592,6 @@ button.row { cursor: pointer; }
    своим содержимым, — классический способ не быть озвученной. Место она при
    этом занимать не должна, поэтому пустая теряет отступы. display:none тут
    был бы ошибкой: скрытая область выпадает из дерева доступности. */
-.live { position: relative; }
-.live:empty { display: contents; }
 
 .note { border-radius: var(--r-lg); padding: 14px 16px; border: 1px solid; }
 .note h3 { margin: 0 0 6px; font: 600 15px/1.35 var(--sans); }

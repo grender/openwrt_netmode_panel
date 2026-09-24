@@ -176,7 +176,7 @@ func markSeparators(entries []Entry, ids []string) {
 		if hasFlagPrefix(entries[i].Name) {
 			continue
 		}
-		if !hasTwin(ids, i) {
+		if !hasNodeTwin(entries, ids, i) {
 			continue
 		}
 		// Заголовок — не узел: ни типа, ни объекта для файла провайдера,
@@ -190,10 +190,18 @@ func markSeparators(entries []Entry, ids []string) {
 	}
 }
 
-// hasTwin сообщает, встречается ли отпечаток ещё где-нибудь в массиве.
-func hasTwin(ids []string, self int) bool {
+// hasNodeTwin сообщает, есть ли у записи двойник, который ОСТАНЕТСЯ узлом,
+// — с флагом в имени.
+//
+// Просто «отпечаток встречается ещё раз» здесь мало: два безфлаговых узла
+// на одном сервере («US-1» и «US-1 backup» у провайдера без эмодзи) оба
+// были бы кандидатами, каждый нашёл бы другого, и сервер пропал бы из
+// списка целиком — ровно то, от чего вторая ступень правила и защищает.
+// Заголовок снятой подписки копирует узел С флагом, так что для него
+// ничего не меняется.
+func hasNodeTwin(entries []Entry, ids []string, self int) bool {
 	for j, id := range ids {
-		if j != self && id == ids[self] {
+		if j != self && id == ids[self] && entries[j].Kind != KindAuto && hasFlagPrefix(entries[j].Name) {
 			return true
 		}
 	}

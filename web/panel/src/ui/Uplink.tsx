@@ -1,7 +1,8 @@
 import { useState } from 'preact/hooks';
+import { jobOn } from '../state/job';
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
-import type { NetworksResponse, SavedNetwork, ScanResponse, Status } from '../api/types';
+import type { Job, NetworksResponse, SavedNetwork, ScanResponse, Status } from '../api/types';
 import type { T } from '../i18n';
 import { Confirm, Skel, Spin, sigClass } from './bits';
 
@@ -11,6 +12,8 @@ export interface UplinkProps {
 	status: Status;
 	lock: Lock;
 	locked: boolean;
+	/** Идущий джоб: кнопка держит кольцо до конца операции, а не до 202. */
+	running: Job | null;
 	t: T;
 	onScan(): void;
 	onConnect(n: SavedNetwork): void;
@@ -30,6 +33,7 @@ export function Uplink({
 	status,
 	lock,
 	locked,
+	running,
 	t,
 	onScan,
 	onConnect,
@@ -52,6 +56,10 @@ export function Uplink({
 	// «Подключить» работает: выбрать одну сеть — это и есть способ выйти.
 	const frozen = status.selection_state === 'ambiguous';
 	const busyAny = !!lock.busy;
+	// Джоб аплинка несёт ssid, а не id. Одинаковые ssid штатны (ADR-0005),
+	// и тогда кольцо встанет на обоих профилях — это честнее, чем погасить
+	// его через кадр после 202, пока роутер ещё переключается.
+	const switching = (n: SavedNetwork) => lock.on('switch', n.id) || jobOn(running, 'upstream', n.ssid);
 
 	return (
 		<>
@@ -86,10 +94,10 @@ export function Uplink({
 											type="button"
 											class="mini grow"
 											disabled={locked}
-											aria-busy={lock.on('switch', n.id)}
+											aria-busy={switching(n)}
 											onClick={() => setAsk(n)}
 										>
-											{lock.on('switch', n.id) ? (
+											{switching(n) ? (
 												<>
 													<Spin /> {t('wifi.connecting')}
 												</>

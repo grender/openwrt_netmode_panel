@@ -3,6 +3,7 @@ import type {
 	AutopoolDraft,
 	AutopoolResponse,
 	BridgeState,
+	Job,
 	LogsResponse,
 	ProxiesResponse,
 	RulesDraft,
@@ -33,10 +34,13 @@ export interface SettingsProps {
 	lang: Lang;
 	lock: Lock;
 	locked: boolean;
+	/** Идущий джоб — чтобы кнопка держала кольцо до конца операции, а не до 202. */
+	running: Job | null;
 	status: Status;
 
 	rulesets: Side<RulesetsResponse>;
 	catalog: Side<RulesetsCatalog>;
+	catalogLoading: boolean;
 	draft: RulesDraft | null;
 	setDraft(d: RulesDraft | null): void;
 	onApplyRules(d: RulesDraft): void;
@@ -51,7 +55,7 @@ export interface SettingsProps {
 	logs: Side<LogsResponse>;
 	nikki: Side<ProxiesResponse>;
 	onUpdateSub(): void;
-	onSaveURL(url: string): void;
+	onSaveURL(url: string, setErr: (s: string) => void, done: () => void): void;
 
 	bridge: Side<BridgeState>;
 	onBridgeProbe(): void;
@@ -83,11 +87,13 @@ export function Settings(p: SettingsProps) {
 				<Rulesets
 					applied={p.rulesets}
 					catalog={p.catalog}
+					catalogLoading={p.catalogLoading}
 					draft={p.draft}
 					setDraft={p.setDraft}
 					lang={p.lang}
 					lock={p.lock}
 					locked={p.locked}
+					running={p.running}
 					t={t}
 					onApply={p.onApplyRules}
 					onLoadCatalog={p.onLoadCatalog}
@@ -104,6 +110,7 @@ export function Settings(p: SettingsProps) {
 					setDraft={p.setPoolDraft}
 					lock={p.lock}
 					locked={p.locked}
+					running={p.running}
 					t={t}
 					onApply={p.onApplyPool}
 				/>
@@ -118,6 +125,7 @@ export function Settings(p: SettingsProps) {
 					lang={p.lang}
 					lock={p.lock}
 					locked={p.locked}
+					running={p.running}
 					t={t}
 					onUpdate={p.onUpdateSub}
 					onSaveURL={p.onSaveURL}
@@ -139,6 +147,7 @@ export function Settings(p: SettingsProps) {
 					bridge={p.bridge}
 					lock={p.lock}
 					locked={p.locked}
+					running={p.running}
 					t={t}
 					onProbe={p.onBridgeProbe}
 					onAccess={p.onBridgeAccess}

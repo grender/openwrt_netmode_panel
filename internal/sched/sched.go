@@ -59,6 +59,12 @@ type Scheduler struct {
 	now      func() time.Time
 	logf     func(string, ...any)
 
+	// gate — через что идёт обновление по расписанию. nil — прямой вызов
+	// RunOnce (тесты пакета). Демон ставит сюда менеджер операций: иначе
+	// плановое обновление шло бы мимо него, параллельно операциям владельца,
+	// и переписывало бы mixin.yaml и перезапускало движок у них под ногами.
+	gate func(ctx context.Context, run func(context.Context) error) error
+
 	mu       sync.Mutex
 	lastRun  time.Time
 	running  bool
@@ -141,9 +147,21 @@ func (s *Scheduler) Run(ctx context.Context) {
 // safe.Do — в лог демона.
 func (s *Scheduler) runOnceSafely(ctx context.Context) {
 	_ = safe.Do(s.logf, "обновление подписки по расписанию", func() error {
-		_, err := s.RunOnce(ctx)
-		return err
+		run := func(c context.Context) error {
+			_, err := s.RunOnce(c)
+			return err
+		}
+		if s.gate != nil {
+			return s.gate(ctx, run)
+		}
+		return run(ctx)
 	})
+}
+
+// SetGate ставит обёртку, через которую идёт обновление по расписанию.
+// Вызывается до Run: поле читается без замка.
+func (s *Scheduler) SetGate(gate func(ctx context.Context, run func(context.Context) error) error) {
+	s.gate = gate
 }
 
 // firstDelaySafe — задержка первого срабатывания, посчитанная так, чтобы

@@ -104,7 +104,26 @@ scripts/check-size.sh "$BIN"
 # ─────────── одно соединение на всё ───────────
 
 CTL=$(mktemp -u /tmp/netmoded-ssh-XXXXXX)
-cleanup() { ssh -S "$CTL" -O exit "$HOST" 2>/dev/null || true; }
+# STOPPED=yes — демон погашен заливкой, а плановый перезапуск ещё не
+# начался. Выход в этом окне (обрыв ssh на заливке, не та версия, отказ на
+# --install) оставлял роутер без демона: init.d stop выключает и respawn
+# procd, так что до перезагрузки или ssh руками панели не было — и об этом
+# не говорилось ни слова. Уборка сперва пытается поднять демон обратно.
+STOPPED=no
+cleanup() {
+	if [ "$STOPPED" = yes ] && [ "$RESTART" = yes ] && [ "$RUN" != yes ]; then
+		echo >&2
+		echo "  ⚠ деплой прерван после остановки демона — пробую поднять его обратно" >&2
+		if sh_ "[ -x $INITD ] && $INITD start" >/dev/null 2>&1; then
+			echo "    init.d start прошёл; проверьте, какая версия поднялась:" >&2
+			echo "        ssh $HOST $REMOTE -version" >&2
+		else
+			echo "    не вышло — демон на роутере НЕ работает. Поднять руками:" >&2
+			echo "        ssh $HOST $INITD start" >&2
+		fi
+	fi
+	ssh -S "$CTL" -O exit "$HOST" 2>/dev/null || true
+}
 trap cleanup EXIT INT TERM
 
 say "Подключение к $HOST — введите пароль (спросят один раз)"
@@ -205,6 +224,7 @@ say "Заливка"
 # удалённую команду не находит. Потолок — десять секунд: процесс, который не
 # ушёл и за них, дальше разберёт запись файла, а не бесконечное ожидание.
 sh_ "[ -x $INITD ] && $INITD stop >/dev/null 2>&1; killall netmoded 2>/dev/null; i=0; while pidof netmoded >/dev/null && [ \$i -lt 10 ]; do sleep 1; i=\$((i + 1)); done; mkdir -p $(dirname $REMOTE)" || true
+STOPPED=yes
 
 put - "$REMOTE" 0755 < "$BIN"
 echo "  ✓ $REMOTE"
@@ -382,6 +402,7 @@ elif [ "$RESTART" = no ]; then
 		"" \
 		"    ssh $HOST $INITD start"
 elif ! sh_ "[ -x $INITD ]"; then
+	STOPPED=no # поднимать нечем: ветка сама говорит, что делать
 	say "Готово"
 	printf '%s\n' \
 		"Бинарь залит, но $INITD на роутере нет — перезапускать нечего." \
@@ -398,6 +419,8 @@ else
 	# restart, а не start: заливка уже сделала stop, но procd мог успеть
 	# поднять старый экземпляр по respawn.
 	sh_ "$INITD restart" >/dev/null 2>&1 || true
+	# Дальше отказы разбирает сама проверка ниже (с логом), а не уборка.
+	STOPPED=no
 
 	health_target
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"netmoded/internal/executor"
@@ -353,6 +354,15 @@ func (s *Server) switchUpstream(ctx context.Context, p switchPlan) error {
 		s.logf("переключение на «%s»: прежняя сеть не прочитана (%v) — вердикт будет вынесен без неё", p.ssid, err)
 	}
 
+	// Замок пакета wireless — от повторной сверки до коммита, не дольше:
+	// синхронная запись сети иначе положила бы в стейджинг половину секции
+	// ровно в это окно, и наш commit её опубликовал бы. Применение (шаг 7
+	// и дальше, десятки секунд) идёт без замка.
+	unlockW := s.lockPkg("wireless")
+	var releaseOnce sync.Once
+	releaseW := func() { releaseOnce.Do(unlockW) }
+	defer releaseW()
+
 	// 2. Повторная сверка отпечатка.
 	//
 	// Окно между проверкой в обработчике и записью — миллисекунды, но
@@ -414,6 +424,7 @@ func (s *Server) switchUpstream(ctx context.Context, p switchPlan) error {
 		return s.switchFailed(p.ssid, reasonApplyFailed,
 			errors.New("не удалось применить изменения в /etc/config/wireless"))
 	}
+	releaseW()
 
 	// 7. Применение узким глаголом. Тупой `wifi` целиком запрещён навсегда:
 	//    он измеренно роняет домашнюю точку (ADR-0025, отрицательный

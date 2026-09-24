@@ -171,12 +171,22 @@ export function NetworkForm({
 							type="button"
 							class="wide"
 							disabled={busy || locked}
+							aria-busy={lock.on('save', 'connect')}
 							onClick={() => {
 								const b = build();
 								if (b) onSaveConnect(b, setErr);
 							}}
 						>
-							{t('wifi.sheet.saveconnect')}
+							{/* Свой ключ замка, а не общий 'save': иначе кольцо
+							    вставало на соседнюю «Сохранить», которую не
+							    нажимали. */}
+							{lock.on('save', 'connect') ? (
+								<>
+									<Spin /> {t('wifi.saving')}
+								</>
+							) : (
+								t('wifi.sheet.saveconnect')
+							)}
 						</button>
 					) : null}
 					{/* Выход из формы НЕ запирается чужой операцией: запирать
