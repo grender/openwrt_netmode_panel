@@ -19,13 +19,13 @@ for f in "$D"/*.sh; do
 done
 
 for f in "$D/utm-create.sh" "$D/qemu-run.sh"; do
-	hits=$(grep -nE '18022|18088|192\.168\.1\.|:22\b|8088' "$f" | grep -v '^[0-9]*:[[:space:]]*#' || true)
+	hits=$(grep -nE '18022|18088|17890|7890|192\.168\.1\.|:22\b|8088' "$f" | grep -v '^[0-9]*:[[:space:]]*#' || true)
 	if [ -n "$hits" ]; then
 		echo "check-vm-scripts: в $f литерал сети/порта — берите из common.sh:"
 		echo "$hits" | sed 's/^/  /'
 		fail=1
 	fi
-	for v in VM_SSH_PORT VM_HTTP_PORT VM_GUEST VM_NET; do
+	for v in VM_SSH_PORT VM_HTTP_PORT VM_PROXY_PORT VM_GUEST_PROXY VM_GUEST VM_NET; do
 		grep -q "\$$v" "$f" || { echo "check-vm-scripts: $f не использует \$$v"; fail=1; }
 	done
 done

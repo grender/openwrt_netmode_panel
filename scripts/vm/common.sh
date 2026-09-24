@@ -29,6 +29,9 @@
 # Порты на Mac (только 127.0.0.1) → порты в VM.
 : "${VM_SSH_PORT:=18022}"
 : "${VM_HTTP_PORT:=18088}"
+# Прокси nikki (mixed-port: HTTP и SOCKS5, с логином) — чтобы пускать
+# трафик приложений Mac через nikki в VM без ssh-туннеля.
+: "${VM_PROXY_PORT:=17890}"
 
 # Сеть QEMU user-net (в UTM — «Emulated VLAN»).
 #
@@ -44,6 +47,8 @@ VM_GUEST=192.168.1.1
 VM_GUEST_SSH=22
 # 8088 — порт демона из сида files/etc/config/netmode.
 VM_GUEST_HTTP=8088
+# 7890 — mixed-port nikki по умолчанию (nikki.mixin.mixed_port).
+VM_GUEST_PROXY=7890
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 VM_DIR=$ROOT/build/vm
