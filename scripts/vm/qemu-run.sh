@@ -79,6 +79,7 @@ fi
 NETDEV="user,id=n0,net=$VM_NET,host=$VM_NET_HOST,dns=$VM_NET_DNS,dhcpstart=$VM_NET_DHCPSTART"
 NETDEV="$NETDEV,hostfwd=tcp:127.0.0.1:$VM_SSH_PORT-$VM_GUEST:$VM_GUEST_SSH"
 NETDEV="$NETDEV,hostfwd=tcp:127.0.0.1:$VM_HTTP_PORT-$VM_GUEST:$VM_GUEST_HTTP"
+NETDEV="$NETDEV,hostfwd=tcp:127.0.0.1:$VM_PROXY_PORT-$VM_GUEST:$VM_GUEST_PROXY"
 
 if [ "$DAEMON" = yes ]; then
 	if [ -f "$VM_DIR/qemu.pid" ] && kill -0 "$(cat "$VM_DIR/qemu.pid")" 2>/dev/null; then

@@ -209,6 +209,18 @@ else
 					<key>GuestPort</key>
 					<integer>$VM_GUEST_HTTP</integer>
 				</dict>
+				<dict>
+					<key>Protocol</key>
+					<string>TCP</string>
+					<key>HostAddress</key>
+					<string>127.0.0.1</string>
+					<key>HostPort</key>
+					<integer>$VM_PROXY_PORT</integer>
+					<key>GuestAddress</key>
+					<string>$VM_GUEST</string>
+					<key>GuestPort</key>
+					<integer>$VM_GUEST_PROXY</integer>
+				</dict>
 			</array>
 		</dict>
 	</array>
