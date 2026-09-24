@@ -1010,3 +1010,19 @@ func TestDisabledDomainDoesNotBlockLegitimateWrites(t *testing.T) {
 		})
 	}
 }
+
+func TestIsUbusNotFound(t *testing.T) {
+	for _, tt := range []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{errors.New("ubus call network.interface.homelan status: exit status 4: Command failed: ubus call network.interface.homelan status {} (Not found)"), true},
+		{errors.New("ubus: exit status 7: Command failed: Request timed out"), false},
+		{context.DeadlineExceeded, false},
+	} {
+		if got := IsUbusNotFound(tt.err); got != tt.want {
+			t.Errorf("IsUbusNotFound(%v)=%v, ожидалось %v", tt.err, got, tt.want)
+		}
+	}
+}

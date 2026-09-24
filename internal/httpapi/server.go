@@ -171,7 +171,11 @@ type Server struct {
 		key string
 		f   *panelFile
 	}
-	mux *http.ServeMux
+	// uciMu — замки цепочек «проверка стейджинга/отпечатка … commit» по
+	// пакетам UCI (lockPkg). Джобы между собой и так не пересекаются, а
+	// синхронные записи (сети, адрес подписки) идут мимо менеджера.
+	uciMu map[string]*sync.Mutex
+	mux   *http.ServeMux
 }
 
 // Пути файлов подписки — константы, а не настройка в /etc/config/netmode.
@@ -246,6 +250,7 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 		logs:   logs.New(cfg.LogPath),
 		fails:  &failStore{},
 		mux:    http.NewServeMux(),
+		uciMu:  map[string]*sync.Mutex{"wireless": {}, "netmode": {}},
 	}
 	s.bridgeFails = &bridgeFailStore{}
 	s.led = led.New(cfg.LEDRoot, s.logf)
@@ -446,7 +451,24 @@ func (s *Server) routes() {
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.withToken(s.mux)
+	return s.withToken(limitBody(s.mux))
+}
+
+// maxBody — потолок тела запроса. Самое большое законное тело — выбор
+// наборов с шестьюдесятью четырьмя своими правилами — укладывается в
+// десятки килобайт; четверть мегабайта — с запасом.
+const maxBody = 256 << 10
+
+// limitBody ограничивает тело запроса. json.Decoder копит значение целиком,
+// и без потолка один большой PUT съедал бы память роутера (512 МБ на всё).
+// Стоит ПОСЛЕ проверки токена: тело чужого запроса не читается вовсе.
+func limitBody(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // Addr — адрес прослушивания.
@@ -911,6 +933,22 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeErr(w http.ResponseWriter, code int, errCode, msg string) {
 	writeJSON(w, code, apiError{Code: errCode, Error: msg})
+}
+
+// lockPkg берёт замок цепочки записи в пакет UCI и возвращает его снятие.
+//
+// uci commit публикует ВЕСЬ стейджинг пакета. Без замка запись сети
+// успевала бы положить в стейджинг половину новой секции (ещё без
+// disabled=1, то есть включённую) ровно между сверкой и коммитом джоба
+// аплинка — и тот опубликовал бы её. Держится от проверки до коммита, не
+// дольше: применение (wifi, скрипты) идёт уже без него.
+func (s *Server) lockPkg(pkg string) func() {
+	m, ok := s.uciMu[pkg]
+	if !ok {
+		panic("lockPkg: нет замка для пакета " + pkg)
+	}
+	m.Lock()
+	return m.Unlock
 }
 
 // ListenAndServe запускает сервер.

@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -187,11 +188,26 @@ func (c *HTTP) do(ctx context.Context, method, path string, body any, out any, t
 	if out == nil {
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	// Потолок тела (ADR-0022), как у клиентов nikki, happ и geosite: статус
+	// опрашивает b4 раз в секунду, и сбойная сборка с бесконечным телом
+	// съедала бы память роутера до таймаута вызова. Байт сверх потолка
+	// читается, чтобы отличить «не влезло» от «оборвалось».
+	lr := &io.LimitedReader{R: resp.Body, N: maxBody + 1}
+	if err := json.NewDecoder(lr).Decode(out); err != nil {
+		if lr.N == 0 {
+			return fmt.Errorf("b4: тело ответа %s превысило потолок %d Б", path, maxBody)
+		}
 		return fmt.Errorf("b4: разбор ответа %s: %w", path, err)
+	}
+	if lr.N == 0 {
+		return fmt.Errorf("b4: тело ответа %s превысило потолок %d Б", path, maxBody)
 	}
 	return nil
 }
+
+// maxBody — потолок тела ответа b4. Сет — около 2,5 КБ JSON; мегабайт
+// вмещает сотни сетов с большим запасом.
+const maxBody = 1 << 20
 
 // Version — проба живости.
 //

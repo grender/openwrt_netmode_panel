@@ -73,6 +73,7 @@ func (s *Server) handleWifiWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer s.lockPkg("wireless")()
 	g, errResp := s.openWriteForSaved(r)
 	if errResp != nil {
 		errResp.send(w)
@@ -91,6 +92,7 @@ func (s *Server) handleWifiWrite(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWifiDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
+	defer s.lockPkg("wireless")()
 	g, errResp := s.openWriteForSaved(r)
 	if errResp != nil {
 		errResp.send(w)

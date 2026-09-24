@@ -91,6 +91,11 @@ type Controller struct {
 	// revert — одноразовый таймер возврата после индикации ошибки.
 	// У него есть владелец и Stop под тем же мьютексом, что его взвёл.
 	revert *time.Timer
+	// gen — поколение отложенного возврата. Stop не отменяет уже
+	// сработавший таймер: его коллбэк мог стоять на мьютексе, пока Set
+	// выставлял новую индикацию, и затем вернул бы СТАРУЮ. Коллбэк сверяет
+	// поколение и, если за это время был Set/Flash/Close, ничего не делает.
+	gen uint64
 	// degraded — запись перестала совпадать с прочитанным; дальше не
 	// трогаем светодиоды и не засоряем лог.
 	degraded bool
@@ -150,10 +155,14 @@ func (c *Controller) Flash(then State) {
 	// Ошибка не возвращается, потому что возвращать её некому: причину со
 	// стеком safe.Do уже положил в журнал, а индикация — best-effort
 	// (ADR-0013).
+	my := c.gen
 	c.revert = time.AfterFunc(errorHold, func() {
 		_ = safe.Do(c.logf, "отложенный возврат индикации", func() error {
 			c.mu.Lock()
 			defer c.mu.Unlock()
+			if c.gen != my {
+				return nil
+			}
 			c.revert = nil
 			return c.applyNotedLocked(then, "возврат индикации")
 		})
@@ -171,6 +180,7 @@ func (c *Controller) Close() {
 }
 
 func (c *Controller) cancelRevertLocked() {
+	c.gen++
 	if c.revert != nil {
 		c.revert.Stop()
 		c.revert = nil

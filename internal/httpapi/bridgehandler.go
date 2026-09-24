@@ -512,6 +512,12 @@ func (s *Server) bridgeProbes(ctx context.Context, st *BridgeState) *BridgeProbe
 		}
 	}
 
+	// Пробы, оборванные уходом клиента, в кэш не кладутся: их null — «не
+	// успели спросить», а не «не ответил», и на десять секунд он стал бы
+	// ответом для всех.
+	if ctx.Err() != nil {
+		return out
+	}
 	s.bridgeProbeMu.Lock()
 	s.bridgeProbeVal, s.bridgeProbeAt = out, time.Now()
 	s.bridgeProbeMu.Unlock()
@@ -521,10 +527,15 @@ func (s *Server) bridgeProbes(ctx context.Context, st *BridgeState) *BridgeProbe
 // ─────────── общий гвард записи моста ───────────
 
 // openBridgeWrite — отказы, общие всем трём операциям, в неизменном
-// порядке: чужой стейджинг (двух пакетов!) → чтение → If-Match.
+// порядке: чужой стейджинг (трёх пакетов!) → чтение → If-Match.
 func (s *Server) openBridgeWrite(r *http.Request) (*bridgeConfig, *httpErr) {
 	ctx := r.Context()
-	for _, pkg := range []string{"network", "firewall"} {
+	// netmode — тоже: партия пишет netmode.main.bridge_pc_ip, а откат
+	// снимает ВСЕ секции, что `uci changes netmode` перечисляет, считая
+	// чужой стейджинг отбитым здесь. Без проверки чужой черновик (скажем,
+	// недокоммиченный адрес подписки) молча откатывался бы на провале или
+	// публиковался бы нашим коммитом.
+	for _, pkg := range []string{"network", "firewall", "netmode"} {
 		changes, err := s.ex.UCIChanges(ctx, pkg)
 		if err != nil {
 			return nil, &httpErr{http.StatusServiceUnavailable, "uci_unavailable", err.Error()}
@@ -750,7 +761,7 @@ func (s *Server) startBridgeJob(w http.ResponseWriter, p bridgePlan, eta int, la
 		return
 	}
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "job_failed", err.Error())
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"job": j})
@@ -963,6 +974,13 @@ func (s *Server) runBridge(ctx context.Context, p bridgePlan) error {
 	// права показывать вердикт старой.
 	s.bridgeFails.Clear()
 
+	// Замок netmode — от сверки до коммитов: партия пишет в netmode, а
+	// запись адреса подписки идёт мимо менеджера операций (lockPkg).
+	unlockN := s.lockPkg("netmode")
+	var releaseOnce sync.Once
+	releaseN := func() { releaseOnce.Do(unlockN) }
+	defer releaseN()
+
 	// Повторная сверка отпечатка: окно между обработчиком и джобом —
 	// миллисекунды, но именно в нём чужой Save & Apply публикует своё.
 	c, errResp := s.readBridgeConfig(ctx)
@@ -1004,6 +1022,7 @@ func (s *Server) runBridge(ctx context.Context, p bridgePlan) error {
 				fmt.Errorf("не удалось применить изменения в /etc/config/%s", pkg))
 		}
 	}
+	releaseN()
 
 	// Применение скриптом слоя 2.
 	scriptAction := p.action
@@ -1252,12 +1271,15 @@ func (s *Server) awaitHomelan(ctx context.Context, wantUp bool, legIP string) (F
 					return "", true
 				}
 			}
-		} else if !wantUp {
+		} else if !wantUp && executor.IsUbusNotFound(err) {
 			// Объект исчез вместе с интерфейсом — ровно то, чего ждём.
+			// Только «нет такого объекта»: любой другой отказ (ubus лежит,
+			// таймаут) не доказывает исчезновения, и засчитать его значило
+			// бы доложить «проброс выключен», не прочитав ничего.
 			return "", true
 		}
 		if time.Now().After(deadline) || !sleepCtx(ctx, bridgePollInterval) {
-			if wantUp && !everRead {
+			if !everRead {
 				return breasonUnverifiable, false
 			}
 			return breasonNoIface, false

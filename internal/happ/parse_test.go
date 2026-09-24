@@ -191,6 +191,25 @@ func TestSeparatorNeedsTwin(t *testing.T) {
 		}
 	})
 
+	t.Run("два безфлаговых двойника оба остаются узлами", func(t *testing.T) {
+		// Провайдер без эмодзи, два имени на одном сервере. Каждый — кандидат,
+		// каждый нашёл бы другого, и без требования «двойник с флагом» сервер
+		// пропал бы из списка целиком.
+		raw := []byte("[" +
+			node("US-1", "203.0.113.9") + "," +
+			node("US-1 backup", "203.0.113.9") + "]")
+
+		entries, err := Parse(raw)
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		for i, e := range entries {
+			if e.Kind != KindNode {
+				t.Errorf("запись %d (%q): вид %q, ожидался узел", i, e.Name, e.Kind)
+			}
+		}
+	})
+
 	t.Run("уникальный узел без флага остаётся узлом", func(t *testing.T) {
 		raw := []byte("[" +
 			node("🇧🇧Браво", "203.0.113.1") + "," +

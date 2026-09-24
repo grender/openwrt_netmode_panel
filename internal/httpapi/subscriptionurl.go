@@ -152,6 +152,8 @@ func (s *Server) handleSubscriptionPut(w http.ResponseWriter, r *http.Request) {
 	// оставлял бы секретный адрес висеть в стейджинге (writeCtx).
 	ctx, cancel := writeCtx(r)
 	defer cancel()
+	unlock := s.lockPkg("netmode")
+	defer unlock()
 	if err := s.ex.UCISet(ctx, "netmode", "main", "subscription_url", in.URL); err != nil {
 		// Текст ошибки исполнителя наружу НЕ уходит: в неудачной команде
 		// uci set есть само значение, то есть секрет (ADR-0012). По той же

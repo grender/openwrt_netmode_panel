@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"netmoded/internal/safe"
 )
 
 const (
@@ -669,6 +671,16 @@ func (c *HTTP) Delay(ctx context.Context, name string) (int, error) {
 	// ответил» и «мы не дождались самого mihomo» слились бы в одну ошибку,
 	// и первое молча записалось бы во второе.
 	if err := c.do(ctx, http.MethodGet, path, nil, &out, delayProbeTimeout+time.Second); err != nil {
+		// Мёртвый узел mihomo отдаёт пятисоткой: 504 — проба не уложилась в
+		// timeout, 503 — проба не удалась (hub/route/proxies.go, v1.19.27;
+		// по исходникам, живьём коды не снимались). do превращает любую
+		// пятисотку в ErrUnavailable, то есть «Clash API лежит», — а движок
+		// ответил, не ответил УЗЕЛ. Ровно это различие ErrProbeFailed и
+		// заведён держать (см. его комментарий).
+		var se *StatusError
+		if errors.As(err, &se) && (se.Code == http.StatusServiceUnavailable || se.Code == http.StatusGatewayTimeout) {
+			return 0, fmt.Errorf("%w: %q: %w", ErrProbeFailed, name, se)
+		}
 		return 0, err
 	}
 	if out.Delay <= 0 {
@@ -756,7 +768,13 @@ func ProbeAll(ctx context.Context, c Client, names []string) ProbeSummary {
 
 				var err error
 				if ctx.Err() == nil {
-					_, err = c.Delay(ctx, name)
+					// safe.Do (ADR-0021): паника в клиенте посреди замера
+					// роняла бы весь демон из безымянной горутины, а не один
+					// узел — узел же засчитается «не ответившим».
+					err = safe.Do(nil, "замер задержки узла", func() error {
+						_, derr := c.Delay(ctx, name)
+						return derr
+					})
 				} else {
 					err = ctx.Err()
 				}
