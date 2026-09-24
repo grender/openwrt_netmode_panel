@@ -154,7 +154,10 @@ ARCH=$(sh_ 'uname -m')
 [ "$ARCH" = aarch64 ] || { echo "  ✗ архитектура $ARCH, бинарь под aarch64" >&2; exit 1; }
 echo "  ✓ архитектура: $ARCH"
 
-FREE=$(sh_ "df -k /usr/local 2>/dev/null || df -k /" | awk 'NR==2{print $4}')
+# На свежей системе /usr/local ещё нет, и busybox df на нём печатает
+# заголовок и падает: через `||` выходило два заголовка подряд, и в FREE
+# попадало слово «Available». Поэтому каталог выбирается ДО вызова df.
+FREE=$(sh_ "if [ -d /usr/local ]; then df -k /usr/local; else df -k /; fi" | awk 'NR==2{print $4}')
 [ "${FREE:-0}" -ge 7168 ] || { echo "  ✗ свободно ${FREE} КБ, нужно ~7168" >&2; exit 1; }
 echo "  ✓ свободно: $((FREE / 1024)) МБ"
 

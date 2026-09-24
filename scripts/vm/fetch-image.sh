@@ -19,6 +19,38 @@ IMG=openwrt-$OPENWRT_VERSION-armsr-armv8-generic-ext4-combined-efi.img
 URL=$OPENWRT_MIRROR/releases/$OPENWRT_VERSION/targets/armsr/armv8
 mkdir -p "$VM_CACHE"
 
+sha256() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | awk '{print $1}'
+	else
+		shasum -a 256 "$1" | awk '{print $1}'
+	fi
+}
+
+# Скачивает файл релиза в кэш (если его там нет) и сверяет с sha256sums.
+fetch_verified() {
+	[ -f "$VM_CACHE/sha256sums-$OPENWRT_VERSION" ] ||
+		curl -fsSL -o "$VM_CACHE/sha256sums-$OPENWRT_VERSION" "$URL/sha256sums"
+	if [ ! -f "$VM_CACHE/$1" ]; then
+		curl -fL --progress-bar -o "$VM_CACHE/$1.part" "$URL/$1"
+		mv "$VM_CACHE/$1.part" "$VM_CACHE/$1"
+	fi
+	want=$(awk -v f="$1" '$2 == "*" f || $2 == f { print $1 }' "$VM_CACHE/sha256sums-$OPENWRT_VERSION")
+	[ -n "$want" ] || die "в sha256sums нет $1"
+	if [ "$(sha256 "$VM_CACHE/$1")" != "$want" ]; then
+		rm -f "$VM_CACHE/$1"
+		die "sha256 $1 не совпал (скачанный файл удалён, запустите ещё раз)"
+	fi
+}
+
+# Ядро отдельным файлом — для запуска без UEFI под эмуляцией (qemu-run.sh:
+# там прошивка на каждой перезагрузке думает минутами). Маленькое, поэтому
+# качается всегда, даже если диск уже есть.
+if [ ! -f "$VM_KERNEL" ]; then
+	fetch_verified "$(basename "$VM_KERNEL")"
+	echo "  ✓ ядро $(basename "$VM_KERNEL")"
+fi
+
 # После utm-create.sh диск живёт внутри UTM-бандла. Пересоздавать его там
 # из-под зарегистрированной VM нельзя — сперва destroy.sh.
 if [ -f "$VM_BUNDLE/Data/disk.qcow2" ]; then
@@ -32,24 +64,7 @@ if [ -f "$VM_DISK" ] && [ "$FORCE" = no ]; then
 fi
 
 say "Образ OpenWrt $OPENWRT_VERSION (armsr/armv8)"
-
-if [ ! -f "$VM_CACHE/$IMG.gz" ]; then
-	curl -fL --progress-bar -o "$VM_CACHE/$IMG.gz.part" "$URL/$IMG.gz"
-	mv "$VM_CACHE/$IMG.gz.part" "$VM_CACHE/$IMG.gz"
-fi
-curl -fsSL -o "$VM_CACHE/sha256sums-$OPENWRT_VERSION" "$URL/sha256sums"
-
-WANT=$(awk -v f="*$IMG.gz" '$2 == f || $2 == substr(f, 2) { print $1 }' "$VM_CACHE/sha256sums-$OPENWRT_VERSION")
-[ -n "$WANT" ] || die "в sha256sums нет $IMG.gz"
-if command -v sha256sum >/dev/null 2>&1; then
-	GOT=$(sha256sum "$VM_CACHE/$IMG.gz" | awk '{print $1}')
-else
-	GOT=$(shasum -a 256 "$VM_CACHE/$IMG.gz" | awk '{print $1}')
-fi
-if [ "$GOT" != "$WANT" ]; then
-	rm -f "$VM_CACHE/$IMG.gz"
-	die "sha256 не совпал (скачанный файл удалён, запустите ещё раз)"
-fi
+fetch_verified "$IMG.gz"
 echo "  ✓ sha256 совпал"
 
 # Образы OpenWrt дополнены подписью после gzip-потока: gunzip ругается

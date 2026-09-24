@@ -27,7 +27,7 @@ FORCE=no
 
 MARK=/etc/netmoded-vm-provisioned
 
-wait_ssh || die "ssh в VM не отвечает (консоль: окно Serial в UTM либо build/vm/console.log)"
+wait_ssh "$VM_BOOT_TRIES" || die "ssh в VM не отвечает (консоль: окно Serial в UTM либо build/vm/console.log)"
 
 if [ "$FORCE" = no ] && vm_ssh "[ -f $MARK ]"; then
 	echo "  · VM уже настроена ($MARK), пропуск (заново: --force)"
@@ -60,13 +60,25 @@ vm_ssh "uci set network.lan.gateway='$VM_NET_HOST'
 	( sleep 1; /etc/init.d/network reload ) >/dev/null 2>&1 </dev/null &"
 sleep 4
 wait_ssh 30 || die "VM пропала после network reload"
+
+# VM_APK_MIRROR — свой адрес вместо https://downloads.openwrt.org в фидах
+# apk (локальное зеркало, кэширующий прокси). Подпись packages.adb
+# проверяется ключами образа, так что зеркалу доверять не нужно.
+MIRROR=${VM_APK_MIRROR:-https://downloads.openwrt.org}
+if [ -n "${VM_APK_MIRROR:-}" ]; then
+	vm_ssh "sed -i 's#https://downloads.openwrt.org#$VM_APK_MIRROR#' /etc/apk/repositories.d/distfeeds.list"
+	echo "  ✓ фиды apk → $VM_APK_MIRROR"
+fi
+
+# Проверяем тем же путём, каким пойдёт apk (HTTP(S) через uclient-fetch),
+# а не ping: ICMP через user-net проходит не везде.
 i=0
-until vm_ssh "ping -c1 -W2 downloads.openwrt.org >/dev/null 2>&1"; do
-	[ "$i" -lt 10 ] || die "из VM нет интернета (шлюз $VM_NET_HOST, DNS $VM_NET_DNS)"
+until vm_ssh "wget -q -T 10 -O /dev/null '$MIRROR/releases/$OPENWRT_VERSION/targets/armsr/armv8/sha256sums'"; do
+	[ "$i" -lt 10 ] || die "из VM не открывается $MIRROR (шлюз $VM_NET_HOST, DNS $VM_NET_DNS)"
 	sleep 2
 	i=$((i + 1))
 done
-echo "  ✓ интернет через $VM_NET_HOST"
+echo "  ✓ $MIRROR доступен из VM"
 
 # ── 3. пакеты и 4. WiFi ──
 # Скрипт уходит в VM целиком через stdin: переменные хоста подставлены
@@ -151,7 +163,7 @@ set wireless.wifinet2.disabled='1'
 
 set network.wwan=interface
 set network.wwan.proto='dhcp'
-set network.wwan.defaultroute='0'
+set network.wwan.metric='20'
 set network.wwan.peerdns='0'
 set network.vmup_dev=device
 set network.vmup_dev.type='bridge'
@@ -168,11 +180,11 @@ set dhcp.vmup.start='100'
 set dhcp.vmup.limit='50'
 set dhcp.vmup.leasetime='1h'
 UCI
-# «Внешний мир» не раздаёт шлюз и DNS: иначе wwan увёл бы маршрут по
-# умолчанию на адрес этой же VM, и интернет через user-net пропал бы.
-uci -q delete dhcp.vmup.dhcp_option || true
-uci add_list dhcp.vmup.dhcp_option='3'
-uci add_list dhcp.vmup.dhcp_option='6'
+# «Внешний мир» раздаёт шлюз 10.99.0.1: демон считает upstream живым,
+# только если у wwan есть маршрут по умолчанию (netif.Status.Online), и без
+# шлюза любое переключение кончалось бы отказом no_ipv4. А чтобы этот
+# маршрут не увёл интернет VM (apk ходит через user-net), у wwan метрика 20
+# против 0 у lan, и DNS от него не берётся (peerdns=0).
 
 # wwan — в зону wan, как на роутере; vmup — своя зона, где DHCP разрешён.
 WAN=\$(uci show firewall | sed -n "s/^firewall\.\([^.]*\)\.name='wan'\$/\1/p" | head -1)
@@ -196,17 +208,27 @@ echo "  ✓ WiFi-топология записана"
 date > $MARK
 REMOTE
 
+# Перезагрузка обязательна, а не для порядка. В образе armsr нет ни
+# wifi-scripts, ни wpad: поставленные на живую систему, они не встают в
+# строй — netifd подгружает обработчики радио только при старте, а
+# hostapd/wpa_supplicant, запущенные после него, не регистрируются в ubus,
+# и netifd навсегда повисает в `ubus wait_for wpa_supplicant`. После
+# загрузки же всё поднимается штатно, и имена интерфейсов те же, что на
+# роутере (phy0-sta0), — модуль hwsim грузится первым и с radios=3.
+say "Перезагрузка VM"
+vm_reboot || die "VM не вернулась после перезагрузки (консоль: окно Serial в UTM либо build/vm/console.log)"
+
 # Станция ассоциируется не мгновенно — ждём, но без отказа: это проверка
 # для глаз, а не условие установки.
 i=0
 until vm_ssh "ubus call network.interface.wwan status 2>/dev/null | grep -q '\"up\": true'"; do
-	if [ "$i" -ge 15 ]; then
+	if [ "$i" -ge 30 ]; then
 		echo "  ⚠ wwan пока не поднялся (станция radio0 → vm-upstream-a) — проверьте: ./scripts/vm/ssh.sh 'iw dev; ifstatus wwan'" >&2
 		break
 	fi
 	sleep 2
 	i=$((i + 1))
 done
-[ "$i" -ge 15 ] || echo "  ✓ wwan поднят: станция radio0 подключена к vm-upstream-a"
+[ "$i" -ge 30 ] || echo "  ✓ wwan поднят: станция radio0 подключена к vm-upstream-a"
 
 say "VM настроена"

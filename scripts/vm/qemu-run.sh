@@ -24,28 +24,56 @@ DISK=$VM_DISK
 [ -f "$DISK" ] || DISK=$VM_BUNDLE/Data/disk.qcow2
 [ -f "$DISK" ] || die "нет диска — сначала ./scripts/vm/fetch-image.sh"
 
-case "$(uname -s)" in
-	Darwin) ACCEL="-accel hvf -cpu host" ;;
-	Linux) if [ -w /dev/kvm ] && [ "$(uname -m)" = aarch64 ]; then ACCEL="-accel kvm -cpu host"; else ACCEL="-accel tcg -cpu cortex-a53"; fi ;;
-	*) ACCEL="-accel tcg -cpu cortex-a53" ;;
+TCG=no
+case "$(uname -s)/$(uname -m)" in
+	Darwin/arm64) ACCEL="-accel hvf -cpu host" ;;
+	Linux/aarch64) if [ -w /dev/kvm ]; then ACCEL="-accel kvm -cpu host"; else TCG=yes; fi ;;
+	*) TCG=yes ;;
 esac
+[ "$TCG" = no ] || ACCEL="-accel tcg -cpu cortex-a53"
 
-# Прошивка UEFI: код только для чтения — общий, переменные — свои у VM.
-FW=
-for d in "$(brew --prefix qemu 2>/dev/null)/share/qemu" /usr/share/qemu /usr/share/qemu-efi-aarch64 /usr/share/AAVMF; do
-	for f in edk2-aarch64-code.fd QEMU_EFI.fd AAVMF_CODE.fd; do
-		[ -f "$d/$f" ] && { FW=$d/$f; break 2; }
-	done
-done
-[ -n "$FW" ] || die "не нашёл UEFI-прошивку aarch64 (brew install qemu)"
-
-if [ -f "$(dirname "$FW")/edk2-arm-vars.fd" ] && [ ! -f "$VM_DIR/qemu-efi-vars.fd" ]; then
-	cp "$(dirname "$FW")/edk2-arm-vars.fd" "$VM_DIR/qemu-efi-vars.fd"
-fi
-if [ -f "$VM_DIR/qemu-efi-vars.fd" ]; then
-	PFLASH="-drive if=pflash,format=raw,readonly=on,file=$FW -drive if=pflash,format=raw,file=$VM_DIR/qemu-efi-vars.fd"
+if [ "$TCG" = yes ]; then
+	# Под эмуляцией UEFI не используется: прошивка edk2 на каждой тёплой
+	# перезагрузке думала от полутора до десяти минут (замерено на x86_64
+	# без KVM), а provision.sh перезагружает VM обязательно. Ядро релиза
+	# грузится напрямую — то же, что GRUB взял бы с первого раздела диска.
+	[ -f "$VM_KERNEL" ] || die "нет ядра $VM_KERNEL — сначала ./scripts/vm/fetch-image.sh"
+	BOOT="-kernel $VM_KERNEL"
+	APPEND="root=/dev/vda2 rootwait console=ttyAMA0 noinitrd"
 else
-	PFLASH="-bios $FW"
+	# Прошивка UEFI — pflash: код только для чтения (общий), переменные — своя
+	# копия у VM. Так же грузит и UTM. Голый `-bios` — только запасной:
+	# без переменных в pflash перезагрузка изредка виснет сразу после
+	# «Exiting boot services».
+	#
+	# Пары «код — шаблон переменных»: brew qemu (macOS) и пакет
+	# qemu-efi-aarch64 (Debian/Ubuntu).
+	FW=''
+	VARS_TPL=''
+	for pair in \
+		"$(brew --prefix qemu 2>/dev/null)/share/qemu/edk2-aarch64-code.fd:$(brew --prefix qemu 2>/dev/null)/share/qemu/edk2-arm-vars.fd" \
+		/usr/share/qemu/edk2-aarch64-code.fd:/usr/share/qemu/edk2-arm-vars.fd \
+		/usr/share/AAVMF/AAVMF_CODE.fd:/usr/share/AAVMF/AAVMF_VARS.fd; do
+		if [ -f "${pair%%:*}" ] && [ -f "${pair#*:}" ]; then
+			FW=${pair%%:*} VARS_TPL=${pair#*:}
+			break
+		fi
+	done
+
+	if [ -n "$FW" ]; then
+		[ -f "$VM_DIR/qemu-efi-vars.fd" ] || cp "$VARS_TPL" "$VM_DIR/qemu-efi-vars.fd"
+		PFLASH="-drive if=pflash,format=raw,readonly=on,file=$FW -drive if=pflash,format=raw,file=$VM_DIR/qemu-efi-vars.fd"
+	else
+		for f in /usr/share/qemu-efi-aarch64/QEMU_EFI.fd /usr/share/qemu/QEMU_EFI.fd; do
+			[ -f "$f" ] && { FW=$f; break; }
+		done
+		[ -n "$FW" ] || die "не нашёл UEFI-прошивку aarch64 (macOS: brew install qemu; Debian/Ubuntu: apt install qemu-efi-aarch64)"
+		echo "  ⚠ UEFI без pflash ($FW): под эмуляцией перезагрузка может зависнуть" >&2
+		PFLASH="-bios $FW"
+	fi
+
+	BOOT=$PFLASH
+	APPEND=
 fi
 
 NETDEV="user,id=n0,net=$VM_NET,host=$VM_NET_HOST,dns=$VM_NET_DNS,dhcpstart=$VM_NET_DHCPSTART"
@@ -62,10 +90,15 @@ else
 	OUT="-nographic"
 fi
 
+# Диск — первым в порядке загрузки (bootindex=0), а у сетевой карты нет
+# загрузочного ПЗУ (romfile=). Иначе UEFI по сохранённому порядку сперва
+# пробует PXE и HTTP-загрузку по IPv4 и IPv6 — каждая ждёт таймаута, и под
+# эмуляцией перезагрузка растягивалась до десяти минут.
 # shellcheck disable=SC2086 # ACCEL, PFLASH, OUT — списки аргументов
 exec qemu-system-aarch64 -name "$VM_NAME" -M virt $ACCEL \
-	-smp "$VM_CPUS" -m "$VM_MEM" $PFLASH \
-	-drive "if=virtio,format=qcow2,file=$DISK" \
-	-netdev "$NETDEV" -device "virtio-net-pci,netdev=n0" \
+	-smp "$VM_CPUS" -m "$VM_MEM" $BOOT ${APPEND:+-append "$APPEND"} \
+	-drive "if=none,id=hd0,format=qcow2,file=$DISK" \
+	-device virtio-blk-pci,drive=hd0,bootindex=0 \
+	-netdev "$NETDEV" -device "virtio-net-pci,netdev=n0,romfile=" \
 	-device virtio-rng-pci \
 	$OUT

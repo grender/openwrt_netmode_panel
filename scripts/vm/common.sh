@@ -17,6 +17,9 @@
 : "${VM_NAME:=netmoded-vm}"
 : "${VM_MEM:=512}"      # МБ
 : "${VM_CPUS:=2}"
+# Сколько раз по ~2 с ждать ssh после (пере)загрузки. Под hvf хватает
+# минуты; под эмуляцией (TCG, без KVM/hvf) повторная загрузка идёт 2–3 мин.
+: "${VM_BOOT_TRIES:=150}"
 
 # Порты на Mac (только 127.0.0.1) → порты в VM.
 : "${VM_SSH_PORT:=18022}"
@@ -43,6 +46,7 @@ VM_CACHE=$VM_DIR/cache
 VM_DISK=$VM_DIR/disk.qcow2
 VM_BUNDLE=$VM_DIR/$VM_NAME.utm
 VM_KNOWN_HOSTS=$VM_DIR/known_hosts
+VM_KERNEL=$VM_CACHE/openwrt-$OPENWRT_VERSION-armsr-armv8-generic-kernel.bin
 
 UTMCTL=${UTMCTL:-/Applications/UTM.app/Contents/MacOS/utmctl}
 
@@ -76,16 +80,17 @@ vm_ssh() {
 	ssh -p "$VM_SSH_PORT" $VM_SSH_OPTS root@127.0.0.1 "$@"
 }
 
-# Ждём, пока в VM поднимется dropbear. Первая загрузка занимает до минуты.
+# Ждём, пока в VM поднимется dropbear.
 #
 # «Поднялся» — это ответ sshd, а не удачный вход: BatchMode не спрашивает
 # пароля, и если образ почему-то его требует, «Permission denied» тоже
 # значит «ssh жив». Тогда provision.sh спросит пароль один раз, кладя ключ.
 # На свежем OpenWrt у root пароля нет, и dropbear пускает без него.
 wait_ssh() {
+	need ssh
 	printf '  · жду ssh на 127.0.0.1:%s ' "$VM_SSH_PORT"
 	i=0
-	while [ "$i" -lt "${1:-90}" ]; do
+	while [ "$i" -lt "${1:-$VM_BOOT_TRIES}" ]; do
 		if out=$(vm_ssh -o ConnectTimeout=2 -o BatchMode=yes true </dev/null 2>&1) ||
 			echo "$out" | grep -q 'Permission denied'; then
 			echo "— есть"
@@ -93,6 +98,31 @@ wait_ssh() {
 		fi
 		printf '.'
 		sleep 2
+		i=$((i + 1))
+	done
+	echo
+	return 1
+}
+
+# Перезагружает VM и ждёт, пока поднимется ИМЕННО новая загрузка.
+#
+# «reboot; sleep; wait_ssh» здесь не годится: под эмуляцией остановка идёт
+# десятки секунд, и wait_ssh успевал достучаться до старой, ещё не
+# погасшей системы — дальнейшие шаги шли в умирающую VM. Отличаем загрузки
+# по boot_id ядра: он новый на каждой.
+vm_reboot() {
+	old=$(vm_ssh cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+	vm_ssh reboot </dev/null 2>/dev/null || true
+	printf '  · жду новой загрузки VM '
+	i=0
+	while [ "$i" -lt "$VM_BOOT_TRIES" ]; do
+		sleep 2
+		now=$(vm_ssh -o ConnectTimeout=2 -o BatchMode=yes cat /proc/sys/kernel/random/boot_id </dev/null 2>/dev/null || true)
+		if [ -n "$now" ] && [ "$now" != "$old" ]; then
+			echo "— есть"
+			return 0
+		fi
+		printf '.'
 		i=$((i + 1))
 	done
 	echo
