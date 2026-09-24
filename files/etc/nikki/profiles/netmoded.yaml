@@ -1,0 +1,60 @@
+# Профиль nikki, положенный scripts/deploy.sh --install ОДИН РАЗ — на
+# системе, где своего профиля в /etc/nikki/profiles ещё не было
+# (ADR-0046). Дальше он ваш: правьте свободно, deploy его больше не тронет
+# и не перезапишет. Демон профиль не пишет никогда (ADR-0002).
+#
+# Здесь только то, чего требует демон (docs/contracts/nikki-mixin-rulesets.md,
+# «Чего требует профиль владельца»). DNS, порты, tun и прочее nikki
+# собирает из /etc/config/nikki при каждом старте и сливает поверх — в
+# профиле их нет намеренно, чтобы настройки жили в одном месте (LuCI).
+
+# Узлы подписки. Файл пишет демон при каждом обновлении
+# (internal/subs/update.go) и просит движок перечитать провайдер `sub`.
+# Имена провайдеров — контракт с демоном, менять нельзя. override
+# (префикс/суффикс имён) не добавлять: демон сверяет имена узлов движка со
+# своими и при расхождении считает обновление проваленным.
+proxy-providers:
+  sub:
+    type: file
+    path: ./providers/sub.yaml
+    health-check:
+      enable: true
+      url: https://www.gstatic.com/generate_204
+      interval: 300
+  # Тот же файл без фильтра. Фильтр пула «Авто» дописывает панель в
+  # mixin.yaml (ADR-0044) — здесь его нет, то есть пул по умолчанию весь.
+  sub-auto:
+    type: file
+    path: ./providers/sub.yaml
+    health-check:
+      enable: true
+      url: https://www.gstatic.com/generate_204
+      interval: 300
+
+proxy-groups:
+  # Самый быстрый живой узел пула. REJECT, а не DIRECT, при пустом пуле:
+  # DIRECT — fail-open, туннельный трафик ушёл бы напрямую и молча.
+  - name: AUTO
+    type: url-test
+    use: [sub-auto]
+    url: https://www.gstatic.com/generate_204
+    interval: 120
+    tolerance: 50
+    lazy: false
+    empty-fallback: REJECT
+  # Выбор в панели: «Авто» или закреплённый узел из всей подписки.
+  - name: PROXY
+    type: select
+    proxies: [AUTO]
+    use: [sub]
+  # Куда уходит трафик наборов обхода. Туннель лёг — отказ, а не утечка.
+  - name: BYPASS
+    type: fallback
+    proxies: [PROXY, REJECT]
+    url: https://www.gstatic.com/generate_204
+    interval: 120
+
+# Что идёт в туннель, решают наборы в панели: их правила nikki ставит
+# ПЕРЕД этими (ADR-0039, ADR-0040). Всё остальное — напрямую.
+rules:
+  - MATCH,DIRECT

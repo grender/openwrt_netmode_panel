@@ -1,0 +1,49 @@
+#!/bin/sh /etc/rc.common
+# b4 — обход DPI (github.com/DanielLavrushin/b4), служба procd.
+#
+# Кладёт scripts/deploy.sh --install, только если /etc/init.d/b4 на системе
+# ещё нет (ADR-0046). Текст — шаблон апстрима
+# installer/services/procd.sh (b4 v1.74.1) с подставленными путями:
+# бинарь /usr/bin/b4, конфиг /etc/b4/b4.json. Их установщик на роутере не
+# запускается: он интерактивный, качает с GitHub (с роутера недоступен) и
+# сам выбирает /opt или USB. Службу он ещё и включает — здесь этого нет:
+# включением и запуском владеет netmode-apply.
+#
+# /etc/b4/b4.json не создаётся и не правится: b4 при первом старте пишет его
+# сам, а демон его не трогает никогда (ADR-0007).
+
+START=99
+STOP=10
+USE_PROCD=1
+
+PROG="/usr/bin/b4"
+CONFIG="/etc/b4/b4.json"
+
+kernel_mod_load() {
+	KERNEL=$(uname -r)
+	for mod in nfnetlink nf_conntrack nf_conntrack_netlink xt_connbytes xt_NFQUEUE nfnetlink_queue xt_multiport nf_tables nft_queue nft_ct nf_nat nft_masq nft_tproxy nft_socket; do
+		modprobe "$mod" >/dev/null 2>&1 && continue
+		mod_path=$(find /lib/modules/$KERNEL -name "${mod}.ko*" 2>/dev/null | head -1)
+		[ -n "$mod_path" ] && insmod "$mod_path" >/dev/null 2>&1 || true
+	done
+}
+
+start_service() {
+	kernel_mod_load
+
+	procd_open_instance
+	procd_set_param command $PROG --config $CONFIG
+	procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
+	procd_set_param stdout 0
+	procd_set_param stderr 0
+	procd_set_param pidfile /var/run/b4.pid
+	procd_close_instance
+}
+
+stop_service() {
+	return 0
+}
+
+service_triggers() {
+	procd_add_reload_trigger "b4"
+}

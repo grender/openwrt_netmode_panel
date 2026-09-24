@@ -125,7 +125,11 @@ yq eval-all '... | . as $item ireduce ({}; . * $item) | .rules = .nikki-rules + 
 
 ## RQ-07 — снять с роутера до выкладки
 
-Открыт. Команды — дословно из спеки §11:
+Открыт. Частично закрыт стендом: `uci show nikki` по умолчанию, устройство
+`/etc/init.d/nikki` (формат `file:<имя>`, выключатель `config.enabled`,
+mihomo под root) и старт без файла провайдера сняты на свежей установке в
+VM — [raw/98-engines-fresh-install-vm.txt](raw/98-engines-fresh-install-vm.txt).
+С живого роутера по-прежнему нужно всё ниже. Команды — дословно из спеки §11:
 
 ```
 uci show nikki | grep -v api_secret

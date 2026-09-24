@@ -1,0 +1,83 @@
+Установка nikki и b4 на чистый OpenWrt руками — разведка для ADR-0046.
+2026-09-25, тестовая VM (ADR-0045): OpenWrt 25.12.5 armsr/armv8 под UTM,
+/etc/apk/arch = aarch64_generic. netmoded 0.2.0-phase2-20260925, режим off.
+
+== Источник пакетов nikki ==
+Фид https://nikkinikki.pages.dev/openwrt-25.12/<arch>/nikki в этот день не
+открывался и С MAC (таймаут; DNS отвечал fake-ip 198.18.x — Mac ходит через
+nikki роутера). У OpenWrt-nikki есть версионные релизы на GitHub с sha256
+у каждого архива (поле digest в API релизов):
+  v1.26.1 (2026-06-10)
+    nikki_aarch64_generic-openwrt-25.12.tar.gz     fbe8b42b…3b9df3
+    nikki_aarch64_cortex-a53-openwrt-25.12.tar.gz  6ba677c0…8a68da
+  Внутри одного архива — локальный фид целиком:
+    nikki-2026.04.08-r1.apk, mihomo-meta-1.19.27.apk, mihomo-alpha-2026.06.10.apk,
+    luci-app-nikki-1.26.1-r1.apk, luci-i18n-nikki-{ru,zh-cn,zh-tw}-26.161.56550~95d41dd.apk,
+    packages.adb, index.json
+  Это ровно версии роутера: nikki 2026.04.08-r1, luci-app-nikki 1.26.1-r1,
+  luci-i18n-nikki-ru 26.161…; mihomo на роутере позже обновлён из фида до
+  1.19.29 — в архиве 1.19.27.
+
+== apk add --allow-untrusted nikki mihomo-meta luci-app-nikki luci-i18n-nikki-ru ==
+18 пакетов: зависимости из официального фида (kmod-inet-diag, kmod-nft-socket,
+kmod-nft-tproxy, kmod-tun, yq, ucode-…), rc=0.
+  mihomo-meta: «add alternative: /usr/bin/mihomo -> /usr/libexec/mihomo», 42 МБ.
+  postinst ВКЛЮЧИЛ службу (K10nikki, S99nikki), но НЕ запустил: nikki.config.enabled='0'.
+  Пакет сам создаёт /etc/nikki/{profiles,run/providers/{proxy,rule},subscriptions,ucode,nftables,scripts}
+  и /etc/nikki/mixin.yaml (стоковый, 835 байт). profiles/ пуст.
+
+== uci show nikki по умолчанию (главное) ==
+  nikki.config.enabled='0'
+  nikki.config.profile='subscription:subscription'   ← формат <тип>:<id>
+  nikki.config.test_profile='1'
+  nikki.mixin.api_listen='[::]:9090'
+  nikki.mixin.api_secret=<6 цифр, генерирует uci-defaults>
+  nikki.mixin.ui_path='ui'
+  nikki.mixin.mixin_file_content='0'
+  nikki.mixin.tun_enabled='1', nikki.proxy.enabled='1'
+  nikki.proxy.tcp_mode='redirect', udp_mode='tun'   (на роутере TCP — TProxy: выбор владельца)
+  nikki.subscription.url='http://example.com/default.yaml'  (заглушка пакета)
+
+== /etc/init.d/nikki ==
+  start при enabled=0 — выходит молча (L40-45).
+  profile 'file:<имя>' → cp /etc/nikki/profiles/<имя> run/config.yaml (L121-133).
+  test_profile=1 → `mihomo -d run -t` перед стартом.
+  procd без user/group: mihomo идёт под root → 0600 на sub.yaml ему не мешает.
+  run/ при старте не чистится.
+
+== Шаблон профиля files/etc/nikki/profiles/netmoded.yaml ==
+  uci set nikki.config.profile=file:netmoded.yaml; nikki.config.enabled=1
+  netmode-apply nikki → rc=0. app.log: «Check passed», «Test passed», «TUN device is online».
+  Без sub.yaml mihomo СТАРТУЕТ: core.log — «initial proxy provider sub error:
+  open …/providers/sub.yaml: no such file or directory», процесс жив.
+
+== Обновление подписки из панели ==
+  1) демон стартовал ДО установки nikki → api_secret пуст → «секрет отвергнут».
+     Вывод: движки ставить до (пере)запуска демона.
+  2) после restart netmoded режим из UCI = off → netmode-apply off погасил nikki
+     (включали руками в обход панели) → «connection refused».
+  3) POST /api/mode nikki, затем POST /api/subscription/update:
+     ok, 38 узлов; sub.yaml 0600 root.
+
+== b4 v1.74.1 ==
+  github.com/DanielLavrushin/b4/releases/download/v1.74.1/b4-linux-arm64.tar.gz
+  sha256 7252fe6fa967feb79db477bb39b640f095812278e7bb7fff6f77c1a9742f0bb2 (совпал с digest),
+  в архиве один файл b4, 13,5 МБ. `b4 --version` → 1.74.1 (99808ed), как на роутере.
+  kmod: nft-nat, nft-tproxy, nft-socket уже пришли с nikki; не хватало kmod-nft-queue.
+  Места НЕ ХВАТИЛО: корень образа 100 МБ, после mihomo свободно 5,8 МБ
+  («cat: write error: No space left on device»). Лечение для VM:
+    qemu-img resize disk.qcow2 512M; в госте apk add parted resize2fs losetup;
+    parted -s -f /dev/vda resizepart 2 100%;
+    resize2fs /dev/vda2 напрямую отказывает («Invalid argument While checking
+    for on-line resizing support» — смонтирован /dev/root) → losetup /dev/vda2
+    + resize2fs -f /dev/loopN; после перезагрузки / = 375 МБ, свободно 275 МБ.
+  POST /api/mode b4: b4 --config /etc/b4/b4.json, S99b4, API :7000 отвечает,
+  b4.json (33 байта) b4 создал сам.
+
+== Переключения ==
+  b4 → nikki: nikki available, b4 нет, rc.d: nikki.
+  nikki → off: оба выключены (rc.d пусто), процессов нет.
+
+== Не снято ==
+  Роутер (только чтение): uci show nikki, apk info, b4 на /usr/bin или /opt —
+  не снимали, доступ из этой сессии к роутеру закрыт.
