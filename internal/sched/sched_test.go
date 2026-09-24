@@ -527,3 +527,41 @@ func TestUnknownKeysAreLogged(t *testing.T) {
 		t.Fatal("неизвестный ключ не попал в журнал демона")
 	}
 }
+
+// Тик расписания идёт через обёртку, если она поставлена: демон проводит
+// плановое обновление через менеджер операций, и прямой вызов мимо неё
+// пересекался бы с операциями владельца.
+func TestTickGoesThroughGate(t *testing.T) {
+	up := &fakeUpdater{sum: happ.Summary{Nodes: 3}}
+	s, _ := newSched(t, up)
+
+	var gated int
+	s.SetGate(func(ctx context.Context, run func(context.Context) error) error {
+		gated++
+		return run(ctx)
+	})
+	s.runOnceSafely(context.Background())
+
+	if gated != 1 {
+		t.Errorf("обёртка вызвана %d раз, ожидался один", gated)
+	}
+	if up.count() != 1 {
+		t.Errorf("обновление вызвано %d раз, ожидался один", up.count())
+	}
+}
+
+// Обёртка вправе не запускать обновление вовсе (адреса нет, панель занята):
+// тогда RunOnce не зовётся, и журнал не пополняется.
+func TestGateMaySkipTick(t *testing.T) {
+	up := &fakeUpdater{sum: happ.Summary{Nodes: 3}}
+	s, l := newSched(t, up)
+	s.SetGate(func(context.Context, func(context.Context) error) error { return nil })
+	s.runOnceSafely(context.Background())
+
+	if up.count() != 0 {
+		t.Errorf("обновление вызвано %d раз мимо обёртки", up.count())
+	}
+	if _, ok, _ := l.Last(); ok {
+		t.Error("пропущенный тик оставил строку в журнале")
+	}
+}

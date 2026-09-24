@@ -10,6 +10,9 @@ import (
 	"netmoded/internal/logs"
 )
 
+// subscriptionETASec — оценка длительности обновления (SPEC §5: 2–10 с).
+const subscriptionETASec = 10
+
 // handleSubscriptionUpdate запускает обновление подписки.
 //
 // Медленная операция (2–10 с по SPEC §5): демон скачивает подписку у
@@ -46,7 +49,7 @@ func (s *Server) handleSubscriptionUpdate(w http.ResponseWriter, r *http.Request
 	}
 
 	// Arg пустой: обновление подписки одно, уточнять в нём нечего.
-	j, err := s.jobs.Start("subscription", "", "Обновление подписки", 10,
+	j, err := s.jobs.Start("subscription", "", "Обновление подписки", subscriptionETASec,
 		func(ctx context.Context) error {
 			_, err := s.sched.RunOnce(ctx)
 			return err
