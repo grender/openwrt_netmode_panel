@@ -342,7 +342,6 @@
 	"sub.url.saved": "Subscription address saved",
 	"sub.url.saved.nofetch": "The address is saved, but the download did not start: {why}",
 	"sub.done": "Subscription updated · nodes: {n}",
-	"sub.done.fail": "The subscription did not update: {why}",
 	"sub.url.placeholder": "https://…/sub?token=",
 	"sub.url.hint": "A mihomo-format subscription is expected — base64 or yaml. Enter the full address: the panel will not show it back, only the host and the path.",
 	"sub.unsupported.title": "Rows that did not become nodes: {n} — {names}",

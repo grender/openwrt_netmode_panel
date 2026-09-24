@@ -17,7 +17,7 @@ import type { Side } from '../state/side';
 import { jobOn } from '../state/job';
 import type { Lock } from '../state/lock';
 import { Confirm, Skel, Spin } from './bits';
-import { draftOf, MAX_COMMENT, MAX_RULES, plural } from './Rulesets';
+import { draftOf, MAX_COMMENT, MAX_RULES, plural, policyWith } from './Rulesets';
 
 /**
  * Наблюдатель трафика устройства — третий экран панели (ADR-0043).
@@ -899,7 +899,8 @@ function RuleForm(p: RowProps & { cov: Covered | null }) {
 	const add = () => {
 		const rule: CustomRule = { kind, value, action: f.to, comment: f.comment.trim() };
 		// Второе правило на ту же цель недостижимо — заменяем, а не копим.
-		p.setDraft({ ...p.eff, rules: [...p.eff.rules.filter((r) => !(r.kind === rule.kind && r.value === rule.value)), rule] });
+		const rules = [...p.eff.rules.filter((r) => !(r.kind === rule.kind && r.value === rule.value)), rule];
+		p.setDraft({ ...p.eff, policy: policyWith(p.eff.policy, true), rules });
 		p.setForm(null);
 	};
 

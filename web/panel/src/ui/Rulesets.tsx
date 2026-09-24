@@ -58,6 +58,19 @@ export interface RulesetsProps {
 }
 
 /**
+ * Политика после правки черновика.
+ *
+ * Первый выбранный набор или своё правило при политике профиля означают
+ * «маршрут теперь решает панель». Общая функция, а не копия в каждом месте
+ * правки: наблюдатель добавлял правило мимо неё, черновик уходил с
+ * policy:profile и правилами сразу, и демон отбивал его bad_rule — на
+ * свежей установке «Применить» из наблюдателя не работало никогда.
+ */
+export function policyWith(policy: RulesDraft['policy'], any: boolean): RulesDraft['policy'] {
+	return policy === 'profile' && any ? 'direct' : policy;
+}
+
+/**
  * Черновик из применённого.
  *
  * Отдельная функция, потому что «ничего не меняли» выражено null-ом:
@@ -284,7 +297,7 @@ export function Rulesets(p: RulesetsProps) {
 	// Первый выбранный набор или своё правило при политике профиля означают
 	// «маршрут теперь решает панель»: без переключения нажатие меняло бы
 	// только строку, а трафик шёл бы по-прежнему весь в туннель.
-	const leaveProfile = (any: boolean) => (profile && any ? ('direct' as const) : eff.policy);
+	const leaveProfile = (any: boolean) => policyWith(eff.policy, any);
 
 	const applySets = (sets: RulesDraft['sets']) =>
 		p.setDraft({ ...eff, policy: leaveProfile(sets.length > 0), sets });
