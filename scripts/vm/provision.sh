@@ -8,15 +8,16 @@
 # Что делает:
 #   1. кладёт ваш публичный ключ в /etc/dropbear/authorized_keys;
 #   2. прописывает lan шлюз и DNS user-net — чтобы apk ходил в интернет;
-#   3. ставит flock (нужен netmode-apply/netmode-wifi), mac80211_hwsim и
-#      wpad — имитация WiFi-радио;
+#   3. растягивает корень на весь диск (VM_DISK_SIZE) — под nikki и b4;
+#      ставит mac80211_hwsim и wpad — имитация WiFi-радио;
 #   4. строит WiFi-топологию, похожую на роутер (docs/vm-utm.md):
 #        radio0 — станция (upstream), как на роутере;
 #        radio1 — домашняя точка netmoded-vm-home в lan, как grenderNet;
 #        radio2 — «внешний мир»: точки vm-upstream-a (psk2) и
 #                 vm-upstream-b (open) в сети vmup с DHCP 10.99.0.0/24.
 #
-# nikki и b4 здесь НЕ ставятся — их установка будет делом deploy.sh.
+# nikki, b4 и flock здесь НЕ ставятся: их ставит deploy.sh --install
+# (ADR-0046), и стенд проверяет именно ту установку, что поедет на роутер.
 #
 # Идемпотентен: признак готовности — /etc/netmoded-vm-provisioned в VM.
 set -eu
@@ -87,11 +88,34 @@ vm_ssh 'sh -s' <<REMOTE
 set -eu
 
 apk update >/dev/null
+
+# Корень на весь диск. fetch-image.sh растянул образ, но раздел и ext4 в
+# нём прежнего размера (~100 МБ). Идемпотентно: растягиваем, только если за
+# концом корневого раздела больше 64 МБ свободного диска. resize2fs прямо
+# по /dev/vda2 на живой системе отказывает («Invalid argument While checking
+# for on-line resizing support» — смонтирован /dev/root), поэтому через
+# loop-устройство с -f, как в вики OpenWrt; новый размер виден после
+# перезагрузки, которой provision.sh и так заканчивается.
+if [ -b /dev/vda2 ]; then
+	D=\$(cat /sys/block/vda/size)
+	E=\$((\$(cat /sys/block/vda/vda2/start) + \$(cat /sys/block/vda/vda2/size)))
+	if [ \$((D - E)) -gt 131072 ]; then
+		apk add parted resize2fs losetup >/dev/null
+		parted -s -f /dev/vda resizepart 2 100% >/dev/null 2>&1
+		L=\$(losetup -f)
+		losetup "\$L" /dev/vda2
+		resize2fs -f "\$L" >/dev/null 2>&1
+		losetup -d "\$L"
+		echo "  ✓ корень растянут на весь диск (\$((D / 2048)) МБ), виден после перезагрузки"
+	else
+		echo "  · корень уже на весь диск"
+	fi
+fi
+
 PKGS="kmod-mac80211-hwsim"
 # wpad ставим, только если никакого ещё нет: разные варианты wpad-* в apk
 # конфликтуют друг с другом.
 [ -x /usr/sbin/wpad ] || [ -x /usr/sbin/hostapd ] || PKGS="\$PKGS wpad-basic-mbedtls"
-command -v flock >/dev/null 2>&1 || PKGS="\$PKGS flock"
 apk add \$PKGS
 echo "  ✓ пакеты: \$PKGS"
 

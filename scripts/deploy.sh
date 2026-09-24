@@ -3,8 +3,10 @@
 #
 #   ./scripts/deploy.sh                 собрать, залить бинарь и перезапустить
 #   ./scripts/deploy.sh --install       полная установка: бинарь, netmode-apply,
-#                                       netmode-wifi, init.d, сид, автозапуск;
-#                                       и удаляет с роутера старый happ2clash
+#                                       netmode-wifi, netmode-bridge, init.d,
+#                                       сид, автозапуск; ставит nikki, b4 и
+#                                       flock, если их нет (ADR-0046); удаляет
+#                                       с роутера старый happ2clash
 #   ./scripts/deploy.sh --run           залить и запустить в консоли
 #   ./scripts/deploy.sh --no-restart    залить и оставить демон погашенным
 #   ./scripts/deploy.sh --host root@10.0.0.1 --port 8089
@@ -13,6 +15,10 @@
 #
 # DEPLOY_SSH_OPTS — дополнительные опции ssh для мастер-соединения
 # (например, отдельный known_hosts для VM).
+#
+# --install пишет полный вывод в build/deploy-logs/ (путь печатается в
+# начале и в конце; токен панели там скрыт), а шаги, меняющие роутер, —
+# ещё и в его журнал: logread -e netmoded-deploy.
 #
 # Вход по паролю: ssh спросит его ОДИН раз. Дальше все команды идут через
 # то же соединение (ControlMaster), поэтому повторных запросов не будет.
@@ -50,6 +56,48 @@
 # кнопкой, а при нажатии конфигурация коммитилась и повисала неприменённой.
 set -eu
 
+# ─────────── журнал прогона --install ───────────
+#
+# Полная установка меняет роутер в нескольких местах, и при отказе нужен
+# весь вывод, а не то, что осталось на экране. Скрипт перезапускает сам
+# себя под фильтром, который печатает каждую строку как есть и дописывает её
+# в файл — без цветовых кодов и с токеном панели, заменённым на <скрыт>
+# (ADR-0014: токен — секрет). Адрес подписки и api_secret nikki деплой не
+# печатает вовсе, так что в журнал они не попадают.
+#
+# INT у фильтра игнорируется: на Ctrl-C он должен дописать последние строки
+# уборки, а не умереть первым. Внешняя оболочка ловит INT пустым
+# обработчиком (не игнорирует — игнор унаследовал бы дочерний скрипт, и его
+# уборка на Ctrl-C не сработала бы) и возвращает код дочернего.
+case " $* " in
+	*" --install "*)
+		case " $* " in *" --run "*|*" -h "*|*" --help "*) ;; *)
+			if [ -z "${DEPLOY_LOG:-}" ]; then
+				_root=$(cd "$(dirname "$0")/.." && pwd)
+				_host=root@192.168.9.1
+				_prev=
+				for _a in "$@"; do [ "$_prev" = --host ] && _host=$_a; _prev=$_a; done
+				mkdir -p "$_root/build/deploy-logs"
+				DEPLOY_LOG=$_root/build/deploy-logs/$(printf '%s' "$_host" | tr -c 'A-Za-z0-9.@-' _)-$(date +%Y%m%d-%H%M%S).log
+				export DEPLOY_LOG
+				trap 'true' INT
+				# «&& … ||» вместо «; echo $?»: под set -e подоболочка конвейера
+				# вышла бы на отказе, не записав код.
+				{ sh "$_root/scripts/deploy.sh" "$@" && echo 0 > "$DEPLOY_LOG.rc" || echo $? > "$DEPLOY_LOG.rc"; } 2>&1 |
+					( trap '' INT; exec awk -v out="$DEPLOY_LOG" '{
+						print; fflush()
+						l = $0
+						gsub("\033\\[[0-9;]*m", "", l)
+						gsub(/token=[A-Za-z0-9_-]+/, "token=<скрыт>", l)
+						print l >> out; fflush(out)
+					}' )
+				_rc=$(cat "$DEPLOY_LOG.rc" 2>/dev/null || echo 1)
+				rm -f "$DEPLOY_LOG.rc"
+				exit "$_rc"
+			fi ;;
+		esac ;;
+esac
+
 HOST=root@192.168.9.1
 PORT=8088
 SSHPORT=
@@ -72,13 +120,22 @@ while [ $# -gt 0 ]; do
 		--port)       PORT=$2; shift ;;
 		--ssh-port)   SSHPORT=$2; shift ;;
 		--panel-url)  PANEL_URL=$2; shift ;;
-		-h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		-h|--help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		*) echo "неизвестный аргумент: $1" >&2; exit 2 ;;
 	esac
 	shift
 done
 
 cd "$(dirname "$0")/.."
+
+# Функции вывода (step/ok/skip/warn/fail) и фаза движков.
+. scripts/engines.sh
+
+# Номера шагов: сборка, подключение, проверки, [движки], заливка, [перезапуск].
+STEP_TOTAL=4
+[ "$INSTALL" = no ] || STEP_TOTAL=$((STEP_TOTAL + 1))
+[ "$RUN" = yes ] || [ "$RESTART" = no ] || STEP_TOTAL=$((STEP_TOTAL + 1))
+[ -z "${DEPLOY_LOG:-}" ] || echo "Журнал: $DEPLOY_LOG"
 
 # Как войти на роутер руками — для подсказок в выводе. С нестандартным
 # ssh-портом (VM за пробросом) голое `ssh $HOST` вело бы не туда.
@@ -91,7 +148,8 @@ SSHHINT="ssh${SSHPORT:+ -p $SSHPORT} $HOST"
 if [ "$INSTALL" = yes ]; then
 	for f in files/usr/local/bin/netmode-apply files/usr/local/bin/netmode-wifi \
 		files/usr/local/bin/netmode-bridge \
-		files/etc/init.d/netmoded files/etc/config/netmode; do
+		files/etc/init.d/netmoded files/etc/config/netmode \
+		files/etc/init.d/b4 files/etc/nikki/profiles/netmoded.yaml scripts/engines.lock; do
 		[ -f "$f" ] || { echo "нет $f — устанавливать нечего" >&2; exit 1; }
 	done
 fi
@@ -103,7 +161,7 @@ say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 # ─────────── сборка ───────────
 
-say "Сборка $VER"
+step "Сборка $VER"
 # ПРОВЕРКА, а не сборка панели. Деплой не должен тянуть npm и зависеть от
 # реестра пакетов: увозить свежий бинарь на роутер приходится и с плохого
 # вайфая, и из места, где сборка фронта просто не запустится. Панель
@@ -124,6 +182,14 @@ CTL=$(mktemp -u /tmp/netmoded-ssh-XXXXXX)
 # не говорилось ни слова. Уборка сперва пытается поднять демон обратно.
 STOPPED=no
 cleanup() {
+	_rc=$?
+	# На каком шаге оборвалось — по номеру видно, что уже сделано: до
+	# «Движки» роутер не менялся, после — смотрите сводку и журнал.
+	if [ "$_rc" -ne 0 ] && [ -n "$CUR_STEP" ]; then
+		echo >&2
+		echo "  ✗ деплой оборвался на шаге [$STEP_N/$STEP_TOTAL] $CUR_STEP (код $_rc)" >&2
+		[ -z "${DEPLOY_LOG:-}" ] || echo "    полный журнал: $DEPLOY_LOG" >&2
+	fi
 	if [ "$STOPPED" = yes ] && [ "$RESTART" = yes ] && [ "$RUN" != yes ]; then
 		echo >&2
 		echo "  ⚠ деплой прерван после остановки демона — пробую поднять его обратно" >&2
@@ -137,9 +203,13 @@ cleanup() {
 	fi
 	ssh -S "$CTL" -O exit "$HOST" 2>/dev/null || true
 }
-trap cleanup EXIT INT TERM
+# INT и TERM превращаются в выход: уборка идёт одна, через EXIT, и знает
+# код. Раньше обработчик INT отрабатывал, и скрипт шёл дальше по уже
+# закрытому ssh-соединению.
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 
-say "Подключение к $HOST — введите пароль (спросят один раз)"
+step "Подключение к $HOST — введите пароль, если спросят (один раз)"
 # shellcheck disable=SC2086 # DEPLOY_SSH_OPTS — список опций, делится намеренно
 ssh -M -S "$CTL" -o ControlPersist=180 ${SSHPORT:+-p "$SSHPORT"} ${DEPLOY_SSH_OPTS:-} -fN "$HOST"
 
@@ -148,7 +218,7 @@ put() { sh_ "cat > $2.new && chmod $3 $2.new && mv $2.new $2"; }
 
 # ─────────── проверки до заливки ───────────
 
-say "Проверки на роутере"
+step "Проверки на роутере"
 
 ARCH=$(sh_ 'uname -m')
 [ "$ARCH" = aarch64 ] || { echo "  ✗ архитектура $ARCH, бинарь под aarch64" >&2; exit 1; }
@@ -183,6 +253,19 @@ LAN=$(sh_ "uci get network.lan.ipaddr 2>/dev/null" | sed 's#/.*##')
 [ -n "$LAN" ] || { echo "  ✗ демон не стартует без адреса — это защита, а не сбой" >&2; exit 1; }
 echo "  ✓ LAN-адрес: $LAN"
 
+# ─────────── движки: nikki, b4, flock ───────────
+#
+# Только при --install и ДО заливки, пока демон ещё работает: отказ здесь
+# оставляет роутер с прежним демоном. И до перезапуска демона: он читает
+# api_secret nikki при старте, и демон, поднятый раньше установки nikki,
+# получал бы «секрет отвергнут» до следующего рестарта
+# (docs/recon/raw/98-engines-fresh-install-vm.txt). Что уже стоит — не
+# трогается; подробности — scripts/engines.sh, ADR-0046.
+if [ "$INSTALL" = yes ]; then
+	step "Движки: nikki, b4, flock"
+	engines_bootstrap
+fi
+
 # flock проверяется ДО заливки, потому что без него не работает ни одно
 # применение: и netmode-apply, и netmode-wifi берут им замок и без него
 # отказывают кодом 7 (ADR-0020, ADR-0027). Узнать об этом при первом нажатии
@@ -194,6 +277,7 @@ echo "  ✓ LAN-адрес: $LAN"
 sh_ "command -v flock >/dev/null 2>&1" || {
 	echo "  ✗ на роутере нет flock — без него ни смена режима, ни смена сети не применяются" >&2
 	echo "    поставьте его: apk update && apk add flock  (или включите апплет в busybox)" >&2
+	echo "    либо полной установкой — она ставит его сама: ./scripts/deploy.sh --install" >&2
 	exit 1
 }
 echo "  ✓ flock есть — применение сможет взять замок"
@@ -230,7 +314,7 @@ fi
 
 # ─────────── заливка ───────────
 
-say "Заливка"
+step "Заливка"
 
 # Останавливаем прошлый экземпляр: поверх работающего файла не записать.
 #
@@ -433,7 +517,7 @@ elif ! sh_ "[ -x $INITD ]"; then
 		"" \
 		"    $SSHHINT $REMOTE"
 else
-	say "Перезапуск"
+	step "Перезапуск"
 
 	# restart, а не start: заливка уже сделала stop, но procd мог успеть
 	# поднять старый экземпляр по respawn.
@@ -470,31 +554,50 @@ else
 fi
 
 if [ "$INSTALL" = yes ]; then
+	printf '\n%s\n' "Дальше — в панели и один раз руками:"
 	cat <<EOF
 
-Осталось сделать РУКАМИ — два дела, оба на роутере:
-
-1. Задать адрес подписки. Без него расписание МОЛЧИТ: демон работает и
-   панель открывается, но вместо кнопки обновления там подсказка.
+1. Адрес подписки — в панели, раздел «Подписка»: вставить и сохранить.
+   Демон подхватывает его сразу, без перезапуска (ADR-0034). Запасной
+   путь — в ssh-сессии, не одной командой отсюда (адрес — секрет, он осел
+   бы в истории оболочки и мелькнул в ps на роутере):
 
     $SSHHINT
     uci set netmode.main.subscription_url='…' && uci commit netmode
     /etc/init.d/netmoded restart
 
-   Адрес читается один раз при старте, поэтому нужен restart. В строке
-   лежит идентификатор подписки — это секрет: набирайте её В ssh-сессии,
-   а не одной командой отсюда, иначе она осядет в истории вашей оболочки
-   и мелькнёт в ps на роутере. Права 0600 на /etc/config/netmode деплой
-   выставил сам — если выше про них ругался, поправьте до ввода адреса.
+   Обновлять подписку — в режиме nikki: в режиме off движок не запущен,
+   узлы запишутся, но перечитать их будет некому.
+EOF
+	if [ "${S_PROFILE:-}" = seeded ]; then
+		cat <<EOF
 
-2. Убрать строку happ2clash из crontab — чужой crontab демон не правит:
+2. Профиль nikki — шаблон /etc/nikki/profiles/netmoded.yaml: группы AUTO,
+   PROXY, BYPASS над подпиской и «всё остальное напрямую». Что пускать в
+   туннель, выбирается наборами в панели. Профиль ваш — правьте свободно,
+   deploy его больше не тронет. DNS, порты, tun — в LuCI → nikki.
+EOF
+	fi
+	if [ "${S_B4:-}" = installed ]; then
+		cat <<EOF
+
+3. b4 поставлен без наборов: в режиме b4 он запустится, но обходить
+   нечего, пока наборы не заведены в его интерфейсе: http://$LAN:7000
+EOF
+	fi
+	# Строка cron старого конвертера бывает только на роутерах, где он
+	# стоял; на свежей системе этого пункта нет.
+	if sh_ "crontab -l 2>/dev/null | grep -q happ2clash" 2>/dev/null; then
+		cat <<EOF
+
+•  Убрать строку happ2clash из crontab — чужой crontab демон не правит:
 
     $SSHHINT 'crontab -l | grep -v happ2clash | crontab -'
 
-   Сам /usr/local/bin/happ2clash деплой только что удалил: подписку
-   скачивает демон (ADR-0031). Оставленная строка cron будет звать
-   несуществующий файл и молча получать 127. Писем об этом не будет —
-   MTA в образе нет, busybox crond собран без sendmail, — отказ виден
-   только строкой crond в logread. Строка бесполезна и путает.
+   Сам /usr/local/bin/happ2clash деплой удалил: подписку скачивает демон
+   (ADR-0031). Оставленная строка cron зовёт несуществующий файл и молча
+   получает 127 — отказ виден только строкой crond в logread.
 EOF
+	fi
+	[ -z "${DEPLOY_LOG:-}" ] || printf '\nЖурнал: %s\nНа роутере: %s logread -e netmoded-deploy\n' "$DEPLOY_LOG" "$SSHHINT"
 fi

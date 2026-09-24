@@ -92,6 +92,7 @@ checks:
 	@scripts/check-panel-deps.sh
 	@scripts/check-panel-build.sh
 	@scripts/check-vm-scripts.sh
+	@scripts/check-engines.sh
 
 ## probe-check — песочница измерительной оснастки RQ-03. Не в checks намеренно:
 ## пробник не инвариант плана, он одноразовый и на роутере не остаётся. Но

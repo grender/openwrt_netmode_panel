@@ -19,13 +19,8 @@ IMG=openwrt-$OPENWRT_VERSION-armsr-armv8-generic-ext4-combined-efi.img
 URL=$OPENWRT_MIRROR/releases/$OPENWRT_VERSION/targets/armsr/armv8
 mkdir -p "$VM_CACHE"
 
-sha256() {
-	if command -v sha256sum >/dev/null 2>&1; then
-		sha256sum "$1" | awk '{print $1}'
-	else
-		shasum -a 256 "$1" | awk '{print $1}'
-	fi
-}
+# sha256 — общий с установкой движков (scripts/engines.sh).
+. "$(dirname "$0")/../engines.sh"
 
 # Скачивает файл релиза в кэш (если его там нет) и сверяет с sha256sums.
 fetch_verified() {
@@ -75,9 +70,12 @@ gunzip -c "$VM_CACHE/$IMG.gz" > "$VM_CACHE/$IMG" 2>/dev/null || rc=$?
 [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ] || die "gunzip вернул $rc"
 
 mkdir -p "$VM_DIR"
-# Размер диска не растягиваем: корневой раздел образа от этого не вырос
-# бы, а ~100 МБ корня хватает с запасом (деплою нужно ~7 МБ).
+# Диск растягивается до VM_DISK_SIZE: самого демона ~100 МБ корня
+# хватало, но движки (mihomo — 42 МБ, b4 — 13 МБ) туда не влезают. Раздел
+# и файловую систему на новое место растягивает provision.sh — изнутри
+# VM: на macOS нет инструментов для ext4.
 qemu-img convert -f raw -O qcow2 "$VM_CACHE/$IMG" "$VM_DISK.new"
+qemu-img resize -q "$VM_DISK.new" "$VM_DISK_SIZE"
 mv "$VM_DISK.new" "$VM_DISK"
 rm -f "$VM_CACHE/$IMG"
 echo "  ✓ $VM_DISK"

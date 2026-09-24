@@ -1,0 +1,23 @@
+# Закреплённые версии движков, которые ставит scripts/deploy.sh --install
+# на систему, где их ещё нет (ADR-0046). Стенд (VM) и роутер получают одно
+# и то же; обновление — осознанная правка этого файла.
+#
+# Формат: по строке на архив, поля через пробелы.
+#   engine   nikki | b4
+#   version  тег релиза на GitHub
+#   arch     /etc/apk/arch системы (nikki собран под каждую отдельно);
+#            у b4 один статический бинарь — arm64 годится любой aarch64_*
+#   file     имя архива в релизе
+#   sha256   хэш архива; сверен с полем digest в API релизов GitHub
+#
+# Откуда качается — scripts/engines.sh (ENGINES_NIKKI_BASE, ENGINES_B4_BASE).
+#
+# nikki v1.26.1 — это nikki 2026.04.08-r1, luci-app-nikki 1.26.1-r1 и
+# mihomo-meta 1.19.27, ровно как на роутере на момент закрепления
+# (mihomo там позже обновлён из фида до 1.19.29 — deploy об этом
+# предупреждает, но не трогает). b4 v1.74.1 — как на роутере.
+#
+# engine version arch               file                                          sha256
+nikki    v1.26.1 aarch64_cortex-a53 nikki_aarch64_cortex-a53-openwrt-25.12.tar.gz 6ba677c01a95a2ad0c68b3db9f5aa4c64a353dc3272b77c8e577eab75c8a68da
+nikki    v1.26.1 aarch64_generic    nikki_aarch64_generic-openwrt-25.12.tar.gz    fbe8b42b42cb2e21fcab350d79463ea7c45dd2cd533cb52191ea8142373b9df3
+b4       v1.74.1 arm64              b4-linux-arm64.tar.gz                         7252fe6fa967feb79db477bb39b640f095812278e7bb7fff6f77c1a9742f0bb2

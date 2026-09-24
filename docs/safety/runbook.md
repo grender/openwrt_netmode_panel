@@ -624,6 +624,30 @@ ls -l --full-time /etc/nikki/run/providers/
 - имена **новые, но с префиксом/суффиксом** → в профиле стоит `override`;
   проще всего убрать его — демон сопоставляет узлы по имени из подписки.
 
+## nikki или b4 не встали при установке
+
+`deploy.sh --install` ставит движки, только если их нет, и никогда не
+чинит половинчатую установку ([ADR-0046](../adr/0046-deploy-installs-engines.md)).
+Что он решил и сделал:
+
+```sh
+./scripts/engines-plan.sh          # только чтение: что есть, что поставил бы
+ls build/deploy-logs/              # полный вывод прошлых --install (на Mac)
+ssh root@192.168.9.1 logread -e netmoded-deploy   # что деплой менял на роутере
+```
+
+- **«стоит наполовину — не тронут»**: есть `/etc/init.d/<движок>` без ядра
+  или наоборот. Доставить руками либо снести и повторить `--install`:
+  для nikki — `apk del luci-i18n-nikki-ru luci-app-nikki nikki mihomo-meta`
+  (конфиги apk оставит, профиль тоже), для b4 — `rm /etc/init.d/b4 /usr/bin/b4`
+  (`/etc/b4/b4.json` не трогать: там наборы).
+- **Сменить версию движка** деплой не умеет намеренно. Строка в
+  `scripts/engines.lock`, затем снести пакет, как выше, и `--install`.
+- **nikki поставлен, но не запускается в режиме nikki** (`netmode-apply`
+  код 6): проверьте `uci get nikki.config.enabled` (должно быть `1`) и
+  `uci get nikki.config.profile` (`file:<имя>` из `/etc/nikki/profiles`);
+  причина старта — в `/var/log/nikki/app.log`.
+
 ## Полностью откатить установку
 
 ```sh
