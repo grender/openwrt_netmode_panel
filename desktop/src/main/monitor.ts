@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
 import type { AppState } from '../shared/types'
-import { buildCopies, type Copy } from './proxy'
+import { buildCopies, socksOnly, type Copy } from './proxy'
 import * as sys from './sysproxy'
 import { query, startVm, stopVm, createVm, NOT_CREATED } from './vm'
 
@@ -42,6 +42,8 @@ export class Monitor {
   private polling = false
   /** Polls in a row the panel did not answer; one slow reply must not close it under the user. */
   private panelMisses = 0
+  /** Mode the copy strings were built for: b4 serves SOCKS5 only (ADR-0048). */
+  private copiesMode: string | null = null
   private stateFile = join(app.getPath('userData'), 'state.json')
 
   constructor(
@@ -80,7 +82,20 @@ export class Monitor {
       this.panelMisses = mode === null ? this.panelMisses + 1 : 0
       const panelReady = !!this.state.panelOrigin && (mode !== null || (this.state.panelReady && this.panelMisses < 3))
       const sysProxy = await sys.status(HOST, this.port).catch(() => this.state.sysProxy)
+      // null = panel did not answer this time: keep what the last known mode built.
+      if (this.creds && mode !== null && mode !== this.copiesMode) this.buildCopies(mode)
       this.set({ vm, backend, proxyReachable: reachable, mode, panelReady, sysProxy })
+
+      // The mode changed under a system proxy we set: nikki's port speaks
+      // HTTP and SOCKS5, b4's only SOCKS5 — re-point the kinds.
+      if (sysProxy === 'vm' && mode !== null && !this.state.busy) {
+        const want = kindsFor(mode)
+        const left = this.leftOnState()
+        if (left && left.kinds !== want) {
+          this.log(`Mode ${mode}: system proxy → ${want === 'socks' ? 'SOCKS only' : 'HTTP, HTTPS and SOCKS'}`)
+          await this.applySysProxy(left.service, want)
+        }
+      }
 
       // A system proxy pointing at a VM that is down leaves the Mac offline.
       if (vm !== 'running' && !this.state.busy && (sysProxy === 'vm' || this.leftOn())) {
@@ -96,10 +111,9 @@ export class Monitor {
     try {
       const kv = await query('proxy-info')
       this.creds = { user: kv.user ?? '', password: kv.password ?? '', token: kv.token ?? '' }
-      this.copies = buildCopies({ host: HOST, port: this.port, user: this.creds.user, password: this.creds.password })
+      this.buildCopies(this.state.mode)
       this.set({
         credsLoaded: true,
-        copies: this.copies.map(({ id, label, preview }) => ({ id, label, preview })),
         panelOrigin: this.creds.token ? `http://${HOST}:${this.env.VM_HTTP_PORT}` : null,
         error: null,
       })
@@ -109,10 +123,18 @@ export class Monitor {
     }
   }
 
+  private buildCopies(mode: string | null): void {
+    if (!this.creds) return
+    this.copiesMode = mode
+    this.copies = buildCopies({ host: HOST, port: this.port, user: this.creds.user, password: this.creds.password }, mode)
+    this.set({ copies: this.copies.map(({ id, label, preview }) => ({ id, label, preview })) })
+  }
+
   private forgetCreds(): void {
     if (!this.creds && this.copies.length === 0) return
     this.creds = null
     this.copies = []
+    this.copiesMode = null
     this.set({ credsLoaded: false, copies: [], mode: null, panelOrigin: null, panelReady: false })
   }
 
@@ -171,9 +193,9 @@ export class Monitor {
     if (!svc) throw new Error('no network service')
     if (on) {
       if (!this.state.proxyReachable) throw new Error('proxy is not reachable yet')
-      this.log(`System proxy → ${HOST}:${this.port} on "${svc}" (apps ask for the nikki login themselves)`)
-      await sys.enable(svc, HOST, this.port)
-      writeFileSync(this.stateFile, JSON.stringify({ service: svc }))
+      const kinds = kindsFor(this.state.mode)
+      this.log(`System proxy → ${HOST}:${this.port} on "${svc}"${kinds === 'socks' ? ', SOCKS only (b4)' : ''} (apps ask for the nikki login themselves)`)
+      await this.applySysProxy(svc, kinds)
     } else {
       await this.proxyOff()
     }
@@ -198,10 +220,21 @@ export class Monitor {
     this.set({ sysProxy: await sys.status(HOST, this.port).catch(() => this.state.sysProxy) })
   }
 
+  private async applySysProxy(svc: string, kinds: sys.Kinds): Promise<void> {
+    await sys.enable(svc, HOST, this.port, kinds)
+    writeFileSync(this.stateFile, JSON.stringify({ service: svc, kinds }))
+  }
+
   /** Service recorded when we enabled the proxy (survives crashes). */
   private leftOn(): string | null {
+    return this.leftOnState()?.service ?? null
+  }
+
+  private leftOnState(): { service: string; kinds: sys.Kinds } | null {
     try {
-      return (JSON.parse(readFileSync(this.stateFile, 'utf8')) as { service?: string }).service ?? null
+      const st = JSON.parse(readFileSync(this.stateFile, 'utf8')) as { service?: string; kinds?: sys.Kinds }
+      // Files written before ADR-0048 have no kinds: that version set all three.
+      return st.service ? { service: st.service, kinds: st.kinds ?? 'all' } : null
     } catch {
       return null
     }
@@ -210,6 +243,11 @@ export class Monitor {
   dispose(): void {
     if (this.timer) clearInterval(this.timer)
   }
+}
+
+/** nikki's mixed-port speaks HTTP and SOCKS5; b4's server only SOCKS5 (ADR-0048). */
+function kindsFor(mode: string | null): sys.Kinds {
+  return socksOnly(mode) ? 'socks' : 'all'
 }
 
 function probe(host: string, port: number): Promise<boolean> {

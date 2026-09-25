@@ -71,6 +71,9 @@ export async function defaultService(list: Service[]): Promise<string | null> {
 
 const KINDS = ['webproxy', 'securewebproxy', 'socksfirewallproxy'] as const
 
+/** Which proxy kinds point at the VM: all three (nikki), or SOCKS only (b4, ADR-0048). */
+export type Kinds = 'all' | 'socks'
+
 /**
  * Host and port only, without the nikki login. networksetup run as the user
  * does store a login (login-keychain items), but never sets the
@@ -78,9 +81,21 @@ const KINDS = ['webproxy', 'securewebproxy', 'socksfirewallproxy'] as const
  * anyway (checked with URLSession). Apps that can ask for a proxy login
  * will; the login is on the Copy list. Items left by earlier versions are
  * removed.
+ *
+ * `socks`: b4 has no HTTP proxy on the port, so the web and secure-web
+ * proxies are turned off — pointing them at a SOCKS-only port would break
+ * every HTTP client that honours them.
  */
-export async function enable(svc: string, host: string, port: string): Promise<void> {
+export async function enable(svc: string, host: string, port: string, kinds: Kinds = 'all'): Promise<void> {
   await forgetLogin(host, port)
+  if (kinds === 'socks') {
+    await networksetup([
+      ['-setsocksfirewallproxy', svc, host, port],
+      ['-setwebproxystate', svc, 'off'],
+      ['-setsecurewebproxystate', svc, 'off'],
+    ])
+    return
+  }
   await networksetup(KINDS.map((k) => [`-set${k}`, svc, host, port]))
 }
 

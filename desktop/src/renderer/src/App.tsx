@@ -104,7 +104,11 @@ export function App() {
       <Acc
         id="proxy"
         title="Proxy settings"
-        summary={s.copies.length ? `127.0.0.1:${s.copies.find((c) => c.id === 'port')?.preview ?? ''} · ${s.copies.find((c) => c.id === 'user')?.preview ?? ''}` : 'VM not running'}
+        summary={
+          s.copies.length
+            ? `127.0.0.1:${s.copies.find((c) => c.id === 'port')?.preview ?? ''} · ${s.copies.find((c) => c.id === 'user')?.preview ?? ''}${s.mode === 'b4' ? ' · SOCKS5 only' : ''}`
+            : 'VM not running'
+        }
         open={open.has('proxy')}
         onToggle={() => toggle('proxy')}
       >
@@ -164,6 +168,7 @@ function VmBody({ s, running, booting }: { s: AppState; running: boolean; bootin
 function ProxyBody({ s }: { s: AppState }) {
   const [copied, setCopied] = useState<string | null>(null)
   if (s.copies.length === 0) return <p class="hint">Available when the VM is running.</p>
+  const b4 = s.mode === 'b4'
   const copy = (id: string) => {
     void vm.copy(id)
     setCopied(id)
@@ -171,6 +176,12 @@ function ProxyBody({ s }: { s: AppState }) {
   }
   return (
     <div class="copies">
+      {b4 ? (
+        <p class="hint">
+          Mode b4: the same port and login, served by b4's SOCKS5 server — SOCKS5 only, no HTTP proxy. In Firefox use
+          the SOCKS host field.
+        </p>
+      ) : null}
       {s.copies.map((c) => (
         <div class="copy" key={c.id}>
           <span class="copy-label">{c.label}</span>
@@ -211,7 +222,8 @@ function SysBody({ s, running }: { s: AppState; running: boolean }) {
       )}
       <p class="hint">
         Host and port only: the proxy still wants the nikki login, and apps that can ask for it will (user and password
-        are under Proxy settings). Turned off automatically when the VM stops or the app quits.
+        are under Proxy settings). In mode b4 only the SOCKS proxy is set — b4 has no HTTP proxy. Turned off
+        automatically when the VM stops or the app quits.
       </p>
     </>
   )

@@ -42,3 +42,31 @@ describe('helpers', () => {
     expect(sq("a'b")).toBe(`'a'\\''b'`)
   })
 })
+
+describe('b4 mode (ADR-0048)', () => {
+  const b4 = buildCopies({ host: '127.0.0.1', port: '17890', user: 'nikki', password: 's3cret' }, 'b4')
+  const by = (id: string) => b4.find((c) => c.id === id)
+
+  it('keeps host, port and login — same port in both modes', () => {
+    expect(by('host')!.value).toBe('127.0.0.1')
+    expect(by('port')!.value).toBe('17890')
+    expect(by('user')!.value).toBe('nikki')
+    expect(by('socks')!.value).toBe('socks5://nikki:s3cret@127.0.0.1:17890')
+  })
+  it('drops the HTTP URL: b4 serves SOCKS5 only', () => {
+    expect(by('http')).toBeUndefined()
+  })
+  it('points every export variable at socks5h', () => {
+    const v = by('export')!.value
+    expect(v).toContain("http_proxy='socks5h://nikki:s3cret@127.0.0.1:17890'")
+    expect(v).toContain("https_proxy='socks5h://")
+    expect(v).toContain("all_proxy='socks5h://")
+    expect(v).not.toContain('http://')
+  })
+  it('nikki and unknown mode keep the HTTP URL', () => {
+    for (const m of ['nikki', null]) {
+      const c = buildCopies({ host: 'h', port: '1', user: 'u', password: 'p' }, m)
+      expect(c.find((x) => x.id === 'http')).toBeDefined()
+    }
+  })
+})
