@@ -12,7 +12,7 @@ export function Acc(props: {
   open: boolean
   onToggle: () => void
   class?: string
-  children: ComponentChildren
+  children?: ComponentChildren
 }) {
   const body = `sec-${props.id}-body`
   return (
@@ -22,7 +22,8 @@ export function Acc(props: {
         {props.summary ? <span class={`acc-sum${props.warn ? ' warn' : ''}`}>{props.summary}</span> : null}
         <span class="chev" aria-hidden="true">›</span>
       </button>
-      {props.open ? (
+      {/* No children: the section's content lives outside the card (the panel frame). */}
+      {props.open && props.children ? (
         <div id={body} class="acc-body">
           {props.children}
         </div>

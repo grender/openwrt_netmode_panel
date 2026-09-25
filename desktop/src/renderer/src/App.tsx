@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { Api, AppState } from '../../shared/types'
+import { MSG_HEIGHT, MSG_VIEWPORT } from '../../shared/embed'
 import { Acc } from './Acc'
 
 declare global {
@@ -73,6 +74,19 @@ export function App() {
 
   return (
     <main class={`app${panelOpen ? ' panel-open' : ''}`}>
+      <Acc
+        id="panel"
+        title="Panel"
+        summary={s.panelOrigin ? (panelOpen ? s.panelOrigin.replace('http://', '') : 'open in this window') : 'VM not running'}
+        open={panelOpen}
+        onToggle={() => toggle('panel')}
+      >
+        {s.panelOrigin ? null : <p class="hint">The panel is available once the VM is running.</p>}
+      </Acc>
+      {/* First on the page. Outside any card and full window width: the panel brings its own
+          cards (their gutters are aligned by panelEmbed.ts in main). */}
+      {panelOpen && s.panelOrigin ? <PanelFrame origin={s.panelOrigin} /> : null}
+
       <Acc id="vm" title="VM" summary={vmSummary(s)} warn={running && !!s.mode && s.mode !== 'nikki'} open={open.has('vm')} onToggle={() => toggle('vm')}>
         <VmBody s={s} running={running} booting={booting} />
       </Acc>
@@ -89,21 +103,6 @@ export function App() {
 
       <Acc id="sys" title="System proxy" summary={<SysSummary s={s} />} warn={s.sysProxy === 'other'} open={open.has('sys')} onToggle={() => toggle('sys')}>
         <SysBody s={s} running={running} />
-      </Acc>
-
-      <Acc
-        id="panel"
-        title="Panel"
-        class="panel-card"
-        summary={s.panelOrigin ? (panelOpen ? s.panelOrigin.replace('http://', '') : 'open in this window') : 'VM not running'}
-        open={panelOpen}
-        onToggle={() => toggle('panel')}
-      >
-        {s.panelOrigin ? (
-          <iframe class="panel-frame" src={`${s.panelOrigin}/`} title="netmoded panel" />
-        ) : (
-          <p class="hint">The panel is available once the VM is running.</p>
-        )}
       </Acc>
 
       <Acc id="log" title="Log" summary={log[log.length - 1] ?? 'empty'} open={open.has('log')} onToggle={() => toggle('log')}>
@@ -205,6 +204,55 @@ function SysBody({ s, running }: { s: AppState; running: boolean }) {
         are under Proxy settings). Turned off automatically when the VM stops or the app quits.
       </p>
     </>
+  )
+}
+
+/**
+ * The panel, as tall as its content: the window is the only scroller. The
+ * height comes from the script main injects into the panel (panelEmbed.ts);
+ * in return the panel learns where the visible part of the frame ends, for
+ * its floating toast.
+ */
+function PanelFrame({ origin }: { origin: string }) {
+  const ref = useRef<HTMLIFrameElement>(null)
+  const [height, setHeight] = useState<number | null>(null)
+
+  useEffect(() => {
+    const frame = ref.current
+    if (!frame) return
+    const scroller = frame.closest('.app')!
+    const sendViewport = () => {
+      const top = frame.getBoundingClientRect().top
+      const bottom = Math.max(0, Math.min(frame.clientHeight, window.innerHeight - top))
+      frame.contentWindow?.postMessage({ type: MSG_VIEWPORT, bottom }, origin)
+    }
+    const onMessage = (e: MessageEvent) => {
+      if (e.origin !== origin || e.source !== frame.contentWindow) return
+      if (e.data?.type === MSG_HEIGHT && typeof e.data.height === 'number') {
+        setHeight(e.data.height)
+        requestAnimationFrame(sendViewport)
+      }
+    }
+    addEventListener('message', onMessage)
+    scroller.addEventListener('scroll', sendViewport, { passive: true })
+    addEventListener('resize', sendViewport)
+    return () => {
+      removeEventListener('message', onMessage)
+      scroller.removeEventListener('scroll', sendViewport)
+      removeEventListener('resize', sendViewport)
+    }
+  }, [origin])
+
+  return (
+    <iframe
+      ref={ref}
+      id="sec-panel-body"
+      class="panel-frame"
+      src={`${origin}/`}
+      title="netmoded panel"
+      scrolling="no"
+      style={height ? { height: `${height}px` } : undefined}
+    />
   )
 }
 

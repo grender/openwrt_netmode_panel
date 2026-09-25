@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeImage, screen, session, shell, Tray, type NativeImage, type Rectangle } from 'electron'
 import type { AppState } from '../shared/types'
 import { Monitor } from './monitor'
+import { PANEL_EMBED_JS } from './panelEmbed'
 
 // Launched from Finder/Dock the PATH is bare: make, qemu and utmctl's
 // helpers live in Homebrew.
@@ -114,11 +115,18 @@ function authorizePanel(): void {
       cb({ requestHeaders: details.requestHeaders })
     }
   })
-  // Links inside the panel that open new windows go to the browser.
   app.on('web-contents-created', (_e, wc) => {
+    // Links inside the panel that open new windows go to the browser.
     wc.setWindowOpenHandler(({ url }) => {
       void shell.openExternal(url)
       return { action: 'deny' }
+    })
+    // The panel frame drops its own page chrome to look native (panelEmbed.ts).
+    wc.on('frame-created', (_ev, { frame }) => {
+      frame?.on('dom-ready', () => {
+        const origin = monitor.state.panelOrigin
+        if (origin && frame.url.startsWith(`${origin}/`)) void frame.executeJavaScript(PANEL_EMBED_JS).catch(() => {})
+      })
     })
   })
 }
