@@ -3,12 +3,23 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeImage, screen, session, shell, Tray, type NativeImage, type Rectangle } from 'electron'
 import type { AppState } from '../shared/types'
-import { Monitor } from './monitor'
+import { Monitor, panelHost } from './monitor'
 import { PANEL_EMBED_JS } from './panelEmbed'
+import { rewrite } from './links'
+import { envSync } from './vm'
 
 // Launched from Finder/Dock the PATH is bare: make, qemu and utmctl's
 // helpers live in Homebrew.
 process.env.PATH = ['/opt/homebrew/bin', '/usr/local/bin', process.env.PATH].filter(Boolean).join(':')
+
+// The panel is opened as http://<VM name>:<port>, and Chromium resolves that
+// name to 127.0.0.1. With a loopback Host the daemon would build no links to
+// b4, nikki and LuCI at all (panelHost in internal/httpapi/server.go refuses
+// them: through a tunnel they would point at the laptop). Here the app knows
+// it is a tunnel and rewrites those links onto its own (links.ts). Must be set
+// before `ready`.
+const PANEL_HOST = panelHost(envSync())
+if (PANEL_HOST !== '127.0.0.1') app.commandLine.appendSwitch('host-resolver-rules', `MAP ${PANEL_HOST} 127.0.0.1`)
 
 let tray: Tray | null = null
 let win: BrowserWindow | null = null
@@ -40,6 +51,9 @@ app.whenReady().then(async () => {
   tray = new Tray(icon('grey', false))
   tray.setToolTip('netmoded VM')
   tray.on('click', () => tray?.popUpContextMenu())
+  // The app only ever talks to the VM on this Mac: never through the system
+  // proxy — which may point at that very VM, or at a stopped one.
+  await session.defaultSession.setProxy({ mode: 'direct' })
   ipc()
   authorizePanel()
   showWindow()
@@ -54,6 +68,7 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {})
 
 app.on('before-quit', (e) => {
+  monitor.dispose()
   if (quitting) return
   if (monitor.state.sysProxy !== 'vm') return
   // Never leave the Mac pointing at a proxy nobody manages.
@@ -123,8 +138,26 @@ function authorizePanel(): void {
   app.on('web-contents-created', (_e, wc) => {
     // Links inside the panel that open new windows go to the browser.
     wc.setWindowOpenHandler(({ url }) => {
-      void shell.openExternal(url)
+      // The nikki link opens an empty window first and loads the address
+      // with the secret into it after an API call (web/panel App.tsx
+      // onNikkiPanel). Denying the empty window loses the click; allow it
+      // hidden and hand its first navigation to the browser instead.
+      if (!url || url === 'about:blank') {
+        return { action: 'allow', overrideBrowserWindowOptions: { show: false, webPreferences: { sandbox: true } } }
+      }
+      openInBrowser(url)
       return { action: 'deny' }
+    })
+    wc.on('did-create-window', (child) => {
+      const hand = (e: { preventDefault(): void }, url: string) => {
+        e.preventDefault()
+        openInBrowser(url)
+        child.destroy()
+      }
+      child.webContents.on('will-navigate', hand)
+      child.webContents.on('will-redirect', hand)
+      // The panel closes it itself on an API error; this is the backstop.
+      setTimeout(() => child.isDestroyed() || child.destroy(), 20_000)
     })
     // The panel frame drops its own page chrome to look native (panelEmbed.ts).
     wc.on('frame-created', (_ev, { frame }) => {
@@ -134,6 +167,17 @@ function authorizePanel(): void {
       })
     })
   })
+}
+
+/**
+ * Opens a link in the default browser. Links to b4, the nikki dashboard and
+ * LuCI point at VM ports the Mac does not have; they go through the ssh
+ * tunnel (links.ts, scripts/vm/tunnel.sh).
+ */
+function openInBrowser(url: string): void {
+  const via = rewrite(url, monitor.links, PANEL_HOST)
+  if (via) monitor.log(`Opening ${new URL(via).origin} in the browser (tunnel)`)
+  void shell.openExternal(via ?? url)
 }
 
 /** Panel section open: full screen height; closed: back to the old bounds. */

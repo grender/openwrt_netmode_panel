@@ -55,6 +55,7 @@ DPI).
 | `make vm-deploy` | перезалить только бинарь (`scripts/vm/deploy.sh`, аргументы deploy.sh проходят насквозь) |
 | `make vm-ssh` | ssh в VM (`scripts/vm/ssh.sh [команда]`) |
 | `make vm-down` | остановить VM (UTM или QEMU — ту, что запущена) |
+| `scripts/vm/tunnel.sh` | ssh-туннель к мордам в VM: b4 на `127.0.0.1:17000`, Clash API и дашборд nikki на `19090`, LuCI на `18080` (порты — `common.sh`); приложение `desktop/` держит его само |
 | `scripts/vm/start.sh` | запустить уже созданную VM без provision и deploy; `status.sh`, `env.sh`, `proxy-info.sh` — состояние, порты и логин прокси строками `KEY=value` (для `desktop/`) |
 | `make vm-destroy` | удалить VM и её диск; скачанный образ остаётся в `build/vm/cache` (`scripts/vm/destroy.sh --all` — вместе с ним) |
 | `scripts/vm/provision.sh --force` | перенастроить VM заново |

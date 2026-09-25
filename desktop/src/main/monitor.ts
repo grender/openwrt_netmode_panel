@@ -8,7 +8,9 @@ import { app } from 'electron'
 import type { AppState } from '../shared/types'
 import { buildCopies, socksOnly, type Copy } from './proxy'
 import * as sys from './sysproxy'
-import { query, startVm, stopVm, createVm, NOT_CREATED } from './vm'
+import type { ChildProcess } from 'node:child_process'
+import { portMap, type PortMap } from './links'
+import { query, startVm, stopVm, createVm, spawnTunnel, NOT_CREATED } from './vm'
 
 const HOST = '127.0.0.1'
 const POLL_MS = 2000
@@ -44,6 +46,10 @@ export class Monitor {
   private panelMisses = 0
   /** Mode the copy strings were built for: b4 serves SOCKS5 only (ADR-0048). */
   private copiesMode: string | null = null
+  /** ssh tunnel to the engines' UIs (scripts/vm/tunnel.sh) while the VM runs. */
+  private tunnel: ChildProcess | null = null
+  /** VM port of an engine UI → local tunnel port; see links.ts. */
+  links: PortMap = {}
   private stateFile = join(app.getPath('userData'), 'state.json')
 
   constructor(
@@ -56,6 +62,7 @@ export class Monitor {
   }
   async init(): Promise<void> {
     this.env = await query('env')
+    this.links = portMap(this.env)
     const list = await sys.services()
     this.state.services = list.map((s) => s.name)
     this.state.service = (await sys.defaultService(list)) ?? this.state.services[0] ?? null
@@ -78,6 +85,9 @@ export class Monitor {
       const reachable = vm === 'running' && (await probe(HOST, Number(this.port)))
       if (vm !== 'running') this.forgetCreds()
       else if (!this.creds && reachable) await this.loadCreds()
+      // Links from the panel to b4, nikki and LuCI go through this tunnel.
+      if (vm === 'running' && this.creds) this.ensureTunnel()
+      else this.stopTunnel()
       const mode = this.creds && reachable ? await this.panelMode() : null
       this.panelMisses = mode === null ? this.panelMisses + 1 : 0
       const panelReady = !!this.state.panelOrigin && (mode !== null || (this.state.panelReady && this.panelMisses < 3))
@@ -114,13 +124,31 @@ export class Monitor {
       this.buildCopies(this.state.mode)
       this.set({
         credsLoaded: true,
-        panelOrigin: this.creds.token ? `http://${HOST}:${this.env.VM_HTTP_PORT}` : null,
+        panelOrigin: this.creds.token ? `http://${panelHost(this.env)}:${this.env.VM_HTTP_PORT}` : null,
         error: null,
       })
     } catch (e) {
       // ssh not up yet while the VM boots — next poll retries.
       this.set({ error: `proxy-info: ${(e as Error).message}` })
     }
+  }
+
+  private ensureTunnel(): void {
+    if (this.tunnel) return
+    const t = spawnTunnel(this.log)
+    this.tunnel = t
+    t.on('exit', (code) => {
+      if (this.tunnel === t) this.tunnel = null
+      // Restarted by the next poll while the VM runs; a busy local port
+      // (ExitOnForwardFailure) would repeat, so say it once per exit.
+      if (code !== null && code !== 0) this.log(`tunnel exited (${code}); retrying while the VM runs`)
+    })
+  }
+
+  private stopTunnel(): void {
+    const t = this.tunnel
+    this.tunnel = null
+    t?.kill()
   }
 
   private buildCopies(mode: string | null): void {
@@ -242,7 +270,17 @@ export class Monitor {
 
   dispose(): void {
     if (this.timer) clearInterval(this.timer)
+    this.stopTunnel()
   }
+}
+
+/**
+ * The name the panel is opened under in the app: the VM name, mapped to
+ * 127.0.0.1 by index.ts. Not 127.0.0.1 itself — the daemon builds no links to
+ * the engines' UIs for a loopback Host (internal/httpapi/server.go panelHost).
+ */
+export function panelHost(env: Record<string, string>): string {
+  return env.VM_NAME || HOST
 }
 
 /** nikki's mixed-port speaks HTTP and SOCKS5; b4's server only SOCKS5 (ADR-0048). */

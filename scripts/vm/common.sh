@@ -32,6 +32,13 @@
 # Прокси nikki (mixed-port: HTTP и SOCKS5, с логином) — чтобы пускать
 # трафик приложений Mac через nikki в VM без ssh-туннеля.
 : "${VM_PROXY_PORT:=17890}"
+# Морды движков и LuCI — не пробросом VM, а ssh-туннелем (tunnel.sh): их
+# добавили после того, как пробросы UTM уже вписаны в бандлы созданных VM,
+# а туннель не требует пересоздания. 17000, а не 7000: на Mac порт 7000
+# обычно занят приёмником AirPlay.
+: "${VM_B4_UI_PORT:=17000}"
+: "${VM_NIKKI_UI_PORT:=19090}"
+: "${VM_LUCI_PORT:=18080}"
 
 # Сеть QEMU user-net (в UTM — «Emulated VLAN»).
 #
@@ -49,6 +56,11 @@ VM_GUEST_SSH=22
 VM_GUEST_HTTP=8088
 # 7890 — mixed-port nikki по умолчанию (nikki.mixin.mixed_port).
 VM_GUEST_PROXY=7890
+# Веб-морда b4, Clash API с дашбордом nikki (nikki.mixin.api_listen) и
+# uhttpd LuCI — цели ssh-туннеля tunnel.sh.
+VM_GUEST_B4_UI=7000
+VM_GUEST_NIKKI_UI=9090
+VM_GUEST_LUCI=80
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 VM_DIR=$ROOT/build/vm
