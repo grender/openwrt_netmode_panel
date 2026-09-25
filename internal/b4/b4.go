@@ -70,6 +70,28 @@ type Client interface {
 	Sets(ctx context.Context) ([]Set, error)
 	// SetEnabled включает или выключает ОДИН сет, не трогая остальные.
 	SetEnabled(ctx context.Context, id string, on bool) error
+	// Socks5Config и SetSocks5Config — встроенный SOCKS5-сервер b4
+	// (ADR-0048). Новые настройки вступают в силу только после Restart.
+	Socks5Config(ctx context.Context) (Socks5Config, error)
+	SetSocks5Config(ctx context.Context, cfg Socks5Config) error
+	Restart(ctx context.Context) error
+}
+
+// Socks5Config — секция system.socks5 конфига b4
+// (src/config/types.go:303-311 в исходниках v1.74.2).
+//
+// Все поля, включая таймауты UDP, которые демону не нужны: POST
+// /api/socks5/config заменяет секцию ЦЕЛИКОМ (src/http/handler/socks5.go:69-71),
+// и не присланный таймаут стал бы нулём. Поэтому запись — только
+// «прочитал, поменял нужное, отправил всё».
+type Socks5Config struct {
+	Enabled        bool   `json:"enabled"`
+	Port           int    `json:"port"`
+	BindAddress    string `json:"bind_address"`
+	Username       string `json:"username"`
+	Password       string `json:"password"`
+	UDPTimeout     int    `json:"udp_timeout"`
+	UDPReadTimeout int    `json:"udp_read_timeout"`
 }
 
 // ErrUnavailable — b4 не отвечает.
@@ -305,6 +327,52 @@ func (c *HTTP) SetEnabled(ctx context.Context, id string, on bool) error {
 		return fmt.Errorf("%w: переключение сета", ErrRejected)
 	}
 	return nil
+}
+
+type socks5Response struct {
+	Success *bool        `json:"success"`
+	Config  Socks5Config `json:"config"`
+}
+
+// Socks5Config читает настройки SOCKS5-сервера b4: GET /api/socks5/config,
+// ответ {"success":true,"config":{…}} (src/http/handler/socks5.go:22-34).
+// Пароль b4 отдаёт открытым — прячет он только пароль веб-морды.
+func (c *HTTP) Socks5Config(ctx context.Context) (Socks5Config, error) {
+	var resp socks5Response
+	if err := c.do(ctx, http.MethodGet, "/api/socks5/config", nil, &resp, callTimeout); err != nil {
+		return Socks5Config{}, err
+	}
+	if resp.Success != nil && !*resp.Success {
+		return Socks5Config{}, fmt.Errorf("%w: чтение настроек SOCKS5", ErrRejected)
+	}
+	return resp.Config, nil
+}
+
+// SetSocks5Config записывает секцию SOCKS5 целиком: POST /api/socks5/config.
+//
+// b4 сохраняет её в свой конфиг на диске сам (тот же saveAndPushConfig, что
+// и у сетов), но слушатель перечитывает её только при старте — нужен
+// Restart. Занятый порт b4 отвергает кодом 400 (preflight пробует
+// net.Listen), и это ошибка, а не повод повторять: порт держит кто-то ещё.
+func (c *HTTP) SetSocks5Config(ctx context.Context, cfg Socks5Config) error {
+	var resp struct {
+		Success *bool `json:"success"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/api/socks5/config", cfg, &resp, switchTimeout); err != nil {
+		return err
+	}
+	if resp.Success != nil && !*resp.Success {
+		return fmt.Errorf("%w: запись настроек SOCKS5", ErrRejected)
+	}
+	return nil
+}
+
+// Restart перезапускает b4: POST /api/system/restart. b4 сначала отвечает,
+// а через полсекунды сам вызывает /etc/init.d/b4 restart
+// (src/http/handler/system.go:166-214) — ответ означает «принято», а не
+// «перезапущен». Дождаться нового процесса — забота вызывающего (Version).
+func (c *HTTP) Restart(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/api/system/restart", nil, nil, callTimeout)
 }
 
 // Selected возвращает имя единственного включённого сета.

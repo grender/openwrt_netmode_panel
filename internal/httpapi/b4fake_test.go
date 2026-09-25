@@ -19,13 +19,44 @@ type fakeB4Client struct {
 	// её нет, и проверять надо ровно обратное — что соседние сеты вызов
 	// не тронул.
 	touched string
+	// socks — настройки SOCKS5, как их держит b4; calls — порядок вызовов
+	// синхронизации прокси (ADR-0048), restarts — сколько раз перезапускали.
+	socks    b4.Socks5Config
+	calls    []string
+	restarts int
 }
 
 func newFakeB4Client() *fakeB4Client {
 	return &fakeB4Client{sets: []b4.Set{
 		{ID: "909a6fb1-b9b1-4af1-8ee0-bdce82e3d8ff", Name: "workki", Enabled: false},
 		{ID: "d98efbc7-96b6-401c-90c4-744f3ec3ccbd", Name: "HomeSet", Enabled: true},
-	}}
+	}, socks: b4.Socks5Config{Port: 1080, BindAddress: "0.0.0.0", UDPTimeout: 300, UDPReadTimeout: 5}}
+}
+
+func (f *fakeB4Client) Socks5Config(context.Context) (b4.Socks5Config, error) {
+	if f.err != nil {
+		return b4.Socks5Config{}, f.err
+	}
+	f.calls = append(f.calls, "get socks5")
+	return f.socks, nil
+}
+
+func (f *fakeB4Client) SetSocks5Config(_ context.Context, c b4.Socks5Config) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.calls = append(f.calls, "set socks5")
+	f.socks = c
+	return nil
+}
+
+func (f *fakeB4Client) Restart(context.Context) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.calls = append(f.calls, "restart")
+	f.restarts++
+	return nil
 }
 
 func (f *fakeB4Client) Version(context.Context) (b4.Version, error) {

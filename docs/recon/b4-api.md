@@ -109,6 +109,33 @@ check»); второй — `GET /api/auth/check`, которым и снят с�
 отдельно ради одного булева поля. Не ответил — значит b4 лежит, и
 `/api/b4/*` отдаёт `503`.
 
+## SOCKS5-сервер b4 (ADR-0048)
+
+```
+GET  /api/socks5/config   →  {"success":true,"config":{"enabled","port","bind_address","username","password","udp_timeout","udp_read_timeout"}}
+POST /api/socks5/config   ←  та же секция целиком  →  {"success":true,"message":"… Restart required …"}
+POST /api/system/restart  →  отвечает сразу, через 500 мс /etc/init.d/b4 restart
+```
+`src/http/handler/socks5.go:13,22-82`, `src/http/handler/system.go:19,142-214`;
+живая проба на стенде — `raw/52-b4-socks5.txt`.
+
+- **POST заменяет секцию целиком** (`newCfg.System.Socks5 = req`,
+  `socks5.go:69-71`): не присланные `udp_timeout`/`udp_read_timeout` станут
+  нулями. Только «прочитал, поменял, отправил всё».
+- Сохраняется на диск тем же `saveAndPushConfig`, что и сеты
+  (`config.go:439`), но **слушатель читает секцию только при старте**
+  (`main.go:375-377`, логин — из стартового конфига, `server.go:212-213`):
+  нужен `POST /api/system/restart`.
+- Проверки: порт 1–65535, `bind_address` — IP, логин и пароль оба или ни
+  одного (`socks5.go:52-67`) → `400`. Занятый системой порт — preflight
+  пробует `net.Listen` и отвечает `port_in_use_system`, ничего не сохранив
+  (`preflight.go:35-43`, `config.go:396-398`). Сет с upstream на тот же
+  локальный порт — `socks5_loop` (`validation.go:158-161`).
+- Пароль в `GET` **не скрывается** (`redactWebServerSecrets` прячет только
+  пароль веб-морды, `config.go:81-88`).
+- Только SOCKS5 (CONNECT и UDP ASSOCIATE): не-SOCKS5 первый байт отвергается
+  (`socks5/server.go:201-202`), HTTP-прокси нет.
+
 ## Запрещено использовать
 
 **`PUT /api/sets/{id}` — полная замена, а не слияние.** Обработчик декодирует
@@ -117,8 +144,9 @@ check»); второй — `GET /api/auth/check`, которым и снят с�
 не применяются.
 
 Отправить `{"enabled": true}` этим методом — **стереть всю стратегию сета**.
-Поэтому клиент b4 знает только `GET /api/version`, `GET /api/sets` и
-`POST /api/sets/batch-set-enabled`.
+Поэтому клиент b4 знает только `GET /api/version`, `GET /api/sets`,
+`POST /api/sets/batch-set-enabled` и, с ADR-0048, SOCKS5 и перезапуск
+(раздел выше).
 
 **Механического запрета на этот метод нет.** `check-b4json.sh` грепает
 единственный литерал `b4.json`, а `check-routes.sh` вообще не заглядывает

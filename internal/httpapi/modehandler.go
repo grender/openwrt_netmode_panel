@@ -94,6 +94,14 @@ func (s *Server) applyMode(ctx context.Context, mode string) error {
 		return s.modeApplyFailed(mode, err)
 	}
 
+	// Прокси для ПК на том же порту, что у nikki (ADR-0048). Не валит
+	// переключение: обход для LAN уже работает, SOCKS5 — удобство.
+	if mode == "b4" {
+		if err := s.syncB4Proxy(ctx); err != nil {
+			s.logf("b4 socks5: не настроен, прокси для ПК в режиме b4 не работает: %v", err)
+		}
+	}
+
 	s.setLED(led.StateForMode(mode))
 	return nil
 }
