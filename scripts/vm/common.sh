@@ -138,3 +138,36 @@ vm_reboot() {
 	echo
 	return 1
 }
+
+# Запускает VM в UTM и ждёт статуса started (utm-create.sh, start.sh).
+utm_start() {
+	case "$("$UTMCTL" status "$VM_NAME" 2>/dev/null)" in
+		started) echo "  · VM уже запущена" ;;
+		*)
+			# utmctl выходит с 0, даже если UTM упал на запуске («OSStatus
+			# error -609»), — верим только статусу.
+			"$UTMCTL" start "$VM_NAME" || true
+			i=0
+			until [ "$("$UTMCTL" status "$VM_NAME" 2>/dev/null)" = started ]; do
+				[ "$i" -lt 15 ] || die "UTM не запустил $VM_NAME — см. ~/Library/Logs/DiagnosticReports/UTM-*.ips; лог QEMU: включите QEMU → DebugLog в $VM_BUNDLE/config.plist"
+				sleep 1
+				i=$((i + 1))
+			done
+			echo "  ✓ VM запущена (консоль — окно Serial в UTM)"
+			;;
+	esac
+}
+
+# Чем запущена или может быть запущена VM: utm, qemu или none (нет диска).
+# UTM-бандл важнее: utm-create.sh переносит диск внутрь него.
+vm_backend() {
+	if [ -f "$VM_DIR/qemu.pid" ] && kill -0 "$(cat "$VM_DIR/qemu.pid")" 2>/dev/null; then
+		echo qemu
+	elif [ -d "$VM_BUNDLE" ] && [ -x "$UTMCTL" ]; then
+		echo utm
+	elif [ -f "$VM_DISK" ] || [ -f "$VM_BUNDLE/Data/disk.qcow2" ]; then
+		echo qemu
+	else
+		echo none
+	fi
+}

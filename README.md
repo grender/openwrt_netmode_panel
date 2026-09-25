@@ -502,7 +502,8 @@ ssh — `make vm-ssh`. WiFi имитируется `mac80211_hwsim`, так чт
 внешней сети проверяется без риска для домашней. nikki и b4 в VM ставит
 тот же `deploy.sh --install` ([ADR-0046](docs/adr/0046-deploy-installs-engines.md)).
 Подробности и отличия от роутера — [`docs/vm-utm.md`](docs/vm-utm.md),
-[ADR-0045](docs/adr/0045-vm-test-rig.md).
+[ADR-0045](docs/adr/0045-vm-test-rig.md). То же из строки меню Mac —
+`make desktop` ([`desktop/`](desktop/README.md), [ADR-0047](docs/adr/0047-desktop-vm-app.md)).
 
 ### Механические охранники
 
