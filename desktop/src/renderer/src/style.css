@@ -5,16 +5,22 @@
 html, body { height: 100%; }
 
 .app {
-  height: 100vh; overflow-y: auto;
+  /* No scrollbar gutter: with "always show scrollbars" it took 15px off
+     the panel frame, which must span the whole window. Wheel and trackpad
+     scroll as before. */
+  height: 100vh; overflow-y: auto; scrollbar-width: none;
   display: flex; flex-direction: column; gap: 9px; padding: 12px;
 }
 .app > .card { flex: none; }
 .acc-body { display: flex; flex-direction: column; gap: 9px; }
 
-/* Panel open: the frame spans the whole window width, without border or
-   radius, and is exactly as tall as the panel's content (PanelFrame), so
-   the window is the only scroller. Inside, the panel's cards keep the same
-   12px gutters (panelEmbed.ts). Until the first height arrives: a screen. */
+/* Panel open: the frame starts at the window's top-left corner, spans
+   the whole window width without border or radius, and is exactly as tall
+   as the panel's content (PanelFrame), so the window is the only scroller.
+   Inside, the panel's cards keep the same 12px gutters (panelEmbed.ts).
+   Until the first height arrives: a screen. */
+.app.panel-open { padding-top: 0; }
+.chev-up { transform: rotate(-90deg); }
 .panel-frame {
   flex: none; display: block; height: 100vh;
   width: calc(100% + 24px); margin: 0 -12px;

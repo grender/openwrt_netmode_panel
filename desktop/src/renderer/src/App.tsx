@@ -19,8 +19,12 @@ export function App() {
   const [open, setOpen] = useState<Set<Section>>(new Set(DEFAULT_OPEN))
   // Sections that were open before the panel took the window over.
   const before = useRef<Set<Section> | null>(null)
+  // For handlers registered once (tray): the latest readiness.
+  const ready = useRef(false)
+  ready.current = s?.panelReady ?? false
 
   const openPanel = () => {
+    if (!ready.current) return
     setOpen((cur) => {
       if (cur.has('panel')) return cur
       before.current = cur
@@ -56,15 +60,16 @@ export function App() {
       ),
     )
     vm.onOpenPanel(openPanel)
+    vm.onClosePanel(closePanel)
     // A reloaded page starts with the panel closed: let main shrink the window to match.
     void vm.setPanelOpen(false)
   }, [])
 
-  // The panel went away (VM stopped): give the window back.
-  const panelOrigin = s?.panelOrigin ?? null
+  // The panel stopped answering (VM stopped or broken): give the window back.
+  const panelReady = s?.panelReady ?? false
   useEffect(() => {
-    if (!panelOrigin && open.has('panel')) closePanel()
-  }, [panelOrigin])
+    if (!panelReady && open.has('panel')) closePanel()
+  }, [panelReady])
 
   if (!s) return <main class="app"><p class="hint">Loading…</p></main>
 
@@ -74,18 +79,23 @@ export function App() {
 
   return (
     <main class={`app${panelOpen ? ' panel-open' : ''}`}>
-      <Acc
-        id="panel"
-        title="Panel"
-        summary={s.panelOrigin ? (panelOpen ? s.panelOrigin.replace('http://', '') : 'open in this window') : 'VM not running'}
-        open={panelOpen}
-        onToggle={() => toggle('panel')}
-      >
-        {s.panelOrigin ? null : <p class="hint">The panel is available once the VM is running.</p>}
-      </Acc>
-      {/* First on the page. Outside any card and full window width: the panel brings its own
-          cards (their gutters are aligned by panelEmbed.ts in main). */}
-      {panelOpen && s.panelOrigin ? <PanelFrame origin={s.panelOrigin} /> : null}
+      {/* Panel open: the frame takes the window from its top-left corner, its
+          header is gone, and "Hide panel" right below closes it. Closed: a
+          header card first on the page — only while the panel answers. */}
+      {panelOpen && s.panelOrigin ? (
+        <>
+          <PanelFrame origin={s.panelOrigin} />
+          <section class="card" data-section="panel-hide">
+            <button type="button" class="acc-head" aria-controls="sec-panel-body" onClick={closePanel}>
+              <h2>Hide panel</h2>
+              <span class="acc-sum">{s.panelOrigin.replace('http://', '')}</span>
+              <span class="chev chev-up" aria-hidden="true">›</span>
+            </button>
+          </section>
+        </>
+      ) : s.panelReady ? (
+        <Acc id="panel" title="Panel" summary="open in this window" open={false} onToggle={openPanel} />
+      ) : null}
 
       <Acc id="vm" title="VM" summary={vmSummary(s)} warn={running && !!s.mode && s.mode !== 'nikki'} open={open.has('vm')} onToggle={() => toggle('vm')}>
         <VmBody s={s} running={running} booting={booting} />

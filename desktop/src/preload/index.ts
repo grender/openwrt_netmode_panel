@@ -8,6 +8,7 @@ const api: Api = {
   start: () => ipcRenderer.invoke('start'),
   stop: () => ipcRenderer.invoke('stop'),
   onOpenPanel: (cb) => void ipcRenderer.on('openPanel', () => cb()),
+  onClosePanel: (cb) => void ipcRenderer.on('closePanel', () => cb()),
   setPanelOpen: (open) => ipcRenderer.invoke('setPanelOpen', open),
   copy: (id) => ipcRenderer.invoke('copy', id),
   setSysProxy: (on) => ipcRenderer.invoke('setSysProxy', on),

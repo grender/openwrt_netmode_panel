@@ -18,6 +18,8 @@ html, body { overflow: hidden !important; }
 .shell {
   max-width: none !important; border: 0 !important; border-radius: 0 !important;
   background: var(--page) !important; overflow: visible !important;
+  /* the frame starts at the window's corner; the first card keeps the gutter */
+  padding-top: 12px;
 }
 .top, .foot {
   margin: 0 12px; background: var(--card) !important;

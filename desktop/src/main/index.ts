@@ -93,8 +93,13 @@ function showWindow(): void {
   else void win.loadFile(join(__dirname, '../renderer/index.html'))
 }
 
-/** Tray "Open panel": the page opens its panel section, which resizes the window. */
-function openPanel(): void {
+/** Tray "Open panel" / "Hide panel": the page toggles the panel, which resizes the window. */
+function togglePanel(): void {
+  if (beforePanel) {
+    win?.webContents.send('closePanel')
+    return
+  }
+  if (!monitor.state.panelReady) return
   showWindow()
   win?.webContents.send('openPanel')
 }
@@ -145,6 +150,7 @@ function setPanelOpen(open: boolean): void {
     win.setBounds({ x, y, height, width: win.getBounds().width }, true)
     beforePanel = null
   }
+  updateTray(monitor.state)
 }
 
 function copy(id: string): void {
@@ -195,7 +201,7 @@ function updateTray(s: AppState): void {
     { type: 'separator' },
     { label: 'Start VM', enabled: !s.busy && !running, click: () => void monitor.start() },
     { label: 'Stop VM', enabled: !s.busy && running, click: () => void monitor.stop() },
-    { label: 'Open panel', enabled: !!s.panelOrigin, click: openPanel },
+    { label: beforePanel ? 'Hide panel' : 'Open panel', enabled: s.panelReady, click: togglePanel },
     {
       label: 'Copy',
       enabled: s.copies.length > 0,

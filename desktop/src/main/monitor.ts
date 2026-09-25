@@ -35,10 +35,13 @@ export class Monitor {
     services: [],
     copies: [],
     panelOrigin: null,
+    panelReady: false,
     error: null,
   }
   private timer: NodeJS.Timeout | null = null
   private polling = false
+  /** Polls in a row the panel did not answer; one slow reply must not close it under the user. */
+  private panelMisses = 0
   private stateFile = join(app.getPath('userData'), 'state.json')
 
   constructor(
@@ -74,8 +77,10 @@ export class Monitor {
       if (vm !== 'running') this.forgetCreds()
       else if (!this.creds && reachable) await this.loadCreds()
       const mode = this.creds && reachable ? await this.panelMode() : null
+      this.panelMisses = mode === null ? this.panelMisses + 1 : 0
+      const panelReady = !!this.state.panelOrigin && (mode !== null || (this.state.panelReady && this.panelMisses < 3))
       const sysProxy = await sys.status(HOST, this.port).catch(() => this.state.sysProxy)
-      this.set({ vm, backend, proxyReachable: reachable, mode, sysProxy })
+      this.set({ vm, backend, proxyReachable: reachable, mode, panelReady, sysProxy })
 
       // A system proxy pointing at a VM that is down leaves the Mac offline.
       if (vm !== 'running' && !this.state.busy && (sysProxy === 'vm' || this.leftOn())) {
@@ -108,7 +113,7 @@ export class Monitor {
     if (!this.creds && this.copies.length === 0) return
     this.creds = null
     this.copies = []
-    this.set({ credsLoaded: false, copies: [], mode: null, panelOrigin: null })
+    this.set({ credsLoaded: false, copies: [], mode: null, panelOrigin: null, panelReady: false })
   }
 
   private async panelMode(): Promise<string | null> {
