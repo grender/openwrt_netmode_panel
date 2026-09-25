@@ -1,50 +1,46 @@
-:root {
-  color-scheme: light dark;
-  --bg: #f5f5f7;
-  --card: #fff;
-  --fg: #1d1d1f;
-  --muted: #86868b;
-  --line: #e5e5ea;
-  --ok: #248a3d;
-  --warn: #b25000;
-  --err: #d70015;
-  --accent: #0071e3;
+/* The panel's own stylesheet — one design system for both (ADR-0047).
+   Only what the panel has no class for lives below, on its tokens. */
+@import '../../../../web/panel/src/styles.css';
+
+html, body { height: 100%; }
+
+.app {
+  height: 100vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 9px; padding: 12px;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1c1c1e;
-    --card: #2c2c2e;
-    --fg: #f5f5f7;
-    --muted: #98989d;
-    --line: #3a3a3c;
-    --ok: #30d158;
-    --warn: #ff9f0a;
-    --err: #ff453a;
-    --accent: #0a84ff;
-  }
+.app > .card { flex: none; }
+.acc-body { display: flex; flex-direction: column; gap: 9px; }
+
+/* Panel section: with it open the window is screen-tall and the panel
+   takes whatever the collapsed headers leave. */
+/* The panel brings its own shell and padding: the card around it only
+   needs room for the header, so no second frame. */
+.app.panel-open > .panel-card { flex: 1 0 auto; min-height: 520px; padding: 4px 4px 4px; }
+.app.panel-open > .panel-card > .acc-head { padding: 0 12px; }
+.panel-card .acc-body { flex: 1; }
+.panel-frame {
+  flex: 1; width: 100%; min-height: 480px; border: 0;
+  border-radius: var(--r); background: var(--page);
 }
-* { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; }
-body { background: var(--bg); color: var(--fg); font: 13px/1.4 -apple-system, BlinkMacSystemFont, sans-serif; }
-.app { display: flex; flex-direction: column; gap: 10px; padding: 12px; height: 100%; }
-.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
-.card.grow { flex: 1; display: flex; flex-direction: column; min-height: 120px; }
-h2 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
-.row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 0; }
-.label { color: var(--muted); flex: none; }
-.value.ok { color: var(--ok); }
-.value.warn { color: var(--warn); }
-.value.muted, .muted { color: var(--muted); }
-.warn { color: var(--warn); margin: 6px 0; }
-.err { color: var(--err); margin: 6px 0; word-break: break-word; }
-.small { font-size: 11px; }
-.buttons { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-button { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--accent); color: #fff; cursor: pointer; }
-button:disabled { background: var(--line); color: var(--muted); cursor: default; }
-button.small { padding: 2px 8px; background: transparent; color: var(--accent); border-color: var(--line); min-width: 58px; }
-select { font: inherit; max-width: 60%; }
-.copies { list-style: none; margin: 0; padding: 0; }
-.copies li { display: grid; grid-template-columns: 82px 1fr auto; align-items: center; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--line); }
-.copies li:last-child { border-bottom: none; }
-code { font: 12px ui-monospace, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.log { flex: 1; margin: 0; overflow: auto; font: 11px/1.35 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-all; color: var(--muted); }
+
+/* Copy list: label · value · button. */
+.copies { display: flex; flex-direction: column; gap: 6px; }
+.copy {
+  display: grid; grid-template-columns: 84px minmax(0, 1fr) auto; align-items: center; gap: 10px;
+  padding: 4px 4px 4px 12px; border-radius: var(--r); background: var(--row);
+}
+.copy-label { font-size: 12.5px; color: var(--muted-2); }
+.copy code {
+  font: 12.5px var(--mono); color: var(--fg-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.copy .mini { min-width: 72px; }
+
+.sys-sum { display: inline-flex; align-items: center; gap: 7px; }
+
+.logpre {
+  margin: 0; max-height: 240px; overflow: auto;
+  padding: 10px 12px; border-radius: var(--r); background: var(--page);
+  font: 11.5px/1.45 var(--mono); color: var(--muted);
+  white-space: pre-wrap; word-break: break-all;
+}

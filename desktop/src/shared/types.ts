@@ -26,6 +26,8 @@ export interface AppState {
   service: string | null
   services: string[]
   copies: CopyItem[]
+  /** http://127.0.0.1:<port> of the panel once the token is known; the token itself stays in main. */
+  panelOrigin: string | null
   error: string | null
 }
 
@@ -34,7 +36,8 @@ export interface Api {
   onLog(cb: (line: string) => void): void
   start(): Promise<void>
   stop(): Promise<void>
-  openPanel(): Promise<void>
+  onOpenPanel(cb: () => void): void
+  setPanelOpen(open: boolean): Promise<void>
   copy(id: string): Promise<void>
   setSysProxy(on: boolean): Promise<void>
   setService(name: string): Promise<void>

@@ -1,7 +1,7 @@
-// Menu-bar app for the test VM (ADR-0047): tray icon + control window +
-// the VM panel in its own window.
+// Menu-bar app for the test VM (ADR-0047): tray icon + one narrow window
+// whose page is an accordion of sections, the VM panel being one of them.
 import { join } from 'node:path'
-import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeImage, shell, Tray, type NativeImage } from 'electron'
+import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeImage, screen, session, shell, Tray, type NativeImage, type Rectangle } from 'electron'
 import type { AppState } from '../shared/types'
 import { Monitor } from './monitor'
 
@@ -11,7 +11,8 @@ process.env.PATH = ['/opt/homebrew/bin', '/usr/local/bin', process.env.PATH].fil
 
 let tray: Tray | null = null
 let win: BrowserWindow | null = null
-let panel: BrowserWindow | null = null
+/** Window bounds before the panel section grew it to full height. */
+let beforePanel: Rectangle | null = null
 let quitting = false
 const logLines: string[] = []
 
@@ -39,6 +40,7 @@ app.whenReady().then(async () => {
   tray.setToolTip('netmoded VM')
   tray.on('click', () => tray?.popUpContextMenu())
   ipc()
+  authorizePanel()
   showWindow()
   try {
     await monitor.init()
@@ -67,10 +69,14 @@ function showWindow(): void {
     return
   }
   win = new BrowserWindow({
-    width: 460,
-    height: 720,
+    width: 440,
+    height: 760,
+    minWidth: 400,
+    maxWidth: 560,
     title: 'netmoded VM',
     show: false,
+    // --page of the panel stylesheet: no white flash before the CSS loads.
+    backgroundColor: '#0a0b0c',
     webPreferences: { preload: join(__dirname, '../preload/index.js'), sandbox: true },
   })
   win.once('ready-to-show', () => win?.show())
@@ -78,42 +84,59 @@ function showWindow(): void {
     win?.webContents.send('state', monitor.state)
     for (const l of logLines) win?.webContents.send('log', l)
   })
-  win.on('closed', () => (win = null))
+  win.on('closed', () => {
+    win = null
+    beforePanel = null
+  })
   if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL)
   else void win.loadFile(join(__dirname, '../renderer/index.html'))
 }
 
+/** Tray "Open panel": the page opens its panel section, which resizes the window. */
 function openPanel(): void {
-  const url = monitor.panelUrl
-  if (!url) {
-    monitor.log('Panel is not available yet (VM down or token not read)')
-    return
-  }
-  if (panel) {
-    panel.show()
-    panel.focus()
-    return
-  }
-  const origin = new URL(url).origin
-  panel = new BrowserWindow({
-    width: 1100,
-    height: 800,
-    title: 'netmoded panel (VM)',
-    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
-  })
-  // Only the panel lives here; anything else goes to the browser.
-  panel.webContents.on('will-navigate', (e, to) => {
-    if (new URL(to).origin !== origin) {
-      e.preventDefault()
-      void shell.openExternal(to)
+  showWindow()
+  win?.webContents.send('openPanel')
+}
+
+/**
+ * The panel is an iframe in a file:// page, i.e. cross-site: its
+ * SameSite=Strict cookie is never sent there. Every daemon route also
+ * accepts a Bearer token, so the main process adds it to requests for the
+ * panel origin. The token never reaches the renderer.
+ */
+function authorizePanel(): void {
+  session.defaultSession.webRequest.onBeforeSendHeaders((details, cb) => {
+    const origin = monitor.state.panelOrigin
+    const token = monitor.creds?.token
+    if (origin && token && details.url.startsWith(`${origin}/`)) {
+      cb({ requestHeaders: { ...details.requestHeaders, Authorization: `Bearer ${token}` } })
+    } else {
+      cb({ requestHeaders: details.requestHeaders })
     }
   })
-  panel.webContents.setWindowOpenHandler(({ url: to }) => {
-    void shell.openExternal(to)
-    return { action: 'deny' }
+  // Links inside the panel that open new windows go to the browser.
+  app.on('web-contents-created', (_e, wc) => {
+    wc.setWindowOpenHandler(({ url }) => {
+      void shell.openExternal(url)
+      return { action: 'deny' }
+    })
   })
-  panel.on('closed', () => (panel = null))
-  void panel.loadURL(url)
+}
+
+/** Panel section open: full screen height; closed: back to the old bounds. */
+function setPanelOpen(open: boolean): void {
+  if (!win) return
+  if (open) {
+    if (beforePanel) return
+    const b = win.getBounds()
+    const area = screen.getDisplayMatching(b).workArea
+    beforePanel = b
+    win.setBounds({ x: b.x, y: area.y, width: b.width, height: area.height }, true)
+  } else if (beforePanel) {
+    const { x, y, height } = beforePanel
+    win.setBounds({ x, y, height, width: win.getBounds().width }, true)
+    beforePanel = null
+  }
 }
 
 function copy(id: string): void {
@@ -124,7 +147,7 @@ function copy(id: string): void {
 function ipc(): void {
   ipcMain.handle('start', () => monitor.start())
   ipcMain.handle('stop', () => monitor.stop())
-  ipcMain.handle('openPanel', () => openPanel())
+  ipcMain.handle('setPanelOpen', (_e, open: boolean) => setPanelOpen(open))
   ipcMain.handle('copy', (_e, id: string) => copy(id))
   ipcMain.handle('setSysProxy', async (_e, on: boolean) => {
     try {
@@ -164,7 +187,7 @@ function updateTray(s: AppState): void {
     { type: 'separator' },
     { label: 'Start VM', enabled: !s.busy && !running, click: () => void monitor.start() },
     { label: 'Stop VM', enabled: !s.busy && running, click: () => void monitor.stop() },
-    { label: 'Open panel', enabled: running && s.credsLoaded, click: openPanel },
+    { label: 'Open panel', enabled: !!s.panelOrigin, click: openPanel },
     {
       label: 'Copy',
       enabled: s.copies.length > 0,

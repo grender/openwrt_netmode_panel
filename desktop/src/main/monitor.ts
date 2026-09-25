@@ -34,6 +34,7 @@ export class Monitor {
     service: null,
     services: [],
     copies: [],
+    panelOrigin: null,
     error: null,
   }
   private timer: NodeJS.Timeout | null = null
@@ -48,11 +49,6 @@ export class Monitor {
   get port(): string {
     return this.env.VM_PROXY_PORT ?? ''
   }
-  get panelUrl(): string | null {
-    if (!this.creds?.token || !this.env.VM_HTTP_PORT) return null
-    return `http://${HOST}:${this.env.VM_HTTP_PORT}/?token=${encodeURIComponent(this.creds.token)}`
-  }
-
   async init(): Promise<void> {
     this.env = await query('env')
     const list = await sys.services()
@@ -96,7 +92,12 @@ export class Monitor {
       const kv = await query('proxy-info')
       this.creds = { user: kv.user ?? '', password: kv.password ?? '', token: kv.token ?? '' }
       this.copies = buildCopies({ host: HOST, port: this.port, user: this.creds.user, password: this.creds.password })
-      this.set({ credsLoaded: true, copies: this.copies.map(({ id, label, preview }) => ({ id, label, preview })), error: null })
+      this.set({
+        credsLoaded: true,
+        copies: this.copies.map(({ id, label, preview }) => ({ id, label, preview })),
+        panelOrigin: this.creds.token ? `http://${HOST}:${this.env.VM_HTTP_PORT}` : null,
+        error: null,
+      })
     } catch (e) {
       // ssh not up yet while the VM boots — next poll retries.
       this.set({ error: `proxy-info: ${(e as Error).message}` })
@@ -107,7 +108,7 @@ export class Monitor {
     if (!this.creds && this.copies.length === 0) return
     this.creds = null
     this.copies = []
-    this.set({ credsLoaded: false, copies: [], mode: null })
+    this.set({ credsLoaded: false, copies: [], mode: null, panelOrigin: null })
   }
 
   private async panelMode(): Promise<string | null> {
