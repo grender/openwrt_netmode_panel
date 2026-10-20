@@ -3,6 +3,7 @@ package happ
 import (
 	"encoding/base64"
 	"fmt"
+	"strings"
 )
 
 // xhttpSupported — принимает ли mihomo этой сборки транспорт xhttp.
@@ -25,7 +26,9 @@ const xhttpSupported = true
 // готовым Clash-профилем того же провайдера (ответ на User-Agent
 // clash-verge/2.0) по 15 общим узлам — type, server, port, uuid, network,
 // flow, tls, servername, client-fingerprint, reality-opts.public-key,
-// password, sni, alpn. Расхождений по существу ноль.
+// password, sni, alpn. Расхождений по существу ноль. Транспорт ws и
+// shadowsocks в эталон не входят — их там нет, и они сверены с исходником
+// mihomo (см. wsOpts и convertShadowsocks).
 //
 // Возвращает либо готовый узел с типом, либо пустую причину непригодности.
 // Причина — короткий русский текст: он уходит в панель как есть, и владелец
@@ -77,10 +80,18 @@ func convertVLESS(name string, o xrayOutbound, xhttp bool) (map[string]any, stri
 		if !xhttp {
 			return nil, "", "транспорт xhttp не принят движком mihomo этой сборки", nil
 		}
+	case "ws":
+		// Раннее начало Xray (?ed=N в пути) у mihomo — два отдельных ключа,
+		// max-early-data и early-data-header-name. В подписке его нет, и
+		// переводить вслепую значит собрать узел, который не рукопожмётся:
+		// путь с ?ed= ушёл бы на сервер буквально. Строка с причиной дешевле.
+		if strings.Contains(ss.WSSettings.Path, "?ed=") {
+			return nil, "", "раннее начало (?ed=) в пути ws не переводится нашим конвертером", nil
+		}
 	default:
-		// Формулировка важна: ws, grpc и h2 движок УМЕЕТ — их не умеет
-		// наш конвертер, потому что в подписке они не встречались и
-		// эталона для сверки нет. Написав «не поддержан», мы отправили бы
+		// Формулировка важна: grpc и h2 движок УМЕЕТ — их не умеет наш
+		// конвертер, потому что в подписке они не встречались и эталона
+		// для сверки нет. Написав «не поддержан», мы отправили бы
 		// владельца менять версию mihomo, где чинить нечего.
 		return nil, "", fmt.Sprintf(
 			"транспорт %s не переводится нашим конвертером (движок его умеет, перевода нет у нас)",
@@ -148,6 +159,13 @@ func convertVLESS(name string, o xrayOutbound, xhttp bool) (map[string]any, stri
 		return nil, "", fmt.Sprintf("режим шифрования %s у vless не поддержан", orNone(ss.Security)), nil
 	}
 
+	// mux (mux.cool Xray) у ws-узлов обхода не переносится, и это не
+	// потеря: у mihomo-vless мультиплекса Xray нет, а сервер Xray принимает
+	// и обычные соединения — mux лишь клиентская экономия рукопожатий.
+	if ss.Network == "ws" {
+		p["ws-opts"] = wsOpts(ss.WSSettings.Path, ss.WSSettings.Host, ss.WSSettings.Headers)
+	}
+
 	var unknown []string
 	if ss.Network == "xhttp" {
 		x := ss.XHTTPSettings
@@ -160,6 +178,32 @@ func convertVLESS(name string, o xrayOutbound, xhttp bool) (map[string]any, stri
 		p["xhttp-opts"] = opts
 	}
 	return p, "vless", "", unknown
+}
+
+// wsOpts собирает ws-opts mihomo из wsSettings Xray.
+//
+// Сверено с WSOptions в adapter/outbound/vless.go mihomo v1.19.27: path и
+// headers. Host берётся из headers.Host, а при его отсутствии — из поля
+// host, которым его пишут новые Xray (в подписке такого нет, но разобрать
+// его дёшево). Пустые ключи опускаются: путь и заголовок не выдумываем.
+// Прочие заголовки переносятся как есть — это те же HTTP-заголовки
+// рукопожатия у обоих движков.
+func wsOpts(path, host string, headers map[string]string) map[string]any {
+	opts := map[string]any{}
+	if path != "" {
+		opts["path"] = path
+	}
+	h := map[string]any{}
+	for k, v := range headers {
+		h[k] = v
+	}
+	if _, ok := h["Host"]; !ok && host != "" {
+		h["Host"] = host
+	}
+	if len(h) > 0 {
+		opts["headers"] = h
+	}
+	return opts
 }
 
 func convertHysteria(name string, o xrayOutbound) (map[string]any, string, string) {
@@ -225,7 +269,11 @@ var ssCiphers = map[string]int{
 	"chacha20-ietf-poly1305":  0,
 	"xchacha20-ietf-poly1305": 0,
 	// У 2022 пароль — base64-ключ фиксированной длины. Не той длины —
-	// CreateMethod отказывает, и опять целым провайдером.
+	// CreateMethod отказывает, и опять целым провайдером. Ключей может быть
+	// несколько через двоеточие — iPSK:uPSK, многопользовательская форма
+	// (EIH): так приходят все SS-2022 узлы подписки. sing-shadowsocks2
+	// (shadowaead_2022) делит пароль по «:» и требует нужную длину от
+	// КАЖДОЙ части, поэтому и проверка здесь поштучная.
 	"2022-blake3-aes-128-gcm":       16,
 	"2022-blake3-aes-256-gcm":       32,
 	"2022-blake3-chacha20-poly1305": 32,
@@ -255,9 +303,13 @@ func convertShadowsocks(name string, o xrayOutbound) (map[string]any, string, st
 		return nil, "", fmt.Sprintf("шифр shadowsocks %s не переводится нашим конвертером", orNone(v.Method))
 	}
 	if keyLen > 0 {
-		key, err := base64.StdEncoding.DecodeString(v.Password)
-		if err != nil || len(key) != keyLen {
-			return nil, "", fmt.Sprintf("у шифра %s ключ обязан быть base64 длиной %d байт", v.Method, keyLen)
+		for _, part := range strings.Split(v.Password, ":") {
+			key, err := base64.StdEncoding.DecodeString(part)
+			if err != nil || len(key) != keyLen {
+				return nil, "", fmt.Sprintf(
+					"у шифра %s ключ обязан быть base64 длиной %d байт (или несколько таких через двоеточие)",
+					v.Method, keyLen)
+			}
 		}
 	}
 

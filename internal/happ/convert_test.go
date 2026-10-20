@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -511,11 +512,18 @@ func TestConvertUnsupported(t *testing.T) {
 			"отпечат",
 		},
 		{
-			"транспорт ws",
+			"транспорт grpc",
 			`{"tag":"proxy","protocol":"vless",
 			  "settings":{"vnext":[{"address":"203.0.113.1","port":443,"users":[{"id":"u"}]}]},
-			  "streamSettings":{"network":"ws","security":"tls"}}`,
-			"ws",
+			  "streamSettings":{"network":"grpc","security":"tls"}}`,
+			"grpc",
+		},
+		{
+			"ws с ранним началом",
+			`{"tag":"proxy","protocol":"vless",
+			  "settings":{"vnext":[{"address":"203.0.113.1","port":443,"users":[{"id":"u"}]}]},
+			  "streamSettings":{"network":"ws","wsSettings":{"path":"/p?ed=2048"},"security":"tls"}}`,
+			"?ed=",
 		},
 		{
 			"vless без шифрования",
@@ -734,6 +742,15 @@ func TestConvertShadowsocksUnsupported(t *testing.T) {
 		{"2022 с ключом не той длины",
 			ssOutbound(`{"address":"203.0.113.1","port":2030,"password":"c2hvcnQ=","method":"2022-blake3-aes-256-gcm"}`),
 			"32 байт"},
+		{"2022 с коротким ключом пользователя",
+			ssOutbound(`{"address":"203.0.113.1","port":2030,"password":"` + ss2022Key + `:c2hvcnQ=","method":"2022-blake3-aes-256-gcm"}`),
+			"32 байт"},
+		{"2022 с пустым ключом пользователя",
+			ssOutbound(`{"address":"203.0.113.1","port":2030,"password":"` + ss2022Key + `:","method":"2022-blake3-aes-256-gcm"}`),
+			"32 байт"},
+		{"2022 с пустым ключом сервера",
+			ssOutbound(`{"address":"203.0.113.1","port":2030,"password":":` + ss2022Key + `","method":"2022-blake3-aes-256-gcm"}`),
+			"32 байт"},
 		{"транспорт ws",
 			`{"tag":"proxy","protocol":"shadowsocks","settings":{"servers":[{"address":"203.0.113.1","port":2030,"password":"p","method":"aes-256-gcm"}]},
 			  "streamSettings":{"network":"ws","security":"none"}}`,
@@ -763,16 +780,102 @@ func TestConvertShadowsocksUnsupported(t *testing.T) {
 	}
 }
 
-// TestConvertShadowsocks2022ValidKey: ключ нужной длины принимается.
+// ss2022Key — base64-ключ ровно 32 байт.
+const ss2022Key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+
+// TestConvertShadowsocks2022ValidKey: ключ нужной длины принимается — и
+// одиночный, и пара iPSK:uPSK, в которой подписка приносит все свои SS-2022
+// узлы (снято с роутера 2026-10-20). Пароль доходит до узла нетронутым:
+// делит его на ключи уже mihomo.
 func TestConvertShadowsocks2022ValidKey(t *testing.T) {
-	key := "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=" // 32 байта
-	entries, err := Parse([]byte(`[{"remarks":"🇵🇼Тест","outbounds":[` +
-		ssOutbound(`{"address":"203.0.113.1","port":2030,"password":"`+key+`","method":"2022-blake3-aes-256-gcm"}`) + `]}]`))
+	for _, pw := range []string{ss2022Key, ss2022Key + ":" + ss2022Key} {
+		entries, err := Parse([]byte(`[{"remarks":"🇵🇼Тест","outbounds":[` +
+			ssOutbound(`{"address":"203.0.113.1","port":2030,"password":"`+pw+`","method":"2022-blake3-aes-256-gcm"}`) + `]}]`))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		e := entries[0]
+		if e.Kind != KindNode {
+			t.Fatalf("2022 с верным ключом %q не стал узлом: %s", pw, e.Reason)
+		}
+		if e.Proxy["password"] != pw {
+			t.Errorf("пароль в узле %v, ожидался %q", e.Proxy["password"], pw)
+		}
+	}
+}
+
+// TestConvertWhitelistBypassOnWS: запись обхода белых списков в форме,
+// снятой с роутера 2026-10-20, — decoy на reality и wl на vless+ws+tls с
+// mux Xray. Узлом становится wl, транспорт переводится в ws-opts, mux
+// отбрасывается.
+func TestConvertWhitelistBypassOnWS(t *testing.T) {
+	raw := []byte(`[{"remarks":"🇧🇧⚪Тест (БС-1)☁️","outbounds":[
+	  {"tag":"proxy-decoy-x-direct","protocol":"vless",
+	   "settings":{"vnext":[{"address":"203.0.113.1","port":8443,"users":[{"id":"u1","encryption":"none","flow":"xtls-rprx-vision"}]}]},
+	   "streamSettings":{"network":"tcp","tcpSettings":{},"security":"reality",
+	   "realitySettings":{"serverName":"s","publicKey":"pk","shortId":"ab","fingerprint":"firefox"}}},
+	  {"tag":"proxy-wl-example-org-direct","protocol":"vless",
+	   "settings":{"vnext":[{"address":"wl.example.org","port":443,"users":[{"id":"u2","encryption":"none","flow":""}]}]},
+	   "streamSettings":{"network":"ws","wsSettings":{"path":"/a1b2c3","headers":{"Host":"wl.example.org"}},
+	   "security":"tls","tlsSettings":{"serverName":"wl.example.org","fingerprint":"edge","alpn":["http/1.1"]}},
+	   "mux":{"enabled":true,"concurrency":8,"xudpConcurrency":16,"xudpProxyUDP443":"reject"}},
+	  {"tag":"direct","protocol":"freedom"}],
+	  "routing":{"balancers":[{"tag":"WL_Balancer","selector":["proxy"],"fallbackTag":"proxy-wl-example-org-direct"}]}}]`)
+	entries, err := Parse(raw)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if entries[0].Kind != KindNode {
-		t.Fatalf("2022 с верным ключом не стал узлом: %s", entries[0].Reason)
+	e := entries[0]
+	if e.Kind != KindNode {
+		t.Fatalf("вид %q (%s), ожидался узел", e.Kind, e.Reason)
+	}
+	want := map[string]string{
+		"type": "vless", "server": "wl.example.org", "port": "443", "uuid": "u2",
+		"network": "ws", "tls": "true", "servername": "wl.example.org",
+		"client-fingerprint": "edge", "alpn": "http/1.1",
+	}
+	got := flatten(e.Proxy)
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %q, ожидалось %q", k, got[k], v)
+		}
+	}
+	for k := range got {
+		if strings.HasPrefix(k, "mux") || strings.HasPrefix(k, "smux") || k == "flow" {
+			t.Errorf("лишний ключ %s в узле", k)
+		}
+	}
+	wantWS := map[string]any{"path": "/a1b2c3", "headers": map[string]any{"Host": "wl.example.org"}}
+	if ws := e.Proxy["ws-opts"]; !reflect.DeepEqual(ws, wantWS) {
+		t.Errorf("ws-opts = %v, ожидалось %v", ws, wantWS)
+	}
+}
+
+// TestConvertWSHostFallback: Host из поля host новых Xray — когда в
+// headers его нет; пустые path и Host в узел не попадают.
+func TestConvertWSHostFallback(t *testing.T) {
+	cases := []struct {
+		ws   string
+		want map[string]any
+	}{
+		{`{"path":"/p","host":"h.example.org"}`, map[string]any{"path": "/p", "headers": map[string]any{"Host": "h.example.org"}}},
+		{`{"host":"h.example.org","headers":{"Host":"wins.example.org"}}`, map[string]any{"headers": map[string]any{"Host": "wins.example.org"}}},
+		{`{}`, map[string]any{}},
+	}
+	for _, c := range cases {
+		raw := []byte(`[{"remarks":"🇧🇧Тест","outbounds":[{"tag":"proxy","protocol":"vless",
+		  "settings":{"vnext":[{"address":"203.0.113.1","port":443,"users":[{"id":"u"}]}]},
+		  "streamSettings":{"network":"ws","wsSettings":` + c.ws + `,"security":"tls","tlsSettings":{"serverName":"s"}}}]}]`)
+		entries, err := Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if entries[0].Kind != KindNode {
+			t.Fatalf("%s: вид %q (%s)", c.ws, entries[0].Kind, entries[0].Reason)
+		}
+		if got := entries[0].Proxy["ws-opts"]; !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: ws-opts = %v, ожидалось %v", c.ws, got, c.want)
+		}
 	}
 }
 

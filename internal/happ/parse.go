@@ -412,6 +412,14 @@ type xrayOutbound struct {
 			// convert.go, а не молчаливый пропуск при разборе.
 			Extra map[string]any `json:"extra"`
 		} `json:"xhttpSettings"`
+		// WSSettings — транспорт ws у записей обхода белых списков:
+		// path и headers.Host. host — форма новых Xray, разбирается про
+		// запас (см. wsOpts).
+		WSSettings struct {
+			Path    string            `json:"path"`
+			Host    string            `json:"host"`
+			Headers map[string]string `json:"headers"`
+		} `json:"wsSettings"`
 		HysteriaSettings struct {
 			Version int    `json:"version"`
 			Auth    string `json:"auth"`
