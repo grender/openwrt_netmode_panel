@@ -171,18 +171,21 @@ func (s *Server) handleNikkiTest(w http.ResponseWriter, r *http.Request) {
 	//
 	// Без манифеста все строки — node, и замер остаётся ровно тем, чем был.
 	members := subs.Order(all, ProxyGroup, s.manifestEntries())
-	names := make([]string, 0, len(members))
+	targets := make([]nikki.ProbeTarget, 0, len(members))
 	for _, m := range members {
 		if m.Kind != happ.KindNode {
 			continue
 		}
-		names = append(names, m.Name)
+		// Провайдер берётся из той же карты, из которой панель потом
+		// покажет задержку: замер обязан писать в ту копию узла, которую
+		// читает показ (см. addProviderProxies).
+		targets = append(targets, nikki.ProbeTarget{Provider: all[m.Name].Provider, Name: m.Name})
 	}
 	// Саму группу не проверяем: /proxies/{группа}/delay отдаёт задержку
 	// выбранного члена, а он и так есть в списке — вышла бы двойная проба
 	// одного узла под двумя именами.
 
-	sum := nikki.ProbeAll(r.Context(), s.nikki, names)
+	sum := nikki.ProbeAll(r.Context(), s.nikki, targets)
 	s.logf("nikki: замер %d узлов — измерено %d, не ответили %d, не успели %d, %d мс",
 		sum.Total, sum.Measured, sum.Failed, sum.Skipped, sum.ElapsedMS)
 

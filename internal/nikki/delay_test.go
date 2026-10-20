@@ -42,7 +42,7 @@ func TestDelayReadsMeasuredShape(t *testing.T) {
 	srv := httptest.NewServer(d)
 	defer srv.Close()
 
-	got, err := New(srv.URL, "sec").Delay(context.Background(), "🇭🇳⚡Отель")
+	got, err := New(srv.URL, "sec").Delay(context.Background(), "", "🇭🇳⚡Отель")
 	if err != nil {
 		t.Fatalf("Delay: %v", err)
 	}
@@ -63,6 +63,41 @@ func TestDelayReadsMeasuredShape(t *testing.T) {
 	}
 }
 
+// Узел из провайдера пробуется через маршрут провайдера. mihomo v1.19.29 на
+// /proxies/{имя}/delay узлов провайдеров не находит вовсе (живой роутер,
+// 20.10.2026), и прежний путь валил замер всей подписки.
+func TestDelayGoesThroughProvider(t *testing.T) {
+	d := &delayServer{}
+	srv := httptest.NewServer(d)
+	defer srv.Close()
+
+	got, err := New(srv.URL, "sec").Delay(context.Background(), "sub", "🇨🇭⚪Тест (БС-1)☁️")
+	if err != nil {
+		t.Fatalf("Delay: %v", err)
+	}
+	if got != 25 {
+		t.Errorf("задержка %d, ожидалось 25", got)
+	}
+	if d.lastP != "/providers/proxies/sub/🇨🇭⚪Тест (БС-1)☁️/healthcheck" {
+		t.Errorf("путь %q", d.lastP)
+	}
+	if !strings.Contains(d.lastQ, "timeout=1500") || !strings.Contains(d.lastQ, "generate_204") {
+		t.Errorf("строка запроса %q — нет timeout или url", d.lastQ)
+	}
+}
+
+// Мёртвый узел маршрут провайдера отдаёт тем же 503, что и /proxies: это
+// один и тот же getProxyDelay (hub/route/provider.go).
+func TestDelayThroughProviderDeadNodeIsProbeFailure(t *testing.T) {
+	d := &delayServer{status: http.StatusServiceUnavailable, body: `{"message":"An error occurred in the delay test"}`}
+	srv := httptest.NewServer(d)
+	defer srv.Close()
+
+	if _, err := New(srv.URL, "sec").Delay(context.Background(), "sub", "мёртвый"); !errors.Is(err, ErrProbeFailed) {
+		t.Fatalf("ошибка %v, ожидалась ErrProbeFailed", err)
+	}
+}
+
 // Ноль в ответе — не «ноль миллисекунд», а несостоявшаяся проба: ровно то же
 // значение, которое mihomo пишет в history мёртвому узлу.
 func TestDelayZeroIsNotAMeasurement(t *testing.T) {
@@ -70,7 +105,7 @@ func TestDelayZeroIsNotAMeasurement(t *testing.T) {
 	srv := httptest.NewServer(d)
 	defer srv.Close()
 
-	if _, err := New(srv.URL, "sec").Delay(context.Background(), "мёртвый"); !errors.Is(err, ErrProbeFailed) {
+	if _, err := New(srv.URL, "sec").Delay(context.Background(), "", "мёртвый"); !errors.Is(err, ErrProbeFailed) {
 		t.Fatalf("ошибка %v, ожидалась ErrProbeFailed", err)
 	}
 }
@@ -82,7 +117,7 @@ func TestDelayUnknownNameIsAnError(t *testing.T) {
 	srv := httptest.NewServer(d)
 	defer srv.Close()
 
-	if _, err := New(srv.URL, "sec").Delay(context.Background(), "нет такого"); err == nil {
+	if _, err := New(srv.URL, "sec").Delay(context.Background(), "", "нет такого"); err == nil {
 		t.Fatal("несуществующее имя принято как успешный замер")
 	}
 }
@@ -118,7 +153,7 @@ func (p *probeClient) LogStream(context.Context, string) (*LogStream, error) {
 	return nil, ErrUnavailable
 }
 
-func (p *probeClient) Delay(ctx context.Context, name string) (int, error) {
+func (p *probeClient) Delay(ctx context.Context, _, name string) (int, error) {
 	n := atomic.AddInt32(&p.inFlyht, 1)
 	for {
 		old := atomic.LoadInt32(&p.peak)
@@ -146,10 +181,18 @@ func (p *probeClient) Delay(ctx context.Context, name string) (int, error) {
 	return 42, nil
 }
 
-func names(n int) []string {
-	out := make([]string, n)
+func names(n int) []ProbeTarget {
+	out := make([]ProbeTarget, n)
 	for i := range out {
-		out[i] = string(rune('a' + i%26))
+		out[i] = ProbeTarget{Name: string(rune('a' + i%26))}
+	}
+	return out
+}
+
+func targets(ns ...string) []ProbeTarget {
+	out := make([]ProbeTarget, len(ns))
+	for i, n := range ns {
+		out[i] = ProbeTarget{Provider: "sub", Name: n}
 	}
 	return out
 }
@@ -158,7 +201,7 @@ func names(n int) []string {
 // в подписке на два десятка серверов часть заведомо не отвечает.
 func TestProbeAllSurvivesDeadNodes(t *testing.T) {
 	c := &probeClient{dead: map[string]bool{"b": true, "d": true}}
-	sum := ProbeAll(context.Background(), c, []string{"a", "b", "c", "d", "e"})
+	sum := ProbeAll(context.Background(), c, targets("a", "b", "c", "d", "e"))
 
 	if sum.Total != 5 || sum.Measured != 3 || sum.Failed != 2 || sum.Skipped != 0 {
 		t.Fatalf("итог %+v, ожидалось 5/3/2/0", sum)
@@ -190,7 +233,7 @@ func TestProbeAllCountsBudgetAsSkippedNotFailed(t *testing.T) {
 	cancel()
 
 	c := &probeClient{}
-	sum := ProbeAll(ctx, c, []string{"a", "b", "c"})
+	sum := ProbeAll(ctx, c, targets("a", "b", "c"))
 	if sum.Skipped != 3 || sum.Failed != 0 || sum.Measured != 0 {
 		t.Fatalf("итог %+v, ожидалось 0 измеренных и 3 не успевших", sum)
 	}

@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -149,6 +150,10 @@ type Proxy struct {
 	Pinned bool `json:"pinned"`
 	// Selectable — принимает ли группа ручной выбор.
 	Selectable bool `json:"selectable"`
+	// Provider — провайдер, из которого взят узел; пусто у того, что
+	// лежит в /proxies (группы, DIRECT). Наружу не отдаётся: нужен только
+	// замеру, который обязан пробовать узел через тот же провайдер (Delay).
+	Provider string `json:"-"`
 }
 
 // IsGroup сообщает, группа ли это.
@@ -177,8 +182,9 @@ type Client interface {
 	// Delay — проба задержки одного узла. В интерфейсе, потому что замер
 	// пачки (ProbeAll) написан против интерфейса: иначе поведение при
 	// частичном отказе — половина узлов мертва, бюджет вышел — проверялось
-	// бы только на живом роутере, то есть никогда.
-	Delay(ctx context.Context, name string) (int, error)
+	// бы только на живом роутере, то есть никогда. provider — Proxy.Provider
+	// узла, пусто для того, что лежит в /proxies.
+	Delay(ctx context.Context, provider, name string) (int, error)
 	// PanelAlive — проба статики дашборда (panel.go). В интерфейсе, а не
 	// только у HTTP: без неё обработчик не смог бы проверить панель на
 	// подменённом клиенте, и единственный путь, отдающий секрет наружу,
@@ -408,6 +414,13 @@ func proxyFromWire(name string, w wireProxy) Proxy {
 // потеряли и текущий узел группы, и признак ручного закрепления — ровно
 // то, чем панель отличает «владелец выбрал» от «движок так решил».
 //
+// Провайдеры обходятся по имени, а не в порядке карты, и это не косметика.
+// Узел подписки лежит сразу в двух провайдерах — sub (группа PROXY) и
+// sub-auto (AUTO), — и у каждого своя копия со своей history. В случайном
+// порядке delay_ms брался то из одной копии, то из другой, и свежий замер,
+// записанный в sub, мог не показаться вовсе. По имени sub идёт раньше
+// sub-auto: показ и замер смотрят в одну копию — ту, из которой PROXY.
+//
 // Отказ этого запроса — отказ всего вызова. Вернуть половину карты молча
 // нельзя: получился бы список, где узлы подписки помечены «движок их не
 // принял», хотя движок их принял и просто не был дослушан.
@@ -420,15 +433,22 @@ func (c *HTTP) addProviderProxies(ctx context.Context, out map[string]Proxy) err
 	if err := c.do(ctx, http.MethodGet, "/providers/proxies", nil, &wire, callTimeout); err != nil {
 		return err
 	}
-	for _, prov := range wire.Providers {
-		for _, w := range prov.Proxies {
+	provs := make([]string, 0, len(wire.Providers))
+	for name := range wire.Providers {
+		provs = append(provs, name)
+	}
+	sort.Strings(provs)
+	for _, prov := range provs {
+		for _, w := range wire.Providers[prov].Proxies {
 			if w.Name == "" {
 				continue
 			}
 			if _, ok := out[w.Name]; ok {
 				continue
 			}
-			out[w.Name] = proxyFromWire(w.Name, w)
+			p := proxyFromWire(w.Name, w)
+			p.Provider = prov
+			out[w.Name] = p
 		}
 	}
 	return nil
@@ -657,12 +677,25 @@ const delayTestURL = "https://www.gstatic.com/generate_204"
 // Групповой эндпоинт /group/{имя}/delay НЕ ИСПОЛЬЗУЕТСЯ: его форма не
 // снималась. А /proxies/{группа}/delay отдаёт задержку выбранного члена, а не
 // всех, — обновить всех можно только вызовом по каждому имени.
-func (c *HTTP) Delay(ctx context.Context, name string) (int, error) {
+//
+// Узел из провайдера пробуется через /providers/proxies/{провайдер}/{имя}/
+// healthcheck, а не через /proxies/{имя}/delay. mihomo v1.19.29 перестал
+// искать в /proxies/{имя} узлы провайдеров (findProxyByName смотрит только
+// в tunnel.Proxies(), в v1.19.27 смотрел и в провайдеры), и на каждый узел
+// подписки отвечал «Resource not found» — кнопка замера валила все узлы за
+// полторы секунды (живой роутер, 20.10.2026). Маршрут провайдера есть в
+// обеих версиях, а за ним тот же getProxyDelay (hub/route/provider.go):
+// те же url и timeout, та же форма {"delay":N}, те же 503 и 504.
+func (c *HTTP) Delay(ctx context.Context, provider, name string) (int, error) {
 	q := url.Values{
 		"timeout": {strconv.Itoa(int(delayProbeTimeout / time.Millisecond))},
 		"url":     {delayTestURL},
 	}
 	path := "/proxies/" + url.PathEscape(name) + "/delay?" + q.Encode()
+	if provider != "" {
+		path = "/providers/proxies/" + url.PathEscape(provider) + "/" +
+			url.PathEscape(name) + "/healthcheck?" + q.Encode()
+	}
 
 	var out struct {
 		Delay int `json:"delay"`
@@ -724,7 +757,14 @@ type ProbeSummary struct {
 	ElapsedMS int `json:"elapsed_ms"`
 }
 
-// ProbeAll замеряет узлы по именам, не больше probeParallel одновременно.
+// ProbeTarget — узел для замера: имя и провайдер, через который его пробовать
+// (Proxy.Provider; пусто — узел из /proxies).
+type ProbeTarget struct {
+	Provider string
+	Name     string
+}
+
+// ProbeAll замеряет узлы, не больше probeParallel одновременно.
 //
 // Отказ одного узла не прерывает остальных — в этом весь смысл вызова:
 // подписка на два десятка серверов, часть из которых заведомо мертва, и
@@ -734,10 +774,10 @@ type ProbeSummary struct {
 // Ошибок не возвращает намеренно: неуспех отдельного узла — это результат
 // замера, а не сбой операции. Единственное, что вызывающий обязан проверить,
 // — Measured: ноль при непустом Total значит, что наружу не выбрался никто.
-func ProbeAll(ctx context.Context, c Client, names []string) ProbeSummary {
+func ProbeAll(ctx context.Context, c Client, targets []ProbeTarget) ProbeSummary {
 	start := time.Now()
-	sum := ProbeSummary{Total: len(names)}
-	if len(names) == 0 {
+	sum := ProbeSummary{Total: len(targets)}
+	if len(targets) == 0 {
 		return sum
 	}
 
@@ -745,8 +785,8 @@ func ProbeAll(ctx context.Context, c Client, names []string) ProbeSummary {
 	defer cancel()
 
 	workers := probeParallel
-	if workers > len(names) {
-		workers = len(names)
+	if workers > len(targets) {
+		workers = len(targets)
 	}
 
 	var mu sync.Mutex
@@ -758,11 +798,11 @@ func ProbeAll(ctx context.Context, c Client, names []string) ProbeSummary {
 			defer wg.Done()
 			for {
 				mu.Lock()
-				if next >= len(names) {
+				if next >= len(targets) {
 					mu.Unlock()
 					return
 				}
-				name := names[next]
+				t := targets[next]
 				next++
 				mu.Unlock()
 
@@ -772,7 +812,7 @@ func ProbeAll(ctx context.Context, c Client, names []string) ProbeSummary {
 					// роняла бы весь демон из безымянной горутины, а не один
 					// узел — узел же засчитается «не ответившим».
 					err = safe.Do(nil, "замер задержки узла", func() error {
-						_, derr := c.Delay(ctx, name)
+						_, derr := c.Delay(ctx, t.Provider, t.Name)
 						return derr
 					})
 				} else {

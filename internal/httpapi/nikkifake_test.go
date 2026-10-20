@@ -38,6 +38,10 @@ type fakeNikkiClient struct {
 	// чтобы проверить, КОГО именно опрашивали: замер разделителей подписки
 	// или самой группы иначе неотличим от правильного.
 	delayed []string
+	// delayedFrom — провайдер, через который пробовали каждое имя. Замер
+	// обязан идти через провайдера узла: mihomo v1.19.29 по голому имени
+	// узлов подписки не находит.
+	delayedFrom map[string]string
 	// reloaded — имена провайдеров, которые просили перечитать, в порядке
 	// вызова. По одному только списку узлов «перезагрузку позвали» и «файл
 	// записали и промолчали» неразличимы: подделка отдаёт всё тот же all.
@@ -74,9 +78,10 @@ func newFakeNikkiClient() *fakeNikkiClient {
 			Now:     "🇨🇻⚡Чарли 2", Selectable: true},
 		"GLOBAL": {Name: "GLOBAL", Type: "Selector", Alive: true,
 			Members: []string{"DIRECT", "PROXY"}, Now: "DIRECT", Selectable: true},
-		"🇭🇳⚡Отель":   {Name: "🇭🇳⚡Отель", Type: "Vless", Alive: true, DelayMS: d(38)},
-		"🇨🇻⚡Чарли 2": {Name: "🇨🇻⚡Чарли 2", Type: "Vless", Alive: true, DelayMS: d(27)},
-		"мёртвый":    {Name: "мёртвый", Type: "Vless", Alive: false, DelayMS: nil},
+		// Узлы — из провайдера sub, как на живом роутере: в /proxies их нет.
+		"🇭🇳⚡Отель":   {Name: "🇭🇳⚡Отель", Type: "Vless", Alive: true, DelayMS: d(38), Provider: "sub"},
+		"🇨🇻⚡Чарли 2": {Name: "🇨🇻⚡Чарли 2", Type: "Vless", Alive: true, DelayMS: d(27), Provider: "sub"},
+		"мёртвый":    {Name: "мёртвый", Type: "Vless", Alive: false, DelayMS: nil, Provider: "sub"},
 	}}
 }
 
@@ -199,13 +204,17 @@ func (f *fakeNikkiClient) LogStream(context.Context, string) (*nikki.LogStream, 
 // Успех записывается в DelayMS, потому что настоящий замер обновляет history
 // у mihomo, и следующее чтение /proxies отдаёт уже новое число. Без этого
 // тест не отличил бы «замерили» от «сходили и выбросили».
-func (f *fakeNikkiClient) Delay(_ context.Context, name string) (int, error) {
+func (f *fakeNikkiClient) Delay(_ context.Context, provider, name string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
 		return 0, f.err
 	}
 	f.delayed = append(f.delayed, name)
+	if f.delayedFrom == nil {
+		f.delayedFrom = map[string]string{}
+	}
+	f.delayedFrom[name] = provider
 	p, ok := f.all[name]
 	if !ok {
 		return 0, nikki.ErrNotFound

@@ -106,7 +106,7 @@ func (f *devNikki) Proxies(context.Context) (map[string]nikki.Proxy, error) {
 // Задержка ответа не изображается намеренно: ждать шесть секунд на каждом
 // прогоне мока — плата ни за что, а таймауты панели проверяются сценарием
 // мок-сервера, а не этим клиентом.
-func (f *devNikki) Delay(_ context.Context, name string) (int, error) {
+func (f *devNikki) Delay(_ context.Context, _, name string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	p, ok := f.all[name]

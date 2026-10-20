@@ -822,7 +822,7 @@ func TestDelayDeadNodeIsProbeFailed(t *testing.T) {
 			w.WriteHeader(code)
 			_, _ = w.Write([]byte(`{"message":"An error occurred in the delay test"}`))
 		}))
-		_, err := New(srv.URL, "").Delay(context.Background(), "Узел")
+		_, err := New(srv.URL, "").Delay(context.Background(), "", "Узел")
 		srv.Close()
 		if !errors.Is(err, ErrProbeFailed) {
 			t.Errorf("код %d: %v, ожидался ErrProbeFailed", code, err)
@@ -830,5 +830,41 @@ func TestDelayDeadNodeIsProbeFailed(t *testing.T) {
 		if errors.Is(err, ErrUnavailable) {
 			t.Errorf("код %d: мёртвый узел засчитан недоступностью движка", code)
 		}
+	}
+}
+
+// Узел подписки лежит в двух провайдерах — sub и sub-auto, — у каждого своя
+// копия со своей history. Запись обязана браться из sub, и всегда: в порядке
+// карты свежий замер, записанный в sub, то показывался, то нет. Двадцать
+// прогонов — потому что порядок карты в Go случаен, и один удачный вызов
+// ничего не доказывает.
+func TestProxiesTakeProviderNodeFromFirstProviderByName(t *testing.T) {
+	f := &fakeClash{
+		body: `{"proxies":{"PROXY":{"name":"PROXY","type":"Selector","all":["Узел"],"now":"Узел"}}}`,
+		providersBody: `{"providers":{
+		  "sub-auto":{"name":"sub-auto","proxies":[{"name":"Узел","type":"Vless","alive":true,"history":[{"delay":900}]}]},
+		  "sub":{"name":"sub","proxies":[{"name":"Узел","type":"Vless","alive":true,"history":[{"delay":47}]}]}
+		}}`,
+	}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+
+	for i := 0; i < 20; i++ {
+		all, err := New(srv.URL, "").Proxies(context.Background())
+		if err != nil {
+			t.Fatalf("Proxies: %v", err)
+		}
+		p := all["Узел"]
+		if p.Provider != "sub" {
+			t.Fatalf("прогон %d: провайдер %q, ожидался sub", i, p.Provider)
+		}
+		if p.DelayMS == nil || *p.DelayMS != 47 {
+			t.Fatalf("прогон %d: задержка %v, ожидалась 47 из sub", i, p.DelayMS)
+		}
+	}
+	// Группа из /proxies провайдера не получает: её замер идёт прежним путём.
+	all, _ := New(srv.URL, "").Proxies(context.Background())
+	if all["PROXY"].Provider != "" {
+		t.Errorf("у группы провайдер %q", all["PROXY"].Provider)
 	}
 }
