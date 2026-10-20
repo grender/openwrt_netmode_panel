@@ -5,7 +5,7 @@ TARGET   := $(BUILDDIR)/$(BIN)
 GOFLAGS_TARGET := GOOS=linux GOARCH=arm64 CGO_ENABLED=0
 LDFLAGS        := -s -w
 
-.PHONY: all verify fmt vet test api panel panel-next dev preview build size checks probe-check geometry vm-up vm-qemu vm-deploy vm-ssh vm-down vm-destroy clean help
+.PHONY: all verify fmt vet test api panel panel-next dev preview build size checks probe-check geometry vm-up vm-qemu vm-deploy vm-ssh vm-down vm-destroy desktop clean help
 
 all: verify
 
@@ -132,6 +132,11 @@ vm-down:
 ## vm-destroy — удалить VM и её диск (скачанный образ остаётся в кэше).
 vm-destroy:
 	@scripts/vm/destroy.sh
+
+## desktop — приложение в строке меню Mac для тестовой VM: старт/стоп,
+## панель, настройки прокси, системный прокси (ADR-0047). Нужен Node 22.
+desktop:
+	@cd desktop && { [ -d node_modules ] || npm ci; } && npm run dev
 
 clean:
 	@rm -rf $(BUILDDIR)

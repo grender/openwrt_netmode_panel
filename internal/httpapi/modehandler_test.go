@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"netmoded/internal/b4"
 	"netmoded/internal/executor"
+	"netmoded/internal/job"
 	"netmoded/internal/led"
 )
 
@@ -400,4 +402,101 @@ func TestModeAppearsInStatus(t *testing.T) {
 		t.Errorf("джоб в статусе: %+v", got.Job)
 	}
 	s.jobs.Wait(3 * time.Second)
+}
+
+// b4proxyServer — сервер с nikki, у которого mixed-port 7890 и логин.
+func b4proxyServer(t *testing.T) (*Server, *executor.Fake, *fakeB4Client) {
+	t.Helper()
+	s, f, _ := serverWithLED(t)
+	f.UCIValues["nikki.mixin.mixed_port"] = "7890"
+	f.UCIValues["nikki.mixin.authentication"] = "1"
+	f.UCIValues["nikki.@authentication[0].username"] = "nikki"
+	f.UCIValues["nikki.@authentication[0].password"] = "s3cret"
+	b := newFakeB4Client()
+	s.SetB4Client(b)
+	return s, f, b
+}
+
+func switchMode(t *testing.T, s *Server, mode string) job.State {
+	t.Helper()
+	rec := post(t, s, "/api/mode", `{"mode":"`+mode+`"}`, "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d: %s", rec.Code, rec.Body.String())
+	}
+	if !s.jobs.Wait(30 * time.Second) {
+		t.Fatal("джоб не завершился")
+	}
+	return s.jobs.Current().State
+}
+
+// ADR-0048: в режиме b4 SOCKS5 b4 встаёт на порт и логин mixed-port nikki —
+// прокси для ПК на том же порту в обоих режимах. Настройки прочие (таймауты
+// UDP) сохраняются, b4 перезапускается ровно один раз.
+func TestModeB4MirrorsNikkiProxy(t *testing.T) {
+	s, _, b := b4proxyServer(t)
+
+	switchMode(t, s, "b4")
+	want := b4.Socks5Config{Enabled: true, Port: 7890, BindAddress: "0.0.0.0",
+		Username: "nikki", Password: "s3cret", UDPTimeout: 300, UDPReadTimeout: 5}
+	if b.socks != want {
+		t.Fatalf("SOCKS5 b4 %+v, ожидалось %+v", b.socks, want)
+	}
+	if b.restarts != 1 {
+		t.Fatalf("перезапусков %d, ожидался 1; вызовы %v", b.restarts, b.calls)
+	}
+
+	// Повторное переключение: всё уже совпадает — без записи и перезапуска.
+	b.calls = nil
+	switchMode(t, s, "b4")
+	if b.restarts != 1 || strings.Contains(strings.Join(b.calls, ","), "set socks5") {
+		t.Fatalf("лишняя запись или перезапуск: перезапусков %d, вызовы %v", b.restarts, b.calls)
+	}
+}
+
+// В режиме nikki SOCKS5 b4 не трогается: b4 остановлен, а порт у nikki.
+func TestModeNikkiLeavesB4ProxyAlone(t *testing.T) {
+	s, _, b := b4proxyServer(t)
+	switchMode(t, s, "nikki")
+	if len(b.calls) != 0 {
+		t.Fatalf("в режиме nikki были вызовы SOCKS5 b4: %v", b.calls)
+	}
+}
+
+// Логин у nikki выключен — у b4 его тоже нет: иначе b4 требовал бы пароль,
+// которого клиенты в режиме nikki не вводили.
+func TestModeB4ProxyWithoutNikkiAuth(t *testing.T) {
+	s, f, b := b4proxyServer(t)
+	f.UCIValues["nikki.mixin.authentication"] = "0"
+	switchMode(t, s, "b4")
+	if b.socks.Username != "" || b.socks.Password != "" || b.socks.Port != 7890 {
+		t.Fatalf("SOCKS5 b4 %+v", b.socks)
+	}
+}
+
+// Нет mixed_port — зеркалить нечего: b4 не трогается, режим включён.
+func TestModeB4WithoutNikkiPort(t *testing.T) {
+	s, f, b := b4proxyServer(t)
+	delete(f.UCIValues, "nikki.mixin.mixed_port")
+	j := switchMode(t, s, "b4")
+	if len(b.calls) != 0 {
+		t.Fatalf("вызовы SOCKS5 b4 без mixed_port: %v", b.calls)
+	}
+	if j != job.Done {
+		t.Fatalf("джоб %v", j)
+	}
+}
+
+// b4 не отвечает — прокси для ПК не настроен, но режим b4 включён: обход
+// для LAN от SOCKS5 не зависит, валить переключение из-за удобства нельзя.
+func TestModeB4ProxyFailureIsNotFatal(t *testing.T) {
+	old := b4UpWait
+	b4UpWait = 50 * time.Millisecond
+	t.Cleanup(func() { b4UpWait = old })
+
+	s, _, b := b4proxyServer(t)
+	b.err = b4.ErrUnavailable
+	j := switchMode(t, s, "b4")
+	if j != job.Done {
+		t.Fatalf("джоб %v, ожидался done", j)
+	}
 }

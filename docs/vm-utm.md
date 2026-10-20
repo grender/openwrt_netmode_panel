@@ -33,18 +33,30 @@ deploy печатает ссылку на панель: `http://127.0.0.1:18088/
 Панель открывается в режиме `off`. Чтобы проверить подписку: режим
 `nikki`, затем адрес подписки в разделе «Подписка» и «Обновить».
 
-**Трафик Mac через nikki в VM.** В режиме `nikki` прокси доступен на Mac
-как `127.0.0.1:17890` — HTTP и SOCKS5 на одном порту, логин `nikki`,
-пароль — `scripts/vm/ssh.sh 'uci get nikki.@authentication[0].password'`.
+**Трафик Mac через VM.** Прокси доступен на Mac как `127.0.0.1:17890` в
+режимах `nikki` и `b4` — порт и логин одни и те же (ADR-0048): логин
+`nikki`, пароль — `scripts/vm/ssh.sh 'uci get nikki.@authentication[0].password'`.
+В режиме `nikki` это HTTP и SOCKS5 на одном порту (mixed-port mihomo), в
+режиме `b4` — только SOCKS5 (встроенный сервер b4, трафик идёт с обходом
+DPI).
 Его можно указать в браузере или в «Системные настройки → Сеть → Прокси».
 Работает только для приложений, которые уважают прокси, и только TCP;
 профиль по умолчанию шлёт в туннель лишь то, что выбрано наборами в панели.
+
+**Приложение desktop/.** То же из строки меню Mac: `make desktop`
+(Node 22) — старт и стоп VM, панель внутри окна, настройки прокси по
+частям в буфер обмена (хост и порт отдельно — для Firefox), системный
+прокси с показом, включён ли он; выключается сам, когда VM гаснет или
+приложение выходит. Подробности — [desktop/README.md](../desktop/README.md),
+[ADR-0047](adr/0047-desktop-vm-app.md).
 
 | Команда | Что делает |
 |---|---|
 | `make vm-deploy` | перезалить только бинарь (`scripts/vm/deploy.sh`, аргументы deploy.sh проходят насквозь) |
 | `make vm-ssh` | ssh в VM (`scripts/vm/ssh.sh [команда]`) |
 | `make vm-down` | остановить VM (UTM или QEMU — ту, что запущена) |
+| `scripts/vm/tunnel.sh` | ssh-туннель к мордам в VM: b4 на `127.0.0.1:17000`, Clash API и дашборд nikki на `19090`, LuCI на `18080` (порты — `common.sh`); приложение `desktop/` держит его само |
+| `scripts/vm/start.sh` | запустить уже созданную VM без provision и deploy; `status.sh`, `env.sh`, `proxy-info.sh` — состояние, порты и логин прокси строками `KEY=value` (для `desktop/`) |
 | `make vm-destroy` | удалить VM и её диск; скачанный образ остаётся в `build/vm/cache` (`scripts/vm/destroy.sh --all` — вместе с ним) |
 | `scripts/vm/provision.sh --force` | перенастроить VM заново |
 | `scripts/vm/qemu-run.sh` | QEMU в этом терминале с консолью OpenWrt (выход — `Ctrl-A`, `X`) |

@@ -60,6 +60,56 @@
         ],
         "min_version": "1.64.0",
         "src": "src/http/handler/sets.go:23,634-698"
+      },
+      {
+        "method": "GET",
+        "path": "/api/socks5/config",
+        "purpose": "read built-in SOCKS5 server settings (ADR-0048); password is NOT redacted",
+        "response_keys": [
+          "success",
+          "config"
+        ],
+        "config_keys": [
+          "enabled",
+          "port",
+          "bind_address",
+          "username",
+          "password",
+          "udp_timeout",
+          "udp_read_timeout"
+        ],
+        "status": "verified",
+        "src": "src/http/handler/socks5.go:13,22-34; src/config/types.go:303-311",
+        "raw": "raw/52-b4-socks5.txt"
+      },
+      {
+        "method": "POST",
+        "path": "/api/socks5/config",
+        "purpose": "replace the whole system.socks5 section; persisted, applied only after restart",
+        "request_keys": [
+          "enabled",
+          "port",
+          "bind_address",
+          "username",
+          "password",
+          "udp_timeout",
+          "udp_read_timeout"
+        ],
+        "response_keys": [
+          "success",
+          "message"
+        ],
+        "rejects": "400 on bad port/bind_address, user without password; port_in_use_system if the port is busy (preflight net.Listen)",
+        "status": "verified_by_source",
+        "src": "src/http/handler/socks5.go:43-82; src/http/handler/config.go:396-398,439; src/http/handler/preflight.go:35-43",
+        "observed": "raw/52-b4-socks5.txt — the section after our POST + restart, b4 listening on the mirrored port"
+      },
+      {
+        "method": "POST",
+        "path": "/api/system/restart",
+        "purpose": "restart b4 (answers first, then /etc/init.d/b4 restart after 500 ms) — needed for SOCKS5 changes",
+        "status": "verified_by_source",
+        "src": "src/http/handler/system.go:19,142-214"
       }
     ],
     "set_survives_restart": true,

@@ -271,18 +271,4 @@ fi
 
 [ "$START" = yes ] || exit 0
 
-case "$("$UTMCTL" status "$VM_NAME" 2>/dev/null)" in
-	started) echo "  · VM уже запущена" ;;
-	*)
-		# utmctl выходит с 0, даже если UTM упал на запуске («OSStatus
-		# error -609»), — верим только статусу.
-		"$UTMCTL" start "$VM_NAME" || true
-		i=0
-		until [ "$("$UTMCTL" status "$VM_NAME" 2>/dev/null)" = started ]; do
-			[ "$i" -lt 15 ] || die "UTM не запустил $VM_NAME — см. ~/Library/Logs/DiagnosticReports/UTM-*.ips; лог QEMU: включите QEMU → DebugLog в $VM_BUNDLE/config.plist"
-			sleep 1
-			i=$((i + 1))
-		done
-		echo "  ✓ VM запущена (консоль — окно Serial в UTM)"
-		;;
-esac
+utm_start

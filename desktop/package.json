@@ -1,0 +1,28 @@
+{
+  "name": "netmoded-vm-desktop",
+  "private": true,
+  "description": "Menu-bar app for the netmoded test VM: start/stop, panel, proxy settings, macOS system proxy (ADR-0047)",
+  "main": "out/main/index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "tsc --noEmit && electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "preact": "^10.27.2"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.2",
+    "@types/node": "^22.0.0",
+    "electron": "^44.4.5",
+    "electron-vite": "^5.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.9",
+    "vitest": "^3.2.4"
+  }
+}

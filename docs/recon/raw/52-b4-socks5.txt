@@ -1,0 +1,9 @@
+# snapshot: test VM netmoded-vm (ADR-0045), OpenWrt 25.12.5, b4 1.74.1, 2026-09-25
+# after netmoded switched to mode b4 and mirrored nikki's mixed-port (ADR-0048); password redacted
+
+$ wget -qO- http://127.0.0.1:7000/api/socks5/config
+{"config":{"enabled":true,"port":7890,"bind_address":"0.0.0.0","username":"nikki","password":"<redacted>","udp_timeout":300,"udp_read_timeout":5},"success":true}
+
+$ netstat -ltnp | grep -E ":7890 |:7000 "   # mode b4
+tcp        0      0 :::7890                 :::*                    LISTEN      27471/b4
+tcp        0      0 :::7000                 :::*                    LISTEN      27471/b4

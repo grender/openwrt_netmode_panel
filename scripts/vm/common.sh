@@ -32,6 +32,13 @@
 # Прокси nikki (mixed-port: HTTP и SOCKS5, с логином) — чтобы пускать
 # трафик приложений Mac через nikki в VM без ssh-туннеля.
 : "${VM_PROXY_PORT:=17890}"
+# Морды движков и LuCI — не пробросом VM, а ssh-туннелем (tunnel.sh): их
+# добавили после того, как пробросы UTM уже вписаны в бандлы созданных VM,
+# а туннель не требует пересоздания. 17000, а не 7000: на Mac порт 7000
+# обычно занят приёмником AirPlay.
+: "${VM_B4_UI_PORT:=17000}"
+: "${VM_NIKKI_UI_PORT:=19090}"
+: "${VM_LUCI_PORT:=18080}"
 
 # Сеть QEMU user-net (в UTM — «Emulated VLAN»).
 #
@@ -49,6 +56,11 @@ VM_GUEST_SSH=22
 VM_GUEST_HTTP=8088
 # 7890 — mixed-port nikki по умолчанию (nikki.mixin.mixed_port).
 VM_GUEST_PROXY=7890
+# Веб-морда b4, Clash API с дашбордом nikki (nikki.mixin.api_listen) и
+# uhttpd LuCI — цели ssh-туннеля tunnel.sh.
+VM_GUEST_B4_UI=7000
+VM_GUEST_NIKKI_UI=9090
+VM_GUEST_LUCI=80
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 VM_DIR=$ROOT/build/vm
@@ -137,4 +149,37 @@ vm_reboot() {
 	done
 	echo
 	return 1
+}
+
+# Запускает VM в UTM и ждёт статуса started (utm-create.sh, start.sh).
+utm_start() {
+	case "$("$UTMCTL" status "$VM_NAME" 2>/dev/null)" in
+		started) echo "  · VM уже запущена" ;;
+		*)
+			# utmctl выходит с 0, даже если UTM упал на запуске («OSStatus
+			# error -609»), — верим только статусу.
+			"$UTMCTL" start "$VM_NAME" || true
+			i=0
+			until [ "$("$UTMCTL" status "$VM_NAME" 2>/dev/null)" = started ]; do
+				[ "$i" -lt 15 ] || die "UTM не запустил $VM_NAME — см. ~/Library/Logs/DiagnosticReports/UTM-*.ips; лог QEMU: включите QEMU → DebugLog в $VM_BUNDLE/config.plist"
+				sleep 1
+				i=$((i + 1))
+			done
+			echo "  ✓ VM запущена (консоль — окно Serial в UTM)"
+			;;
+	esac
+}
+
+# Чем запущена или может быть запущена VM: utm, qemu или none (нет диска).
+# UTM-бандл важнее: utm-create.sh переносит диск внутрь него.
+vm_backend() {
+	if [ -f "$VM_DIR/qemu.pid" ] && kill -0 "$(cat "$VM_DIR/qemu.pid")" 2>/dev/null; then
+		echo qemu
+	elif [ -d "$VM_BUNDLE" ] && [ -x "$UTMCTL" ]; then
+		echo utm
+	elif [ -f "$VM_DISK" ] || [ -f "$VM_BUNDLE/Data/disk.qcow2" ]; then
+		echo qemu
+	else
+		echo none
+	fi
 }

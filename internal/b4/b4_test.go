@@ -36,6 +36,12 @@ type fakeB4 struct {
 	// batchSuccess подменяет поле success в ответе. Пусто — поля нет вовсе:
 	// сборка b4, которая его не шлёт, обязана считаться успешной.
 	batchSuccess *bool
+
+	// socks — секция system.socks5 так, как её хранит b4; socksBody — сырое
+	// тело последнего POST /api/socks5/config.
+	socks     map[string]any
+	socksBody map[string]any
+	restarts  int
 }
 
 func boolPtr(b bool) *bool { return &b }
@@ -122,6 +128,31 @@ func (f *fakeB4) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out["success"] = *f.batchSuccess
 		}
 		_ = json.NewEncoder(w).Encode(out)
+
+	case "/api/socks5/config":
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "config": f.socks})
+		case http.MethodPost:
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			f.socksBody, f.socks = body, body
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true,
+				"message": "SOCKS5 configuration updated. Restart required for changes to take effect."})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+
+	case "/api/system/restart":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		f.restarts++
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -543,5 +574,48 @@ func TestPanelURLBracketsIPv6(t *testing.T) {
 func TestPanelURLRefusesEmptyHost(t *testing.T) {
 	if got, ok := PanelURL(""); ok {
 		t.Errorf("пустой хост принят: %q", got)
+	}
+}
+
+// SOCKS5 (ADR-0048): чтение отдаёт секцию из {"success","config"}, запись
+// шлёт её ЦЕЛИКОМ — b4 заменяет секцию, и не присланные таймауты UDP стали
+// бы нулями.
+func TestSocks5ConfigRoundTrip(t *testing.T) {
+	f, c, done := newFakeB4(t)
+	defer done()
+	f.socks = map[string]any{"enabled": false, "port": 1080, "bind_address": "0.0.0.0",
+		"username": "", "password": "", "udp_timeout": 300, "udp_read_timeout": 5}
+
+	got, err := c.Socks5Config(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Socks5Config{Port: 1080, BindAddress: "0.0.0.0", UDPTimeout: 300, UDPReadTimeout: 5}
+	if got != want {
+		t.Fatalf("прочитано %+v, ожидалось %+v", got, want)
+	}
+
+	got.Enabled, got.Port, got.Username, got.Password = true, 7890, "nikki", "pw"
+	if err := c.SetSocks5Config(context.Background(), got); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"enabled", "port", "bind_address", "username", "password", "udp_timeout", "udp_read_timeout"} {
+		if _, ok := f.socksBody[k]; !ok {
+			t.Errorf("в теле записи нет поля %q: %v", k, f.socksBody)
+		}
+	}
+	if f.socksBody["port"] != float64(7890) || f.socksBody["udp_timeout"] != float64(300) {
+		t.Errorf("тело записи %v", f.socksBody)
+	}
+}
+
+func TestRestartPosts(t *testing.T) {
+	f, c, done := newFakeB4(t)
+	defer done()
+	if err := c.Restart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.restarts != 1 {
+		t.Fatalf("перезапусков %d, ожидался 1; вызовы %v", f.restarts, f.calls)
 	}
 }

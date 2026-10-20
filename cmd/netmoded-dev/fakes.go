@@ -218,16 +218,32 @@ func (f *devNikki) Unfix(_ context.Context, group string) error {
 
 // devB4 повторяет сеты живого роутера.
 type devB4 struct {
-	mu   sync.Mutex
-	sets []b4.Set
+	mu    sync.Mutex
+	sets  []b4.Set
+	socks b4.Socks5Config
 }
 
 func newDevB4() *devB4 {
 	return &devB4{sets: []b4.Set{
 		{ID: "909a6fb1-b9b1-4af1-8ee0-bdce82e3d8ff", Name: "workki", Enabled: false},
 		{ID: "d98efbc7-96b6-401c-90c4-744f3ec3ccbd", Name: "HomeSet", Enabled: true},
-	}}
+	}, socks: b4.Socks5Config{Port: 1080, BindAddress: "0.0.0.0", UDPTimeout: 300, UDPReadTimeout: 5}}
 }
+
+func (f *devB4) Socks5Config(context.Context) (b4.Socks5Config, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.socks, nil
+}
+
+func (f *devB4) SetSocks5Config(_ context.Context, c b4.Socks5Config) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.socks = c
+	return nil
+}
+
+func (f *devB4) Restart(context.Context) error { return nil }
 
 func (f *devB4) Version(context.Context) (b4.Version, error) {
 	return b4.Version{Version: "1.74.1", Commit: "99808ed"}, nil
