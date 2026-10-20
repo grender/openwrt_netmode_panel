@@ -559,6 +559,35 @@ button.row { cursor: pointer; }
 .form-row { display: flex; gap: 8px; }
 .form-row > .field { flex: 1; min-width: 0; }
 
+/* Листы форм (сеть Wi-Fi, проброс): снизу на телефоне, по центру на
+   десктопе — на телефоне низ экрана зона большого пальца, на десктопе центр
+   читается как диалог. Правила потерялись при переезде с web/app.css, и
+   форма молча рисовалась блоком под всей страницей. z-index ниже, чем у
+   .slot-float: итог сохранения обязан быть виден поверх открытой формы. */
+.sheet-bg {
+	position: fixed; inset: 0; z-index: 20; background: rgba(6, 8, 10, .78);
+	display: flex; align-items: flex-end; justify-content: center;
+}
+.sheet {
+	width: 100%; max-height: 92vh; overflow-y: auto;
+	display: flex; flex-direction: column; gap: 12px;
+	background: var(--card); border-top: 1px solid var(--line-2);
+	border-radius: var(--r-xl) var(--r-xl) 0 0;
+	padding: 20px 16px calc(22px + env(safe-area-inset-bottom));
+}
+.sheet h3 { margin: 0 0 2px; font: 600 17px var(--sans); }
+.sheet .field + .hint { margin-top: -6px; }
+.sheet-actions { margin-top: 6px; display: flex; flex-direction: column; gap: 9px; }
+
+@media (min-width: 900px) {
+	.sheet-bg { align-items: center; }
+	.sheet {
+		width: 520px; max-width: 92vw; border-radius: var(--r-xl);
+		border: 1px solid var(--line-2); padding: 24px;
+	}
+	.sheet-actions { flex-direction: row-reverse; }
+}
+
 /* ─────────── диагностика ─────────── */
 
 .diags {

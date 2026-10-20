@@ -18,7 +18,7 @@
     "web/panel/src/state/poll.ts": "592cc7a9f4e4a97f10b33c6a6d2f1df7f9f59b23",
     "web/panel/src/state/side.ts": "a5d88afa51b188cf14df8108e80c4e80d09d1156",
     "web/panel/src/state/watch.ts": "224949878f70eaed87bfe86d96ed1ce7ac029b7d",
-    "web/panel/src/styles.css": "29c7cb7b7b335c1d03fb8f773f313473830bdbfe",
+    "web/panel/src/styles.css": "43a6e0deafc76f31fc3f751e9249d2618ee0a1aa",
     "web/panel/src/ui/App.tsx": "3455dfbe3b5382ef9179d5a2e7b8674c2416da84",
     "web/panel/src/ui/Autopool.tsx": "cb8e532b8dbb8cdf1c116047a5e19d6c58ec47d9",
     "web/panel/src/ui/Bridge.tsx": "5f3b054fd2638d707018913777543901777b586c",
@@ -34,16 +34,16 @@
     "web/panel/tsconfig.json": "2ee4ff881e2dbfd1abfe8024273340d7c8e94a94",
     "web/panel/vite.config.ts": "229d4555da50f27791ae3765994f04ce40371edd"
   },
-  "inputs_digest": "666e34f1704d211bfbe5d0985f26a9c853dd786e3b88d68b77f33203a6073340",
+  "inputs_digest": "108b41c5957ac1c35e275b3b690b6b9a06c9915882eeb89777d9c8bd525f8724",
   "artifact": {
     "assets/app.js": "06fc57a139c578942b79fc0f054acb04f2a59ca4f7deda4dde49190c4a3f221a",
-    "assets/style.css": "9750b577b6f4343492d012db0016f540de879b40deace43dbb7174e404fbcba7",
-    "index.html": "52fa1e26006ba710488227df4773b976556cf47b34853c97f15da171681af279"
+    "assets/style.css": "b579e3c8d7716b265092168f6437e7614784cd1bd77a9f803179eedf2502c345",
+    "index.html": "23e2d5adda4277c214c9e4a31537fad63c3b4667231a7525a84cf94bf7a6ec43"
   },
   "sizes_gzip": {
-    "assets/app.js": 61464,
-    "assets/style.css": 6116,
-    "index.html": 578,
-    "total": 68158
+    "assets/app.js": 61505,
+    "assets/style.css": 6291,
+    "index.html": 580,
+    "total": 68376
   }
 }
