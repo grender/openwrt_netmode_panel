@@ -15,7 +15,7 @@
 
 | Прокси | Выход | Группа | Для чего |
 |---|---|---|---|
-| `kz-nqz-exit-01-resi` | ISP-прокси, домашний IP | `EXIT-RESI` | LLM, Google, PayPal, стриминги |
+| `kz-nqz-exit-01-resi` | ISP-прокси, домашний IP | `EXIT-RESI` | только AI: `category-ai-!cn`, `openai`, `anthropic` — прокси медленный на новые соединения ([разведка](recon/exit-chains.md)) |
 | `kz-nqz-exit-01-dc` | IP самого VPS | `EXIT-DC` | то, что режется по IP: Telegram, Instagram |
 
 ```yaml

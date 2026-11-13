@@ -201,6 +201,12 @@ type Config struct {
 	// группа AUTO. С наборами её роднит только файл, поэтому у неё свой
 	// отпечаток и свои проверки (autopool.go).
 	Auto AutoConfig
+	// Hops — третья секция: пул хопов для цепочек до своих нод (hops.go).
+	Hops HopConfig
+	// SkipSNI — SNI своих нод, которые sniffer не должен переписывать
+	// (hops.go). Не выбор владельца, а следствие его нод: заполняет
+	// обработчик по каталогу экспортов.
+	SkipSNI []string
 }
 
 const (
@@ -416,6 +422,9 @@ func Render(c Config) []byte {
 	// rule-providers, а главное, она обязана пережить ранний выход ниже.
 	// При умолчательном пуле строка пустая, и файл байт-в-байт прежний.
 	b.WriteString(autoBody(c.Auto))
+	// Пул хопов и sniffer — по той же причине до раннего выхода: от
+	// политики наборов они не зависят.
+	b.WriteString(hopBody(c))
 
 	if c.Policy == PolicyProfile {
 		// Профиль — это «нас тут нет»: ни провайдеров правил, ни правил,
@@ -488,7 +497,7 @@ func stateLine(c Config) string {
 		// Авто-пул от политики наборов не зависит: «правила из профиля»
 		// и «чем наполнять AUTO» — разные решения, и профильная политика
 		// не вправе отменять второе.
-		return stateMark + " policy=" + string(PolicyProfile) + autoStateFields(c.Auto)
+		return stateMark + " policy=" + string(PolicyProfile) + autoStateFields(c.Auto) + hopStateFields(c)
 	}
 	names := make([]string, 0, len(c.Sets))
 	for _, s := range c.Sets {
@@ -514,7 +523,7 @@ func stateLine(c Config) string {
 	// Поля авто-пула — последними и по тому же правилу, что rules: только
 	// при не-умолчательном выборе. Старый демон отвергнет такой файл
 	// громко, а файл без авто-пула прочитает как раньше.
-	return line + autoStateFields(c.Auto)
+	return line + autoStateFields(c.Auto) + hopStateFields(c)
 }
 
 // setToken — набор в строке состояния: «имя[+ip]>действие».
@@ -563,7 +572,7 @@ func Parse(b []byte) (Config, bool, error) {
 	}
 
 	state := ""
-	rules, custom, autoFilters := 0, 0, 0
+	rules, custom, autoFilters, hopLines, skipLines := 0, 0, 0, 0, 0
 	for _, ln := range lines[1:] {
 		switch {
 		case state == "" && strings.HasPrefix(ln, stateMark):
@@ -575,6 +584,10 @@ func Parse(b []byte) (Config, bool, error) {
 			custom++
 		case strings.HasPrefix(ln, autoFilterKey), strings.HasPrefix(ln, autoExcludeKey):
 			autoFilters++
+		case strings.HasPrefix(ln, hopLinePrefix):
+			hopLines++
+		case strings.HasPrefix(ln, skipLinePrefix):
+			skipLines++
 		}
 	}
 	if state == "" {
@@ -608,6 +621,12 @@ func Parse(b []byte) (Config, bool, error) {
 	if autoFilters != wantFilters {
 		return profile, false, fmt.Errorf("%w: строк фильтра авто-пула %d, ожидалась %d",
 			ErrCorrupt, autoFilters, wantFilters)
+	}
+	// Пул хопов и sniffer — тем же счётом: вычеркнутая руками группа
+	// оставила бы цепочку exits.yaml ссылаться в пустоту.
+	if hopLines != len(cfg.Hops.Pool) || skipLines != len(cfg.SkipSNI) {
+		return profile, false, fmt.Errorf("%w: групп хопов %d при пуле %d, строк skip-domain %d при %d",
+			ErrCorrupt, hopLines, len(cfg.Hops.Pool), skipLines, len(cfg.SkipSNI))
 	}
 	return cfg, false, nil
 }
@@ -688,6 +707,12 @@ func parseState(s string) (Config, error) {
 			}
 			cfg.Auto.Nodes = nodes
 		default:
+			if ok, err := parseHopField(&cfg, key, val); ok {
+				if err != nil {
+					return Config{}, err
+				}
+				continue
+			}
 			// Незнакомое поле — это не наш файл нашей же версии. Молча
 			// пропустить его значило бы применить непонятно что.
 			return Config{}, fmt.Errorf("%w: неизвестное поле %q", ErrCorrupt, key)
