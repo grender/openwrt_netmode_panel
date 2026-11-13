@@ -89,11 +89,15 @@ const (
 type Set struct {
 	Name string `json:"name"`
 	IP   bool   `json:"ip"`
-	// Action — направление набора: в туннель или напрямую. Своё у
+	// Action — направление набора: в туннель, напрямую или в группу
+	// профиля (exit, ADR-0049). Своё у
 	// каждого набора, а не одно на всех (ADR-0041): «банки напрямую, а
 	// YouTube в туннель» в одном списке иначе не выразить. Обязательно —
 	// Parse всегда его заполняет, Validate пустое отбивает.
 	Action RuleAction `json:"action"`
+	// Group — группа профиля при Action == ActionExit (ADR-0049): «EXIT-RESI».
+	// При tunnel и direct пусто — Validate и разбор файла это стерегут.
+	Group string `json:"group,omitempty"`
 }
 
 // RuleKind — вид своего правила: по чему сопоставлять.
@@ -117,7 +121,45 @@ const (
 	ActionTunnel RuleAction = "tunnel"
 	// ActionDirect — напрямую, мимо туннеля.
 	ActionDirect RuleAction = "direct"
+	// ActionExit — в группу профиля, названную в поле Group (ADR-0049):
+	// свой выход вместо общего туннеля. Сама группа живёт в профиле
+	// владельца, а не здесь: группы при склейке конкатенируются, и наша
+	// одноимённая уронила бы движок.
+	ActionExit RuleAction = "exit"
 )
+
+// ExitGroupPrefix — приставка групп, годных в цели (ADR-0049).
+//
+// Приставка, а не «любая группа профиля»: в main.yml владельца групп много,
+// и панель предлагала бы в цели служебные (GLOBAL, AUTO, BYPASS). По
+// приставке же видно из ssh, что группа — выход для наборов.
+const ExitGroupPrefix = "EXIT-"
+
+// maxExitGroupTail — потолок длины имени после приставки.
+const maxExitGroupTail = 32
+
+// ValidExitGroup — годится ли имя группы в цель.
+//
+// Знаки — латиница, цифры и «. _ -»: имя уезжает в одинарные кавычки
+// правила и в строку состояния, где «,» «;» «>» «|» и пробел — разделители,
+// а «@» — признак группы. Шире разрешать незачем: имя пишет сам владелец.
+func ValidExitGroup(name string) bool {
+	tail, ok := strings.CutPrefix(name, ExitGroupPrefix)
+	if !ok || tail == "" || len(tail) > maxExitGroupTail {
+		return false
+	}
+	for _, c := range tail {
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '.', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// exitTokenMark — признак группы в токене состояния: «openai>@EXIT-RESI».
+const exitTokenMark = "@"
 
 // Rule — одно своё правило владельца.
 //
@@ -135,6 +177,8 @@ type Rule struct {
 	// из тела не читается, как и всё тело. Пустой — хвоста нет, и токен
 	// байт-в-байт прежний: отпечатки правил без комментария не меняются.
 	Comment string `json:"comment"`
+	// Group — группа профиля при Action == ActionExit, как у Set.
+	Group string `json:"group,omitempty"`
 }
 
 // MaxRules — потолок своих правил. Не техническое ограничение, а защита от
@@ -260,11 +304,84 @@ func tailGroup(p Policy) string {
 }
 
 // groupFor — группа своего правила или набора. Из действия, не из политики.
-func groupFor(a RuleAction) string {
-	if a == ActionTunnel {
+func groupFor(a RuleAction, group string) string {
+	switch a {
+	case ActionTunnel:
 		return TunnelGroup
+	case ActionExit:
+		return group
 	}
 	return directGroup
+}
+
+// actionToken — действие в строке состояния: «tunnel», «direct» или
+// «@ГРУППА». У прежних действий токен байт-в-байт прежний — и отпечатки
+// выбора без групп не меняются.
+func actionToken(a RuleAction, group string) string {
+	if a == ActionExit {
+		return exitTokenMark + group
+	}
+	return string(a)
+}
+
+// parseActionToken — обратное к actionToken. Ошибка — текст причины, без
+// ErrCorrupt: оборачивает тот, кто знает, чей это токен.
+func parseActionToken(tok string) (RuleAction, string, string) {
+	if g, ok := strings.CutPrefix(tok, exitTokenMark); ok {
+		if !ValidExitGroup(g) {
+			return "", "", fmt.Sprintf("группа %q не годится в цель", g)
+		}
+		return ActionExit, g, ""
+	}
+	switch RuleAction(tok) {
+	case ActionTunnel, ActionDirect:
+		return RuleAction(tok), "", ""
+	}
+	return "", "", fmt.Sprintf("неизвестное направление %q", tok)
+}
+
+// targetProblem — согласованы ли действие и группа. Пустая строка — да.
+// Общая для наборов и правил, и для PUT, и для файла.
+func targetProblem(a RuleAction, group string) string {
+	switch a {
+	case ActionTunnel, ActionDirect:
+		if group != "" {
+			return fmt.Sprintf("направление %s не принимает группу %q — группа бывает только у exit", a, group)
+		}
+		return ""
+	case ActionExit:
+		if group == "" {
+			return "у цели exit не указана группа"
+		}
+		if !ValidExitGroup(group) {
+			return fmt.Sprintf("группа %q не годится в цель: имя вида %s…, латиница, цифры и . _ -, до %d знаков после приставки",
+				group, ExitGroupPrefix, maxExitGroupTail)
+		}
+		return ""
+	}
+	return fmt.Sprintf("неизвестное действие %q — бывают tunnel, direct, exit", a)
+}
+
+// ExitGroups — группы профиля, на которые ссылается выбор, без повторов и в
+// порядке строк файла (свои правила, затем наборы). Их существование у
+// движка обработчик PUT сверяет до записи: правило на несуществующую группу
+// не даст mihomo подняться.
+func ExitGroups(c Config) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(a RuleAction, g string) {
+		if a == ActionExit && !seen[g] {
+			seen[g] = true
+			out = append(out, g)
+		}
+	}
+	for _, r := range c.Rules {
+		add(r.Action, r.Group)
+	}
+	for _, s := range c.Sets {
+		add(s.Action, s.Group)
+	}
+	return out
 }
 
 // ruleLine — строка своего правила в рубрике nikki-rules.
@@ -274,15 +391,15 @@ func groupFor(a RuleAction) string {
 func ruleLine(r Rule) string {
 	switch r.Kind {
 	case RuleSuffix:
-		return fmt.Sprintf("%s%s,%s'", customSuffixPrefix, r.Value, groupFor(r.Action))
+		return fmt.Sprintf("%s%s,%s'", customSuffixPrefix, r.Value, groupFor(r.Action, r.Group))
 	case RuleDomain:
-		return fmt.Sprintf("%s%s,%s'", customDomainPrefix, r.Value, groupFor(r.Action))
+		return fmt.Sprintf("%s%s,%s'", customDomainPrefix, r.Value, groupFor(r.Action, r.Group))
 	default:
 		prefix := customCIDRPrefix
 		if p, err := netip.ParsePrefix(r.Value); err == nil && p.Addr().Is6() {
 			prefix = customCIDR6Prefix
 		}
-		return fmt.Sprintf("%s%s,%s,no-resolve'", prefix, r.Value, groupFor(r.Action))
+		return fmt.Sprintf("%s%s,%s,no-resolve'", prefix, r.Value, groupFor(r.Action, r.Group))
 	}
 }
 
@@ -334,9 +451,9 @@ func Render(c Config) []byte {
 		// Порядок внутри набора: сначала домены, потом подсети. Правило по
 		// подсетям идёт с no-resolve — иначе mihomo резолвил бы каждый
 		// домен, чтобы сверить адрес, и платил бы за это задержкой DNS.
-		fmt.Fprintf(&b, "  - 'RULE-SET,%s%s,%s'\n", ProviderSitePrefix, s.Name, groupFor(s.Action))
+		fmt.Fprintf(&b, "  - 'RULE-SET,%s%s,%s'\n", ProviderSitePrefix, s.Name, groupFor(s.Action, s.Group))
 		if s.IP {
-			fmt.Fprintf(&b, "  - 'RULE-SET,%s%s,%s,no-resolve'\n", ProviderIPPrefix, s.Name, groupFor(s.Action))
+			fmt.Fprintf(&b, "  - 'RULE-SET,%s%s,%s,no-resolve'\n", ProviderIPPrefix, s.Name, groupFor(s.Action, s.Group))
 		}
 	}
 	// См. документацию пакета: без этой строки политика «кроме» уводит в
@@ -410,7 +527,7 @@ func setToken(s Set) string {
 	if s.IP {
 		tok += "+ip"
 	}
-	return tok + ">" + string(s.Action)
+	return tok + ">" + actionToken(s.Action, s.Group)
 }
 
 // ruleToken — правило в строке состояния: «вид:значение>действие», при
@@ -422,7 +539,7 @@ func setToken(s Set) string {
 // не-ASCII, так что комментарий не может порвать ни поля состояния (через
 // пробел), ни список правил (через «;»), ни сам токен.
 func ruleToken(r Rule) string {
-	tok := string(r.Kind) + ":" + r.Value + ">" + string(r.Action)
+	tok := string(r.Kind) + ":" + r.Value + ">" + actionToken(r.Action, r.Group)
 	if r.Comment != "" {
 		tok += "|" + url.QueryEscape(r.Comment)
 	}
@@ -615,8 +732,13 @@ func parseSets(val string) ([]Set, error) {
 		if name == "" {
 			return nil, fmt.Errorf("%w: пустое имя набора в %q", ErrCorrupt, val)
 		}
-		if hasAct && act != string(ActionTunnel) && act != string(ActionDirect) {
-			return nil, fmt.Errorf("%w: у набора %q неизвестное направление %q", ErrCorrupt, name, act)
+		var action RuleAction
+		var group string
+		if hasAct {
+			var problem string
+			if action, group, problem = parseActionToken(act); problem != "" {
+				return nil, fmt.Errorf("%w: у набора %q %s", ErrCorrupt, name, problem)
+			}
 		}
 		// Посторонний знак в имени — это файл, правленный руками: сами мы
 		// таких имён не пишем (их отсеивает каталог). Принять его значило
@@ -626,7 +748,7 @@ func parseSets(val string) ([]Set, error) {
 		if !geosite.ValidName(name) {
 			return nil, fmt.Errorf("%w: в имени набора %q недопустимые знаки", ErrCorrupt, name)
 		}
-		sets = append(sets, Set{Name: name, IP: ip, Action: RuleAction(act)})
+		sets = append(sets, Set{Name: name, IP: ip, Action: action, Group: group})
 	}
 	return sets, nil
 }
@@ -655,6 +777,12 @@ func parseRules(val string) ([]Rule, error) {
 			return nil, fmt.Errorf("%w: правило %q без действия", ErrCorrupt, tok)
 		}
 		r := Rule{Kind: RuleKind(kind), Value: rest[:i], Action: RuleAction(rest[i+1:])}
+		// «@ГРУППА» раскладывается на действие и группу; прочее остаётся как
+		// есть, и неизвестное действие отобьёт ruleProblem ниже — тем же
+		// текстом, что и на входе PUT.
+		if g, ok := strings.CutPrefix(string(r.Action), exitTokenMark); ok {
+			r.Action, r.Group = ActionExit, g
+		}
 		if hasComment {
 			c, err := url.QueryUnescape(encoded)
 			if err != nil {
@@ -685,10 +813,8 @@ func ruleProblem(r Rule) string {
 	default:
 		return fmt.Sprintf("неизвестный вид %q — бывают suffix, domain, cidr", r.Kind)
 	}
-	switch r.Action {
-	case ActionTunnel, ActionDirect:
-	default:
-		return fmt.Sprintf("неизвестное действие %q — бывают tunnel, direct", r.Action)
+	if reason := targetProblem(r.Action, r.Group); reason != "" {
+		return reason
 	}
 	if r.Value == "" {
 		return "пустое значение"
@@ -873,8 +999,11 @@ func Validate(c Config, cat *geosite.Catalog, applied []Set) error {
 		seen[s.Name] = true
 		// Направление обязательно: groupFor("") молча дал бы DIRECT, и
 		// набор без направления уехал бы в файл мимо туннеля.
-		if s.Action != ActionTunnel && s.Action != ActionDirect {
-			return fmt.Errorf("rulesets: у набора %q неизвестное направление %q — бывают tunnel, direct", s.Name, s.Action)
+		if s.Action != ActionTunnel && s.Action != ActionDirect && s.Action != ActionExit {
+			return fmt.Errorf("rulesets: у набора %q неизвестное направление %q — бывают tunnel, direct, exit", s.Name, s.Action)
+		}
+		if reason := targetProblem(s.Action, s.Group); reason != "" {
+			return fmt.Errorf("rulesets: у набора %q %s", s.Name, reason)
 		}
 
 		if _, ok := known[s.Name]; ok {

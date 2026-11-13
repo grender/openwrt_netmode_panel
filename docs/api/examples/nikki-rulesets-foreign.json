@@ -1,5 +1,6 @@
 {
   "download": "direct",
+  "exit_groups": [],
   "fingerprint": "sha256:61e82e11fc8c04bc",
   "foreign": true,
   "live": true,

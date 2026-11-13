@@ -170,6 +170,7 @@ const SCENARIOS = {
 	'rulesets-down': 'status-single.json',
 	'rulesets-nocatalog': 'status-single.json',
 	'rulesets-custom': 'status-single.json',
+	'rulesets-exit': 'status-single.json',
 	// Наблюдатель (ADR-0043). Статус общий — status-single.json, режим nikki:
 	// ломается не роутер, а то, что показывает третий экран. Исход решает
 	// WATCH ниже. Единственное исключение — watch-off: там наблюдать нечего
@@ -242,7 +243,22 @@ const RULESETS = {
 	'watch-unparsed': 'nikki-rulesets-watch.json',
 	'watch-quiet': 'nikki-rulesets-watch.json',
 	'watch-pick': 'nikki-rulesets-watch.json',
+	// Цели-группы профиля (ADR-0049): наборы и правило в EXIT-RESI/EXIT-DC
+	// вперемешку с туннельным набором — на чём проверять выбор «Выход» и
+	// режим порядка.
+	'rulesets-exit': 'nikki-rulesets-exit.json',
 };
+
+// Зеркало серверной проверки цели (mixin.targetProblem): действие, группа
+// при exit, группа ТОЛЬКО при exit. Пусто — цель годна.
+const EXIT_GROUP = /^EXIT-[A-Za-z0-9._-]{1,32}$/;
+function badTarget(x) {
+	if (!['tunnel', 'direct', 'exit'].includes(x.action)) return `неизвестное действие "${x.action}" — бывают tunnel, direct, exit`;
+	if (x.action !== 'exit') return x.group ? `направление ${x.action} не принимает группу "${x.group}" — группа бывает только у exit` : '';
+	if (!x.group) return 'у цели exit не указана группа';
+	if (!EXIT_GROUP.test(x.group)) return `группа "${x.group}" не годится в цель: имя вида EXIT-…, латиница, цифры и . _ -, до 32 знаков после приставки`;
+	return '';
+}
 
 // Зеркало серверной проверки своих правил (rulesets.ValidateRules) в той
 // мере, в какой автор панели обязан узнать про отказ здесь, а не на
@@ -256,7 +272,8 @@ function badRule(rules) {
 		const r = rules[i] || {};
 		const at = `Правило ${i + 1} (${r.kind} ${r.value}) не принято: `;
 		if (!['suffix', 'domain', 'cidr'].includes(r.kind)) return at + `неизвестный вид "${r.kind}" — бывают suffix, domain, cidr`;
-		if (!['tunnel', 'direct'].includes(r.action)) return at + `неизвестное действие "${r.action}" — бывают tunnel, direct`;
+		const target = badTarget(r);
+		if (target) return at + target;
 		if (typeof r.value !== 'string' || r.value === '') return at + 'пустое значение';
 		const c = r.comment === undefined ? '' : r.comment;
 		if (typeof c !== 'string' || [...c].length > 80) return at + 'комментарий длиннее 80 знаков';
@@ -1376,6 +1393,7 @@ async function handleAPI(req, res, u) {
 		if (state.scenario === 'rulesets-down' || !(await engineUp('nikki'))) {
 			body.live = false;
 			body.sets = body.sets.map((s) => ({ ...s, loaded: null, rules: null, updated_at: null }));
+			body.exit_groups = null;
 		}
 		return send(res, 200, body);
 	}
@@ -1395,9 +1413,8 @@ async function handleAPI(req, res, u) {
 			return fail(res, 400, 'bad_request', 'Наборы теперь с направлением: sets — объекты {"name": …, "action": "tunnel"|"direct"}, а не строки.');
 		}
 		for (const x of body.sets) {
-			if (!['tunnel', 'direct'].includes(x.action)) {
-				return fail(res, 400, 'bad_request', 'У набора ' + x.name + ' неизвестное направление ' + JSON.stringify(x.action) + ' — бывают tunnel, direct');
-			}
+			const target = badTarget(x);
+			if (target) return fail(res, 400, 'bad_request', 'У набора ' + x.name + ' ' + target);
 		}
 		// Свои правила — до каталога, как у демона (шаг 1а): опечатка в
 		// домене от каталога не зависит.
@@ -1409,7 +1426,7 @@ async function handleAPI(req, res, u) {
 		const why = badRule(rules);
 		if (why) return fail(res, 400, 'bad_rule', why);
 		const names = body.sets.map((x) => x.name);
-		const actionOf = new Map(body.sets.map((x) => [x.name, x.action]));
+		const targetOf = new Map(body.sets.map((x) => [x.name, x]));
 		const cat = await readJSON('nikki-rulesets-catalog.json');
 		const catNames = new Set(cat.names);
 		const unknown = names.filter((n) => !catNames.has(n));
@@ -1434,6 +1451,26 @@ async function handleAPI(req, res, u) {
 			return fail(res, 409, 'stale_rulesets',
 				'Выбор наборов изменился, пока вы его правили: перечитайте GET /api/nikki/rulesets и повторите с новым отпечатком.');
 		}
+		// Группы-цели — у «движка», как шаг 7а демона: нет такой — 400, движок
+		// лёг, а группа новая — 503.
+		const wanted = [...new Set([...rules, ...body.sets].filter((x) => x.action === 'exit').map((x) => x.group))];
+		if (wanted.length && body.policy !== 'profile') {
+			if (state.scenario === 'rulesets-down' || !(await engineUp('nikki'))) {
+				const was = new Set([...(cur.rules || []), ...(cur.sets || [])].filter((x) => x.action === 'exit').map((x) => x.group));
+				const fresh = wanted.filter((g) => !was.has(g));
+				if (fresh.length) {
+					return fail(res, 503, 'groups_unverified', 'Движок не отвечает, и проверить группы ' + fresh.join(', ') +
+						' не у кого: записать правило на непроверенную группу — рискнуть стартом nikki. Включите Nikki и повторите.');
+				}
+			} else {
+				const live = new Set((cur.exit_groups || []).map((g) => g.name));
+				const missing = wanted.filter((g) => !live.has(g));
+				if (missing.length) {
+					return fail(res, 400, 'unknown_group', 'В профиле mihomo нет групп ' + missing.join(', ') +
+						' — правило на несуществующую группу не даст nikki стартовать. Заведите группу в профиле или выберите другую цель.');
+				}
+			}
+		}
 		if (busyJob()) return fail(res, 409, 'job_busy', 'Уже идёт другая операция. Дождитесь её завершения.');
 
 		const ip = new Set(cat.ip);
@@ -1448,7 +1485,8 @@ async function handleAPI(req, res, u) {
 				return {
 					name,
 					ip: ip.has(name),
-					action: actionOf.get(name) || 'tunnel',
+					action: targetOf.get(name).action,
+					...(targetOf.get(name).action === 'exit' ? { group: targetOf.get(name).group } : {}),
 					loaded: !missed,
 					rules: missed ? 0 : 100 + i,
 					updated_at: missed ? null : nowISO(),
@@ -1462,9 +1500,13 @@ async function handleAPI(req, res, u) {
 				sets: body.policy === 'profile' ? [] : sets,
 				// Как прислали, в том же порядке: демон отдаёт правила из
 				// файла, а файл пишется из тела.
-				rules: body.policy === 'profile' ? [] : rules.map((r) => ({ kind: r.kind, value: r.value, action: r.action, comment: r.comment || '' })),
+				rules: body.policy === 'profile' ? [] : rules.map((r) => ({
+					kind: r.kind, value: r.value, action: r.action, comment: r.comment || '',
+					...(r.action === 'exit' ? { group: r.group } : {}),
+				})),
 				live: true,
 				foreign: false,
+				exit_groups: cur.exit_groups ?? [],
 			};
 			state.job.state = 'done';
 		});

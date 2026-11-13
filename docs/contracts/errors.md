@@ -85,6 +85,7 @@
 | `unsupported_field` | в теле `POST /api/wifi/networks` поле, которого нет в схеме `NetworkWrite`; в теле `POST /api/upstream` поле помимо `id` |
 | `unknown_set` | в теле `PUT /api/nikki/rulesets` есть имена наборов, которых нет ни в каталоге geosite, ни среди уже применённых. Текст перечисляет именно эти имена |
 | `bad_rule` | в теле `PUT /api/nikki/rulesets` своё правило не принято: неизвестный вид или действие, негодное значение (не имя хоста, адрес под видом домена, подсеть без маски или не каноническая), значение дважды, больше 64 правил, правила при `policy: profile`. Текст называет **номер строки** (с единицы), вид, значение и причину; отбивается первое негодное правило |
+| `unknown_group` | в теле `PUT /api/nikki/rulesets` у набора или своего правила цель `exit` на группу `EXIT-…`, которой у движка нет, либо под этим именем узел, а не группа ([ADR-0049](../adr/0049-exit-groups-as-set-targets.md)). Правило на несуществующую группу не дало бы mihomo подняться — отказ до записи. Текст перечисляет имена |
 | `bad_ip` | в теле `POST /api/watch` адрес не разобрался, не IPv4 либо не из подсети LAN. Отдельный код, а не `bad_request`: панель подсвечивает поле адреса и предлагает список устройств из `GET /api/watch/hosts` |
 
 `bad_request` — про значения, `unsupported_field` — про форму. Разделены не
@@ -263,6 +264,7 @@ L3-сеть ([ADR-0026](../adr/0026-switch-from-ambiguous.md)).
 | `b4_unavailable` | b4 (порт 7000) не ответил, ответил не `200`, либо клиент не настроен | `{"probe": "GET /api/version", "err": "connection refused"}` |
 | `nikki_unavailable` | Clash API не ответил либо клиент не настроен. **RQ-01 закрыт** — это условное состояние, а не постоянное | `{"probe": "GET /proxies"}` |
 | `group_missing` | Clash API ответил, но нужной группы в профиле нет: `PROXY` на выборе узла и замере, `BYPASS` на `PUT /api/nikki/rulesets` (правила `RULE-SET,…,BYPASS` без неё не применятся, и mihomo не поднимется вовсе — отбить лучше до записи файла). Чинится правкой профиля, а не ожиданием | `{"group": "PROXY"}` |
+| `groups_unverified` | `PUT /api/nikki/rulesets` ссылается на **новую** группу `EXIT-…`, а Clash API не ответил: проверить, есть ли она в профиле, некому ([ADR-0049](../adr/0049-exit-groups-as-set-targets.md)). Уже применённые группы проходят и без движка — как имена наборов без каталога. Чинится включением Nikki | `{"groups": ["EXIT-DC"]}` |
 | `ubus_unavailable` | `ubus call network.wireless status` не ответил на пути скана | `{"object": "network.wireless"}` |
 | `uci_unavailable` | `uci changes` или `uci show wireless` не отработали на пути записи — включая путь `POST /api/upstream` | `{"pkg": "wireless"}` |
 | `scan_failed` | `ubus call iwinfo scan` вернул ошибку | `{"ifname": "phy0.0-sta0"}` |

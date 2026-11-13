@@ -252,15 +252,35 @@ export interface JobAccepted {
  * оно у каждого набора своё.
  */
 export type RulesetPolicy = 'profile' | 'direct' | 'tunnel';
-/** Направление набора или своего правила. */
-export type SetAction = 'tunnel' | 'direct';
+/**
+ * Направление набора или своего правила. exit — в группу профиля из поля
+ * group (ADR-0049): свой выход вместо общего туннеля.
+ */
+export type SetAction = 'tunnel' | 'direct' | 'exit';
+
+/** Цель набора или правила: направление и, при exit, группа. */
+export interface Target {
+	action: SetAction;
+	/** Только при action === 'exit': «EXIT-RESI». */
+	group?: string;
+}
+
+/** Группа-выход профиля, как её видит движок. */
+export interface ExitGroup {
+	name: string;
+	type: string;
+	/** Участник, через который группа ведёт сейчас. */
+	now: string;
+}
 export type RulesetDownload = 'direct' | 'tunnel';
 
 export interface RulesetSet {
 	name: string;
 	ip: boolean;
-	/** В туннель или напрямую — своё у каждого набора. */
+	/** В туннель, напрямую или в группу — своё у каждого набора. */
 	action: SetAction;
+	/** Группа при action === 'exit'; у прочих поля нет. */
+	group?: string;
 	/**
 	 * Три значения, и они РАЗНЫЕ: true — набор загружен, false — движок
 	 * говорит «не загружен», null — движок не ответил вовсе. Слить null с
@@ -284,6 +304,8 @@ export interface CustomRule {
 	kind: RuleKind;
 	value: string;
 	action: RuleAction;
+	/** Группа при action === 'exit'; у прочих поля нет. */
+	group?: string;
 	/** Пометка для человека, до 80 знаков; в файле — строка «#» над правилом. */
 	comment: string;
 }
@@ -300,6 +322,12 @@ export interface RulesetsResponse {
 	live: boolean;
 	/** Файл mixin.yaml написан не панелью — применять отсюда нельзя. */
 	foreign: boolean;
+	/**
+	 * Группы профиля, годные в цель exit. null — движок молчит (какие есть,
+	 * неизвестно), [] — ответил, а групп EXIT-… в профиле нет. Необязательно:
+	 * демон до ADR-0049 поля не шлёт.
+	 */
+	exit_groups?: ExitGroup[] | null;
 }
 
 export interface RulesetsCatalog {
@@ -316,8 +344,8 @@ export interface RulesetsCatalog {
 export interface RulesDraft {
 	policy: RulesetPolicy;
 	download: RulesetDownload;
-	/** Имя и направление; признак подсетей проставляет демон. */
-	sets: { name: string; action: SetAction }[];
+	/** Имя и цель; признак подсетей проставляет демон. */
+	sets: ({ name: string } & Target)[];
 	rules: CustomRule[];
 }
 

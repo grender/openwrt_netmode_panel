@@ -1,0 +1,43 @@
+# netmoded: файл пишет панель (раздел «Узлы Nikki» → «Что в туннель · наборы»).
+# Не правьте руками — при следующем применении он переписывается целиком.
+# netmoded-rulesets: policy=direct download=direct sets=openai>@EXIT-RESI,youtube>tunnel,telegram+ip>@EXIT-DC rules=suffix:ipinfo.io>@EXIT-RESI|geo+check;cidr:149.154.160.0/20>@EXIT-DC;domain:api.netbird.io>direct
+rule-providers:
+  nm-geosite-openai:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/openai.mrs
+    path: ./rules/nm-geosite-openai.mrs
+    interval: 86400
+  nm-geosite-youtube:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/youtube.mrs
+    path: ./rules/nm-geosite-youtube.mrs
+    interval: 86400
+  nm-geosite-telegram:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/telegram.mrs
+    path: ./rules/nm-geosite-telegram.mrs
+    interval: 86400
+  nm-geoip-telegram:
+    type: http
+    behavior: ipcidr
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/telegram.mrs
+    path: ./rules/nm-geoip-telegram.mrs
+    interval: 86400
+nikki-rules:
+  # geo check
+  - 'DOMAIN-SUFFIX,ipinfo.io,EXIT-RESI'
+  - 'IP-CIDR,149.154.160.0/20,EXIT-DC,no-resolve'
+  - 'DOMAIN,api.netbird.io,DIRECT'
+  - 'RULE-SET,nm-geosite-openai,EXIT-RESI'
+  - 'RULE-SET,nm-geosite-youtube,BYPASS'
+  - 'RULE-SET,nm-geosite-telegram,EXIT-DC'
+  - 'RULE-SET,nm-geoip-telegram,EXIT-DC,no-resolve'
+  - 'GEOIP,PRIVATE,DIRECT,no-resolve'
+  - 'MATCH,DIRECT'

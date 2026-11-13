@@ -331,7 +331,10 @@ export function Watch(p: WatchProps) {
 
 	const dirtyRules = eff.rules.length - appliedRules.length;
 	const pendingRules = eff.rules.filter(
-		(r) => !appliedRules.some((a) => a.kind === r.kind && a.value === r.value && a.action === r.action),
+		(r) =>
+			!appliedRules.some(
+				(a) => a.kind === r.kind && a.value === r.value && a.action === r.action && (a.group ?? '') === (r.group ?? ''),
+			),
 	);
 
 	const stopping = p.lock.on('watch');
@@ -861,7 +864,7 @@ function Detail(p: RowProps & { cov: Covered | null }) {
 				<p class="w-cov">
 					{t(cov.where === 'draft' ? 'watch.cov.draft' : 'watch.cov.live', {
 						v: cov.rule.value,
-						a: t(cov.rule.action === 'tunnel' ? 'watch.to.tunnel' : 'watch.to.direct'),
+						a: toWhere(cov.rule, t, false),
 					})}{' '}
 					<a href="#routes">{t('watch.cov.link')}</a>
 				</p>
@@ -1026,7 +1029,7 @@ function DraftBar({
 					})}
 				</b>
 				<span class="w-draft-list">
-					{rules.map((r) => `${r.value} → ${t(r.action === 'tunnel' ? 'watch.to.tunnel.act' : 'watch.to.direct.act')}`).join(' · ')}
+					{rules.map((r) => `${r.value} → ${toWhere(r, t, true)}`).join(' · ')}
 				</span>
 				<span class="chev" aria-hidden="true">
 					›
@@ -1037,7 +1040,7 @@ function DraftBar({
 					{rules.map((r) => (
 						<div key={`${r.kind}:${r.value}`} class="w-draft-row">
 							<span>
-								<b>{r.value}</b> {t(r.action === 'tunnel' ? 'watch.to.tunnel.act' : 'watch.to.direct.act')}
+								<b>{r.value}</b> {toWhere(r, t, true)}
 								{r.comment ? <i>{r.comment}</i> : null}
 							</span>
 							<button type="button" class="mini danger" onClick={() => onRemove(r)}>
@@ -1063,4 +1066,14 @@ function DraftBar({
 			</div>
 		</div>
 	);
+}
+
+/**
+ * Куда ведёт правило — словом. Группа-выход (ADR-0049) называется своим
+ * именем: «→ напрямую» про правило в EXIT-RESI было бы враньём.
+ */
+function toWhere(r: CustomRule, t: T, act: boolean): string {
+	if (r.action === 'exit') return t('watch.to.exit', { g: r.group ?? '' });
+	if (r.action === 'tunnel') return t(act ? 'watch.to.tunnel.act' : 'watch.to.tunnel');
+	return t(act ? 'watch.to.direct.act' : 'watch.to.direct');
 }

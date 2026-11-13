@@ -1,0 +1,66 @@
+{
+  "download": "direct",
+  "exit_groups": [
+    {
+      "name": "EXIT-DC",
+      "now": "kz-nqz-exit-01-dc",
+      "type": "Selector"
+    },
+    {
+      "name": "EXIT-RESI",
+      "now": "kz-nqz-exit-01-resi",
+      "type": "Selector"
+    }
+  ],
+  "fingerprint": "sha256:a4d9eb903c1241f3",
+  "foreign": false,
+  "live": true,
+  "policy": "direct",
+  "rules": [
+    {
+      "action": "exit",
+      "comment": "проверка выхода",
+      "group": "EXIT-RESI",
+      "kind": "suffix",
+      "value": "ipinfo.io"
+    }
+  ],
+  "sets": [
+    {
+      "action": "exit",
+      "group": "EXIT-RESI",
+      "ip": false,
+      "loaded": true,
+      "name": "category-ip-geo-detect",
+      "rules": 96,
+      "updated_at": "2026-11-13T09:00:12Z"
+    },
+    {
+      "action": "exit",
+      "group": "EXIT-RESI",
+      "ip": false,
+      "loaded": true,
+      "name": "openai",
+      "rules": 41,
+      "updated_at": "2026-11-13T09:00:12Z"
+    },
+    {
+      "action": "tunnel",
+      "ip": false,
+      "loaded": true,
+      "name": "youtube",
+      "rules": 1284,
+      "updated_at": "2026-11-13T09:00:13Z"
+    },
+    {
+      "action": "exit",
+      "group": "EXIT-DC",
+      "ip": true,
+      "loaded": true,
+      "name": "telegram",
+      "rules": 218,
+      "updated_at": "2026-11-13T09:00:13Z"
+    }
+  ],
+  "tunnel_group": "BYPASS"
+}

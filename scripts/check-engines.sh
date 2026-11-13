@@ -10,7 +10,8 @@
 #   3. шаблон профиля выполняет контракт демона
 #      (docs/contracts/nikki-mixin-rulesets.md): провайдеры sub/sub-auto из
 #      ./providers/sub.yaml без override, группы AUTO/PROXY/BYPASS,
-#      empty-fallback REJECT, правила кончаются MATCH;
+#      empty-fallback REJECT, правила кончаются MATCH; свои выходы EXIT-* и
+#      ноды — только закомментированным примером (ADR-0049);
 #   4. установщик не пишет b4.json (ADR-0007) и кладёт профиль только в
 #      ветке «профиля нет»;
 #   5. deploy.sh подключает engines.sh и зовёт фазу движков под --install.
@@ -46,6 +47,11 @@ for want in '^  sub:' '^  sub-auto:' 'path: \./providers/sub\.yaml' 'name: AUTO'
 done
 [ "$(grep -c 'path: \./providers/sub\.yaml' "$P")" -eq 2 ] || bad "в $P провайдеры sub и sub-auto должны читать один файл"
 grep -qE '^[^#]*override' "$P" && bad "в $P есть override — демон сверяет имена узлов и отвергнет обновление"
+# Свои выходы в шаблоне — только примером (ADR-0049): рабочая группа без
+# ноды или нода с плейсхолдерами вместо ключей уронили бы свежую установку.
+grep -qE '^[[:space:]]*- name: EXIT-' "$P" && bad "в $P активная группа EXIT-… — в шаблоне она только закомментированным примером"
+grep -qE '^proxies:' "$P" && bad "в $P активный proxies: — свои ноды кладёт владелец в профиль на роутере, не шаблон"
+grep -qE '^[^#]*<(uuid|public-key|short-id|sni)>' "$P" && bad "в $P плейсхолдер вне комментария"
 last=$(grep -E '^[[:space:]]*- ' "$P" | tail -1)
 case "$last" in *MATCH,*) ;; *) bad "последнее правило в $P — не MATCH: '$last'" ;; esac
 

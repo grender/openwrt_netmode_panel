@@ -6,6 +6,7 @@ import type {
 	RulesetsCatalog,
 	RulesetsResponse,
 	SetAction,
+	Target,
 	Job,
 } from '../api/types';
 import type { Key, Lang, T } from '../i18n';
@@ -26,7 +27,30 @@ export const MAX_RULES = 64;
 export const MAX_COMMENT = 80;
 
 const KINDS: RuleKind[] = ['suffix', 'domain', 'cidr'];
+/** Кнопки сегмента. Третья цель — exit — выбирается списком групп рядом. */
 const ACTIONS: SetAction[] = ['tunnel', 'direct'];
+
+/** Цель одной строкой: «tunnel», «direct», «@EXIT-RESI» — как в файле. */
+const targetTok = (x: Target) => (x.action === 'exit' ? `@${x.group ?? ''}` : x.action);
+
+/** Цель для сравнения и записи: группа есть только у exit. */
+export function targetOf(x: Target): Target {
+	return x.action === 'exit' ? { action: 'exit', group: x.group ?? '' } : { action: x.action };
+}
+
+/** Подпись цели в чипе: «→ туннель», «→ напрямую», «→ EXIT-RESI». */
+export function targetLabel(x: Target, t: T): string {
+	return x.action === 'exit' ? `→ ${x.group ?? ''}` : t(`rules.dir.${x.action}` as Key);
+}
+
+/** Сдвиг элемента списка на шаг вверх (-1) или вниз (+1). */
+export function moved<V>(list: V[], i: number, d: -1 | 1): V[] {
+	const j = i + d;
+	if (j < 0 || j >= list.length) return list;
+	const out = [...list];
+	[out[i], out[j]] = [out[j] as V, out[i] as V];
+	return out;
+}
 
 /**
  * Три шага в порядке проверки mihomo: свои правила → наборы → остальной
@@ -81,7 +105,7 @@ export function draftOf(a: Side<RulesetsResponse>): RulesDraft {
 	return {
 		policy: a?.policy ?? 'profile',
 		download: a?.download ?? 'direct',
-		sets: (a?.sets ?? []).map((s) => ({ name: s.name, action: s.action })),
+		sets: (a?.sets ?? []).map((s) => ({ name: s.name, ...targetOf(s) })),
 		// Копии, а не те же объекты: строки правил правятся на месте, и
 		// править применённое значило бы менять то, с чем сверяется черновик.
 		rules: (a?.rules ?? []).map((r) => ({ ...r })),
@@ -90,9 +114,9 @@ export function draftOf(a: Side<RulesetsResponse>): RulesDraft {
 
 /** Правило одной строкой — для сверки черновика с применённым. Комментарий
  *  тоже в счёт: сменился текст — файл переписывается. */
-const ruleTok = (r: CustomRule) => `${r.kind}:${r.value}>${r.action}|${r.comment}`;
-/** Набор одной строкой: смена направления — такое же изменение, как снятие. */
-const setTok = (s: { name: string; action: SetAction }) => `${s.name}>${s.action}`;
+const ruleTok = (r: CustomRule) => `${r.kind}:${r.value}>${targetTok(r)}|${r.comment}`;
+/** Набор одной строкой: смена цели — такое же изменение, как снятие. */
+const setTok = (s: { name: string } & Target) => `${s.name}>${targetTok(s)}`;
 
 /**
  * Сколько правок ждёт применения. Ноль значит «применять нечего» — и это
@@ -108,10 +132,18 @@ export function dirtyCount(a: Side<RulesetsResponse>, d: RulesDraft | null): num
 	// вовсе), поэтому изменением оно там не считается: иначе панель
 	// предлагала бы применить то, что ничего не поменяет.
 	if (d.policy !== 'profile' && d.download !== base.download) n++;
-	const was = new Set(base.sets.map(setTok));
-	const now = new Set(d.sets.map(setTok));
-	for (const s of now) if (!was.has(s)) n++;
-	for (const s of was) if (!now.has(s)) n++;
+	const wasS = base.sets.map(setTok);
+	const nowS = d.sets.map(setTok);
+	const was = new Set(wasS);
+	const now = new Set(nowS);
+	let setDiff = 0;
+	for (const s of now) if (!was.has(s)) setDiff++;
+	for (const s of was) if (!now.has(s)) setDiff++;
+	n += setDiff;
+	// Перестановка при том же составе — тоже правка, как у своих правил:
+	// у mihomo побеждает первое совпадение, и порядок наборов решает, куда
+	// идёт домен из двух наборов сразу (google включает youtube).
+	if (setDiff === 0 && wasS.join('\n') !== nowS.join('\n')) n++;
 
 	// Свои правила: добавленные и убранные — по одному, и ещё одно за
 	// перестановку при том же составе. У наборов порядок не считается, у
@@ -154,10 +186,15 @@ export function plural(n: number, lang: Lang, one: Key, few: Key, many: Key, t: 
 export function setsSummary(sets: RulesDraft['sets'], t: T): string {
 	if (sets.length === 0) return t('rules.sum.sets.none');
 	const tun = sets.filter((s) => s.action === 'tunnel').length;
-	const dir = sets.length - tun;
+	const dir = sets.filter((s) => s.action === 'direct').length;
 	const parts: string[] = [];
 	if (tun) parts.push(t('rules.sum.tunnel', { n: tun }));
 	if (dir) parts.push(t('rules.sum.direct', { n: dir }));
+	// Каждая группа-выход своим числом: «EXIT-RESI: 3» говорит больше, чем
+	// «в выходы: 4» — выходы разные, и смысл у них разный.
+	const byGroup = new Map<string, number>();
+	for (const s of sets) if (s.action === 'exit') byGroup.set(s.group ?? '', (byGroup.get(s.group ?? '') ?? 0) + 1);
+	for (const [g, k] of byGroup) parts.push(t('rules.sum.exit', { g, n: k }));
 	return parts.join(' · ');
 }
 
@@ -258,6 +295,10 @@ export function Rulesets(p: RulesetsProps) {
 	const [query, setQuery] = useState('');
 	const [ask, setAsk] = useState(false);
 	const [step, setStep] = useState<Step>('custom');
+	// Режим перестановки: строки со стрелками вместо чипов. Отдельный режим,
+	// а не стрелки всегда: порядок правят редко, а лишние кнопки в каждой
+	// строке мешали бы главному — выбору.
+	const [ordering, setOrdering] = useState(false);
 
 	// Каталог нужен только шагу с наборами — и тянется, когда его открыли.
 	useEffect(() => {
@@ -306,14 +347,25 @@ export function Rulesets(p: RulesetsProps) {
 	// всегда ради исключения из общего правила.
 	const defaultAction = (): SetAction => (eff.policy === 'tunnel' ? 'direct' : 'tunnel');
 
-	const setAction = (name: string, action: SetAction | null) => {
-		if (action === null) return applySets(eff.sets.filter((s) => s.name !== name));
-		applySets(
-			cur(name)
-				? eff.sets.map((s) => (s.name === name ? { name, action } : s))
-				: [...eff.sets, { name, action }],
-		);
+	const setAction = (name: string, target: Target | null) => {
+		if (target === null) return applySets(eff.sets.filter((s) => s.name !== name));
+		const next = { name, ...targetOf(target) };
+		applySets(cur(name) ? eff.sets.map((s) => (s.name === name ? next : s)) : [...eff.sets, next]);
 	};
+
+	// Группы, которые можно предложить в цель: что видит движок, плюс то, что
+	// уже применено или выбрано в черновике. Второе нужно, когда движок
+	// молчит: иначе строка с применённой группой показывала бы пустой выбор,
+	// и владелец решил бы, что цель потерялась.
+	const exitNames = [
+		...new Set([
+			...(applied.exit_groups ?? []).map((g) => g.name),
+			...[...applied.sets, ...applied.rules, ...eff.sets, ...eff.rules]
+				.filter((x) => x.action === 'exit' && x.group)
+				.map((x) => x.group as string),
+		]),
+	].sort();
+	const exitNow = new Map((applied.exit_groups ?? []).map((g) => [g.name, g.now]));
 
 	const togglePack = (names: string[]) => {
 		// Пак, выбранный целиком, снимается целиком: иначе повторное нажатие
@@ -331,6 +383,16 @@ export function Rulesets(p: RulesetsProps) {
 		p.setDraft({ ...eff, policy: leaveProfile(rules.length > 0), rules });
 	const patchRule = (i: number, patch: Partial<CustomRule>) =>
 		applyRules(eff.rules.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+	// Смена цели правила — целиком: группа от прежнего exit не должна
+	// пережить переключение на «в туннель».
+	const targetRule = (i: number, target: Target) =>
+		applyRules(
+			eff.rules.map((r, j) => {
+				if (j !== i) return r;
+				const { group: _old, ...rest } = r;
+				return { ...rest, ...targetOf(target) };
+			}),
+		);
 
 	const q = query.trim().toLowerCase();
 	const packNames = (catalog?.packs ?? []).flatMap((k) => k.sets);
@@ -405,6 +467,9 @@ export function Rulesets(p: RulesetsProps) {
 						<a class="linkbtn" href="#watch">
 							{t('rules.custom.peek')}
 						</a>
+						{eff.rules.length > 1 ? (
+							<OrderToggle on={ordering} off={off} t={t} onToggle={() => setOrdering(!ordering)} />
+						) : null}
 						{eff.rules.length > 0 ? (
 							<div class="rows">
 								{eff.rules.map((r, i) => (
@@ -473,12 +538,36 @@ export function Rulesets(p: RulesetsProps) {
 													class="accent"
 													aria-pressed={r.action === a}
 													disabled={off}
-													onClick={() => patchRule(i, { action: a })}
+													onClick={() => targetRule(i, { action: a })}
 												>
 													{t(`rules.custom.action.${a}` as Key)}
 												</button>
 											))}
+											<ExitPick value={r} groups={exitNames} off={off} t={t} onPick={(x) => targetRule(i, x)} />
 										</div>
+										{ordering ? (
+											<div class="ordacts">
+												<span>{t('rules.order.pos', { n: i + 1 })}</span>
+												<button
+													type="button"
+													class="mini"
+													disabled={off || i === 0}
+													aria-label={`${t('rules.order.up')}: ${r.value || i + 1}`}
+													onClick={() => applyRules(moved(eff.rules, i, -1))}
+												>
+													↑
+												</button>
+												<button
+													type="button"
+													class="mini"
+													disabled={off || i === eff.rules.length - 1}
+													aria-label={`${t('rules.order.down')}: ${r.value || i + 1}`}
+													onClick={() => applyRules(moved(eff.rules, i, 1))}
+												>
+													↓
+												</button>
+											</div>
+										) : null}
 										{problems[i] ? <p class="hint bad">{t(problems[i] as Key, { n: MAX_RULES })}</p> : null}
 									</div>
 								))}
@@ -509,14 +598,50 @@ export function Rulesets(p: RulesetsProps) {
 						{profile ? null : (
 							<>
 								<div class="label">{`${setsSummary(eff.sets, t)} · ${t(`rules.rest.sum.${eff.policy}` as Key)}`}</div>
+								{eff.sets.length > 1 ? (
+									<OrderToggle on={ordering} off={off} t={t} onToggle={() => setOrdering(!ordering)} />
+								) : null}
 								{eff.sets.length === 0 ? (
 									<div class="empty">{t(`rules.none.${eff.policy}` as Key)}</div>
+								) : ordering ? (
+									<>
+										<p class="hint">{t('rules.order.sets')}</p>
+										<ol class="orderlist">
+											{eff.sets.map((s, i) => (
+												<li key={s.name} class={missed(s.name) ? 'bad' : undefined}>
+													<i class="pos">{i + 1}</i>
+													<span class="name">{s.name}</span>
+													<i class={`dir dir-${s.action}`}>{targetLabel(s, t)}</i>
+													<button
+														type="button"
+														class="mini"
+														disabled={off || i === 0}
+														aria-label={`${t('rules.order.up')}: ${s.name}`}
+														onClick={() => applySets(moved(eff.sets, i, -1))}
+													>
+														↑
+													</button>
+													<button
+														type="button"
+														class="mini"
+														disabled={off || i === eff.sets.length - 1}
+														aria-label={`${t('rules.order.down')}: ${s.name}`}
+														onClick={() => applySets(moved(eff.sets, i, 1))}
+													>
+														↓
+													</button>
+												</li>
+											))}
+										</ol>
+									</>
 								) : (
 									<div class="chips">
 										{eff.sets.map((s) => (
 											<span key={s.name} class={`chip${missed(s.name) ? ' chip-bad' : ''}`}>
 												<span>{s.name}</span>
-												<i class={`dir dir-${s.action}`}>{t(`rules.dir.${s.action}` as Key)}</i>
+												<i class={`dir dir-${s.action}`} title={s.action === 'exit' ? exitNow.get(s.group ?? '') : undefined}>
+													{targetLabel(s, t)}
+												</i>
 												{hasIP(s.name) ? <i class="ip">{t('rules.chip.ip')}</i> : null}
 												<button
 													type="button"
@@ -533,6 +658,12 @@ export function Rulesets(p: RulesetsProps) {
 								)}
 							</>
 						)}
+
+						{profile ? null : applied.exit_groups === null ? (
+							<p class="hint">{t('rules.exit.down')}</p>
+						) : exitNames.length === 0 ? (
+							<p class="hint">{t('rules.exit.none')}</p>
+						) : null}
 
 						{catalog?.packs?.length ? (
 							<>
@@ -585,7 +716,7 @@ export function Rulesets(p: RulesetsProps) {
 								{!q && names.length > 0 ? (
 									<div class="rows">
 										{names.map((n) => (
-											<Row key={n} name={n} draft={cur(n)} applied={was.get(n)} off={off} t={t} onSet={(a) => setAction(n, a)} />
+											<Row key={n} name={n} draft={cur(n)} applied={was.get(n)} groups={exitNames} off={off} t={t} onSet={(a) => setAction(n, a)} />
 										))}
 									</div>
 								) : null}
@@ -601,7 +732,7 @@ export function Rulesets(p: RulesetsProps) {
 
 								<div class="rows">
 									{found.slice(0, ROWS).map((n) => (
-										<Row key={n} name={n} draft={cur(n)} applied={was.get(n)} off={off} t={t} onSet={(a) => setAction(n, a)} />
+										<Row key={n} name={n} draft={cur(n)} applied={was.get(n)} groups={exitNames} off={off} t={t} onSet={(a) => setAction(n, a)} />
 									))}
 								</div>
 
@@ -739,19 +870,21 @@ function Row({
 	name,
 	draft,
 	applied,
+	groups,
 	off,
 	t,
 	onSet,
 }: {
 	name: string;
-	draft: { name: string; action: SetAction } | undefined;
+	draft: ({ name: string } & Target) | undefined;
 	applied: RulesetsResponse['sets'][number] | undefined;
+	groups: string[];
 	off: boolean;
 	t: T;
-	onSet(a: SetAction | null): void;
+	onSet(a: Target | null): void;
 }) {
 	const act = draft?.action ?? null;
-	const changed = (draft?.action ?? '-') !== (applied?.action ?? '-');
+	const changed = (draft ? targetTok(draft) : '-') !== (applied ? targetTok(applied) : '-');
 	const missed = applied?.loaded === false;
 	return (
 		<div class={`row set${act ? ' sel' : ''}${act === 'direct' ? ' sel-direct' : ''}`}>
@@ -766,11 +899,12 @@ function Row({
 							class="accent"
 							aria-pressed={act === a}
 							disabled={off}
-							onClick={() => onSet(a)}
+							onClick={() => onSet({ action: a })}
 						>
 							{t(`rules.row.${a}` as Key)}
 						</button>
 					))}
+					<ExitPick value={draft} groups={groups} off={off} t={t} onPick={onSet} />
 					<button type="button" aria-pressed={act === null} disabled={off} onClick={() => onSet(null)}>
 						{t('rules.row.none')}
 					</button>
@@ -782,5 +916,59 @@ function Row({
 				) : null}
 			</div>
 		</div>
+	);
+}
+
+/**
+ * Третья цель — группа-выход профиля (ADR-0049) — списком внутри сегмента.
+ * Список, а не кнопки: групп может быть сколько угодно, и сегмент на
+ * телефоне разъехался бы на третьей. Нет групп и цель не exit — нет и
+ * списка: предлагать пустой выбор незачем.
+ */
+function ExitPick({
+	value,
+	groups,
+	off,
+	t,
+	onPick,
+}: {
+	value: Target | undefined;
+	groups: string[];
+	off: boolean;
+	t: T;
+	onPick(x: Target): void;
+}) {
+	const on = value?.action === 'exit';
+	if (groups.length === 0 && !on) return null;
+	return (
+		<label class={`exitpick${on ? ' on' : ''}`}>
+			<span class="sr-only">{t('rules.exit.label')}</span>
+			<select
+				value={on ? (value?.group ?? '') : ''}
+				disabled={off}
+				onChange={(e) => {
+					const g = (e.target as HTMLSelectElement).value;
+					if (g) onPick({ action: 'exit', group: g });
+				}}
+			>
+				<option value="" disabled>
+					{t('rules.exit.pick')}
+				</option>
+				{groups.map((g) => (
+					<option key={g} value={g}>
+						{g}
+					</option>
+				))}
+			</select>
+		</label>
+	);
+}
+
+/** Вход в режим перестановки и выход из него. */
+function OrderToggle({ on, off, t, onToggle }: { on: boolean; off: boolean; t: T; onToggle(): void }) {
+	return (
+		<button type="button" class="linkbtn" aria-pressed={on} disabled={off} onClick={onToggle}>
+			{t(on ? 'rules.order.done' : 'rules.order.edit')}
+		</button>
 	);
 }

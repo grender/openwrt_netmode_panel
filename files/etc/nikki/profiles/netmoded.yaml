@@ -43,6 +43,8 @@ proxy-groups:
     lazy: false
     empty-fallback: REJECT
   # Выбор в панели: «Авто» или закреплённый узел из всей подписки.
+  # Свои ноды для ручного выбора дописываются сюда (не в AUTO):
+  #   proxies: [AUTO, my-exit-resi, my-exit-dc]
   - name: PROXY
     type: select
     proxies: [AUTO]
@@ -53,6 +55,36 @@ proxy-groups:
     proxies: [PROXY, REJECT]
     url: https://www.gstatic.com/generate_204
     interval: 120
+
+  # Свои выходы — цели наборов «Выход» в панели (ADR-0049, docs/exit-nodes.md).
+  # Необязательны; панель предлагает живые группы с приставкой EXIT-. Ноды —
+  # в proxies: ниже. select + REJECT: нода легла — отказ, а не утечка через
+  # чужой IP. Перед удалением группы снимите её с наборов в панели, иначе
+  # mihomo не поднимется.
+  # - name: EXIT-RESI
+  #   type: select
+  #   proxies: [my-exit-resi, REJECT]
+  # - name: EXIT-DC
+  #   type: select
+  #   proxies: [my-exit-dc, REJECT]
+
+# Свои ноды (VLESS + Reality). Секреты — только в профиле на роутере, не в
+# репозитории. Пример формы:
+# proxies:
+#   - name: my-exit-resi
+#     type: vless
+#     server: exit.example.com
+#     port: 443
+#     uuid: <uuid>
+#     network: tcp
+#     udp: false
+#     tls: true
+#     flow: xtls-rprx-vision
+#     servername: <sni>
+#     client-fingerprint: chrome
+#     reality-opts:
+#       public-key: <public-key>
+#       short-id: <short-id>
 
 # Что идёт в туннель, решают наборы в панели: их правила nikki ставит
 # ПЕРЕД этими (ADR-0039, ADR-0040). Всё остальное — напрямую.

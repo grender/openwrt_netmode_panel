@@ -1794,7 +1794,15 @@ components:
         номеру. Отбивается первое негодное правило, не все разом.
 
         `bad_request` — форма выбора неверна: неизвестная политика или способ
-        скачивания, `profile` с наборами, одно имя дважды, нечитаемый JSON.
+        скачивания, `profile` с наборами, одно имя дважды, нечитаемый JSON,
+        у набора `action: exit` без `group` или с негодным именем группы,
+        `group` при `tunnel`/`direct`.
+
+        `unknown_group` — Clash API ответил, а группы-цели (`EXIT-…`) у
+        движка нет или под этим именем узел, а не группа (ADR-0049). Правило
+        на несуществующую группу не дало бы mihomo подняться, поэтому отказ
+        до записи. Текст перечисляет имена; чинится правкой профиля или
+        выбором другой цели.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -1828,6 +1836,11 @@ components:
 
         `uci_unavailable` — `uci` не ответил, и есть ли чужой стейджинг,
         неизвестно.
+
+        `groups_unverified` — среди целей есть **новая** группа `EXIT-…`, а
+        движок не отвечает: проверить её нечем (ADR-0049). Уже применённые
+        группы при этом принимаются — как имена наборов без каталога.
+        Чинится включением Nikki.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -2065,6 +2078,8 @@ components:
             - unauthorized
             - not_found
             - unknown_set
+            # unknown_group — цели-группы EXIT-… нет у движка (ADR-0049).
+            - unknown_group
             # bad_rule — своё правило наборов не принято; текст называет номер
             # строки, и панель подсвечивает её (400: чинится правкой ввода).
             - bad_rule
@@ -2093,6 +2108,8 @@ components:
             - b4_unavailable
             - nikki_unavailable
             - group_missing
+            # groups_unverified — новая цель-группа, а движок молчит.
+            - groups_unverified
             - host_unknown
             - nikki_unconfigured
             - panel_missing
@@ -3536,7 +3553,7 @@ components:
         Тело `GET /api/nikki/rulesets`. Собирается из `map[string]any`,
         поэтому порядок ключей в примере алфавитный — на него не
         программируют (см. `docs/api/examples/README.md`).
-      required: [fingerprint, policy, download, tunnel_group, sets, rules, live, foreign]
+      required: [fingerprint, policy, download, tunnel_group, sets, rules, live, foreign, exit_groups]
       additionalProperties: false
       properties:
         fingerprint:
@@ -3610,6 +3627,34 @@ components:
           description: |
             `mixin.yaml` есть, но написан не нами. Запись в него запрещена
             (`409 foreign_mixin`).
+        exit_groups:
+          type: [array, "null"]
+          items: { $ref: "#/components/schemas/ExitGroup" }
+          description: |
+            Группы профиля, годные в цель `action: exit` (ADR-0049): живые
+            группы mihomo с приставкой `EXIT-`, по имени. `null` — Clash API
+            не ответил (неизвестно, какие есть); `[]` — ответил, а таких групп
+            в профиле нет. Сами группы заводит владелец в профиле — демон их
+            не пишет.
+
+    ExitGroup:
+      type: object
+      description: Группа-выход профиля, как её видит движок.
+      required: [name, type, now]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          pattern: "^EXIT-[A-Za-z0-9._-]{1,32}$"
+          examples: ["EXIT-RESI"]
+        type:
+          type: string
+          description: Тип группы в ответе mihomo, как есть.
+          examples: ["Selector"]
+        now:
+          type: string
+          description: Участник, через который группа ведёт сейчас.
+          examples: ["kz-nqz-exit-01-resi"]
 
     RulesetSet:
       type: object
@@ -3623,11 +3668,17 @@ components:
           examples: ["youtube"]
         action:
           type: string
-          enum: [tunnel, direct]
+          enum: [tunnel, direct, exit]
           description: |
             Направление набора: `tunnel` — в группу `tunnel_group`, `direct`
-            — напрямую. Своё у каждого набора, наборы разных направлений
+            — напрямую, `exit` — в группу профиля из поля `group`
+            (ADR-0049). Своё у каждого набора, наборы разных направлений
             смешиваются в одном списке (ADR-0041).
+        group:
+          type: string
+          pattern: "^EXIT-[A-Za-z0-9._-]{1,32}$"
+          description: "Группа-цель. Есть только при `action: exit`."
+          examples: ["EXIT-RESI"]
         ip:
           type: boolean
           description: |
@@ -3715,7 +3766,14 @@ components:
           examples: ["youtube"]
         action:
           type: string
-          enum: [tunnel, direct]
+          enum: [tunnel, direct, exit]
+        group:
+          type: string
+          pattern: "^EXIT-[A-Za-z0-9._-]{1,32}$"
+          description: |
+            Обязательна при `action: exit` и запрещена при остальных. Группа
+            обязана быть у движка (`400 unknown_group`); новая при молчащем
+            движке — `503 groups_unverified`.
 
     CustomRule:
       type: object
@@ -3752,12 +3810,20 @@ components:
           examples: ["worldsimseries.com", "api.netbird.io", "100.64.0.0/10", "fd00::/8"]
         action:
           type: string
-          enum: [tunnel, direct]
+          enum: [tunnel, direct, exit]
           description: |
             `tunnel` — в группу `tunnel_group` (та же, что у наборов); `direct`
-            — напрямую. Группа берётся из действия, не из политики: «этот
+            — напрямую; `exit` — в группу профиля из поля `group`, по тем же
+            правилам, что у набора (ADR-0049). Группа берётся из действия, не из политики: «этот
             домен напрямую» значит одно и то же при любом хвосте — и то же,
             что «напрямую» у набора.
+        group:
+          type: string
+          pattern: "^EXIT-[A-Za-z0-9._-]{1,32}$"
+          description: |
+            Группа-цель при `action: exit`; при остальных действиях поля нет
+            (в `PUT` — запрещено). Проверки те же, что у набора.
+          examples: ["EXIT-RESI"]
         comment:
           type: string
           maxLength: 80

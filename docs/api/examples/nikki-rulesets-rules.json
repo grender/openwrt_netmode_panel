@@ -1,5 +1,17 @@
 {
   "download": "direct",
+  "exit_groups": [
+    {
+      "name": "EXIT-DC",
+      "now": "kz-nqz-exit-01-dc",
+      "type": "Selector"
+    },
+    {
+      "name": "EXIT-RESI",
+      "now": "kz-nqz-exit-01-resi",
+      "type": "Selector"
+    }
+  ],
   "fingerprint": "sha256:b1b3ff3e2147320e",
   "foreign": false,
   "live": true,

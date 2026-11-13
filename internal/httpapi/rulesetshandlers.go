@@ -181,6 +181,9 @@ func (s *Server) rulesetsBody(ctx context.Context, cfg mixin.Config, foreign boo
 				item["updated_at"] = live[mixin.ProviderSitePrefix+set.Name].UpdatedAt.UTC().Format(time.RFC3339)
 			}
 		}
+		if set.Action == mixin.ActionExit {
+			item["group"] = set.Group
+		}
 		sets = append(sets, item)
 	}
 
@@ -200,7 +203,32 @@ func (s *Server) rulesetsBody(ctx context.Context, cfg mixin.Config, foreign boo
 		"rules":   append([]mixin.Rule{}, cfg.Rules...),
 		"live":    haveLive,
 		"foreign": foreign,
+		// Куда ещё можно направить набор, кроме туннеля и «напрямую».
+		// null — движок молчит: «целей нет» и «неизвестно, какие есть» —
+		// разные ответы, как и у loaded.
+		"exit_groups": s.exitGroups(ctx),
 	}
+}
+
+// exitGroups — группы профиля, годные в цели набора (ADR-0049): живые
+// группы mihomo с приставкой EXIT-, по имени. nil — движок молчит; пустой
+// срез — ответил, а таких групп в профиле нет.
+func (s *Server) exitGroups(ctx context.Context) []map[string]any {
+	if s.nikki == nil {
+		return nil
+	}
+	all, err := s.nikki.Proxies(ctx)
+	if err != nil {
+		s.logf("наборы geosite: группы-выходы не прочитаны: %v", err)
+		return nil
+	}
+	out := []map[string]any{}
+	for _, g := range nikki.Groups(all) {
+		if mixin.ValidExitGroup(g.Name) {
+			out = append(out, map[string]any{"name": g.Name, "type": g.Type, "now": g.Now})
+		}
+	}
+	return out
 }
 
 // RulesetProviderNames — имена провайдеров правил, которые порождает нынешний
@@ -410,6 +438,7 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 			Kind    string `json:"kind"`
 			Value   string `json:"value"`
 			Action  string `json:"action"`
+			Group   string `json:"group"`   // только при action=exit
 			Comment string `json:"comment"` // необязателен: пусто = без пометки
 		} `json:"rules"`
 	}
@@ -443,6 +472,7 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 		var set struct {
 			Name   string `json:"name"`
 			Action string `json:"action"`
+			Group  string `json:"group"`
 		}
 		if len(raw) > 0 && raw[0] == '"' {
 			writeErr(w, http.StatusBadRequest, "bad_request",
@@ -453,12 +483,12 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "bad_request", "Набор в sets не разбирается: ожидается объект {name, action}")
 			return
 		}
-		want.Sets = append(want.Sets, mixin.Set{Name: set.Name, Action: mixin.RuleAction(set.Action)})
+		want.Sets = append(want.Sets, mixin.Set{Name: set.Name, Action: mixin.RuleAction(set.Action), Group: set.Group})
 	}
 	for _, rule := range in.Rules {
 		want.Rules = append(want.Rules, mixin.Rule{
 			Kind: mixin.RuleKind(rule.Kind), Value: rule.Value, Action: mixin.RuleAction(rule.Action),
-			Comment: rule.Comment,
+			Group: rule.Group, Comment: rule.Comment,
 		})
 	}
 
@@ -613,12 +643,55 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 	// запретить из-за этого запись значило бы поставить выбор наборов в
 	// зависимость от работающего mihomo. При profile группа не нужна
 	// вовсе — правил мы не пишем.
-	if want.Policy != mixin.PolicyProfile && s.nikki != nil {
-		if all, err := s.nikki.Proxies(r.Context()); err == nil {
+	//
+	// 7а. Группы-выходы (ADR-0049) — та же причина, но молчание движка тут
+	// НЕ пропуск: BYPASS обязан быть в любом профиле под нашим контрактом,
+	// а EXIT-группу владелец заводит сам, и опечатка в ней роняет старт
+	// nikki. Поэтому без ответа движка проходят только группы, которые уже
+	// применены (их проверили при прошлой записи, как имена наборов без
+	// каталога), а новая — 503: проверить её нечем.
+	if want.Policy != mixin.PolicyProfile {
+		var all map[string]nikki.Proxy
+		perr := errors.New("Clash API не настроен")
+		if s.nikki != nil {
+			all, perr = s.nikki.Proxies(r.Context())
+		}
+		if perr == nil {
 			if _, ok := all[mixin.TunnelGroup]; !ok {
 				writeErr(w, http.StatusServiceUnavailable, "group_missing",
 					"В профиле mihomo нет группы "+mixin.TunnelGroup+
 						" — правила наборов применить не к чему. Поправьте профиль.")
+				return
+			}
+			var missing []string
+			for _, g := range mixin.ExitGroups(want) {
+				if p, ok := all[g]; !ok || !p.IsGroup() {
+					missing = append(missing, g)
+				}
+			}
+			if len(missing) > 0 {
+				writeErr(w, http.StatusBadRequest, "unknown_group",
+					"В профиле mihomo нет групп "+strings.Join(missing, ", ")+
+						" — правило на несуществующую группу не даст nikki стартовать. "+
+						"Заведите группу в профиле или выберите другую цель.")
+				return
+			}
+		} else {
+			applied := make(map[string]bool)
+			for _, g := range mixin.ExitGroups(cur) {
+				applied[g] = true
+			}
+			var fresh []string
+			for _, g := range mixin.ExitGroups(want) {
+				if !applied[g] {
+					fresh = append(fresh, g)
+				}
+			}
+			if len(fresh) > 0 {
+				writeErr(w, http.StatusServiceUnavailable, "groups_unverified",
+					"Движок не отвечает, и проверить группы "+strings.Join(fresh, ", ")+
+						" не у кого: записать правило на непроверенную группу — рискнуть стартом nikki. "+
+						"Включите Nikki и повторите.")
 				return
 			}
 		}

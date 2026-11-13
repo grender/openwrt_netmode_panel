@@ -78,6 +78,17 @@ func newDevNikki() *devNikki {
 		Name: "BYPASS", Type: "Fallback", Alive: true,
 		Members: []string{"PROXY", "REJECT"}, Now: "PROXY", Selectable: true,
 	}
+	// Группы-выходы профиля (ADR-0049): без них на стенде нечего выбрать
+	// в цели «Выход». Свои узлы, а не узлы подписки — как на роутере.
+	for _, g := range []struct{ group, node string }{
+		{"EXIT-RESI", "kz-exit-resi"}, {"EXIT-DC", "kz-exit-dc"},
+	} {
+		all[g.node] = nikki.Proxy{Name: g.node, Type: "Vless", Alive: true}
+		all[g.group] = nikki.Proxy{
+			Name: g.group, Type: "Selector", Alive: true,
+			Members: []string{g.node, "REJECT"}, Now: g.node, Selectable: true,
+		}
+	}
 	return &devNikki{all: all}
 }
 
