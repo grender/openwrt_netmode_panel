@@ -16,6 +16,15 @@
 # безобидно ровно до первого случая, когда сервис считался остановленным,
 # а его цепочки остались в nftables: трафик молча идёт мимо туннеля, и
 # понять это по внешним признакам почти невозможно.
+#
+# ЗАМОК ПЕРЕЗАПУСКА (kill switch). Стоп nikki удаляет его таблицу перехвата
+# (cleanup в /etc/init.d/nikki), старт ставит заново — между ними ~0,65 с
+# трафик LAN шёл напрямую с домашнего IP, а открытое в окне соединение так и
+# оставалось прямым (docs/recon/exit-chains.md, «Kill switch resi»). Поэтому
+# в режиме nikki ДО остановки ставится своя таблица inet netmode_guard
+# (forward, policy drop) и снимается только после проверки, что nikki
+# работает. nikki не поднялся — замок ОСТАЁТСЯ: fail closed, LAN без
+# интернета, а не мимо выходов. Снимает его режим off (или b4).
 # ─────────────────────────────────────────────────────────────────────
 set -eu
 
@@ -35,7 +44,7 @@ STATE_PKG=netmode
 #   4 — firewall не перезапустился (цепочки могли остаться)
 #   5 — сервис не перешёл в нужное состояние (start или enable)
 #   6 — верификация не сошлась
-#   7 — нет предусловия (отсутствует flock)
+#   7 — нет предусловия (отсутствует flock; замок перезапуска не ставится)
 #
 # Кода 2 здесь нет намеренно: он традиционно занят шеллом под misuse
 # встроенных команд, и свой смысл на него навешивать значит однажды принять
@@ -61,7 +70,14 @@ log() { logger -t netmode-apply "$*" 2>/dev/null || true; printf '%s\n' "$*"; }
 # остаётся: по ssh диагностику читают через logread.
 err() { logger -t netmode-apply "$*" 2>/dev/null || true; printf '%s\n' "$*" >&2; }
 
-die_code() { rc=$1; shift; err "ОШИБКА: $*"; exit "$rc"; }
+die_code() {
+	rc=$1; shift
+	err "ОШИБКА: $*"
+	if [ "${GUARD_HELD:-0}" = 1 ]; then
+		err "замок перезапуска оставлен: трафик LAN наружу закрыт, пока nikki не поднимется; снять — режим off (netmode-apply off)"
+	fi
+	exit "$rc"
+}
 die() { die_code 1 "$*"; }
 
 # ── аргумент ──
@@ -119,6 +135,31 @@ running() {
 	[ -x "/etc/init.d/$1" ] || return 1
 	"/etc/init.d/$1" running >/dev/null 2>&1
 }
+
+# Замок перезапуска — см. шапку. Своя таблица, а не правило в fw4: firewall
+# restart ниже пересобирает inet fw4 и чужие таблицы не трогает (проверено
+# на VM: только flush удаляет все таблицы).
+GUARD=netmode_guard
+guard_on() {
+	nft -f - <<EOF
+table inet $GUARD
+delete table inet $GUARD
+table inet $GUARD {
+	chain forward {
+		type filter hook forward priority -300; policy drop;
+	}
+}
+EOF
+}
+guard_off() { nft delete table inet "$GUARD" >/dev/null 2>&1 || true; }
+
+if [ "$MODE" = nikki ]; then
+	guard_on || die_code 7 "замок перезапуска не поставлен (nft): nikki не перезапускался, ничего не менялось"
+	GUARD_HELD=1
+	log "замок перезапуска: трафик LAN наружу закрыт до проверки nikki"
+else
+	guard_off
+fi
 
 log "переключение в режим $MODE"
 
@@ -228,6 +269,12 @@ case "$MODE" in
 		running b4 && die_code 6 "b4 должен быть остановлен, но работает"
 		;;
 esac
+
+if [ "$MODE" = nikki ]; then
+	guard_off
+	GUARD_HELD=0
+	log "замок перезапуска снят: nikki работает"
+fi
 
 log "режим $MODE применён"
 exit 0

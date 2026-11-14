@@ -114,7 +114,28 @@ EOF
 	chmod 0755 "$INITD/$name"
 done
 
-chmod 0755 "$BIN/logger" "$BIN/flock"
+# nft подставной: замок перезапуска (своя таблица inet netmode_guard) — это
+# kill switch, и проверить его можно только по журналу и состоянию. Ставится
+# через `nft -f -` с policy drop, снимается `nft delete table`.
+cat >"$BIN/nft" <<EOF
+#!/bin/sh
+if [ "\$1" = "-f" ]; then
+	# cat в PATH песочницы нет намеренно — читаем встроенным read.
+	body=; while IFS= read -r l; do body="\$body \$l"; done
+	case "\$body" in
+		*netmode_guard*"policy drop"*) printf 'nft guard-on\n' >>"$TMP/actions"; : >"$STATE/guard" ;;
+		*) printf 'nft -f ?\n' >>"$TMP/actions" ;;
+	esac
+	exit 0
+fi
+case "\$*" in
+	"delete table inet netmode_guard") printf 'nft guard-off\n' >>"$TMP/actions"; rm -f "$STATE/guard" ;;
+	*) printf 'nft %s\n' "\$*" >>"$TMP/actions" ;;
+esac
+exit 0
+EOF
+
+chmod 0755 "$BIN/logger" "$BIN/flock" "$BIN/nft"
 
 # ── 3. сценарии ──
 
@@ -246,6 +267,39 @@ did "firewall restart" || bad "S9: без перезапуска цепочки 
 did "nikki start" && bad "S9: в режиме off ничего стартовать не должно"
 note "S9 выключение обхода: 0"
 
+# line — номер первой строки журнала с действием (пусто — не было).
+line() { grep -n "^$1\$" "$TMP/actions" | head -1 | cut -d: -f1; }
+
+# S10 — kill switch: перезапуск nikki идёт под замком. Без него между
+# cleanup (stop nikki удаляет его таблицу перехвата) и стартом ~0,65 с
+# трафик LAN шёл напрямую с домашнего IP (docs/recon/exit-chains.md).
+reset
+apply nikki
+expect_rc 0 "переключение в nikki под замком"
+on=$(line "nft guard-on"); stop=$(line "nikki stop"); en=$(line "nikki enable"); off=$(line "nft guard-off")
+{ [ -n "$on" ] && [ -n "$stop" ] && [ "$on" -lt "$stop" ]; } || bad "S10: замок не поставлен ДО остановки nikki"
+{ [ -n "$off" ] && [ -n "$en" ] && [ "$off" -gt "$en" ]; } || bad "S10: замок снят не после проверки работающего nikki"
+[ -f "$STATE/guard" ] && bad "S10: после удачного применения замок остался"
+note "S10 перезапуск nikki под замком: поставлен до stop, снят после проверки"
+
+# S11 — nikki не поднялся: fail closed, замок ОСТАЁТСЯ (решение владельца).
+reset
+STUB_FAIL="nikki:start"
+apply nikki
+expect_rc 5 "nikki не запустился"
+[ -f "$STATE/guard" ] || bad "S11: при неудавшемся старте замок снят — трафик LAN пошёл бы напрямую"
+grep -q 'замок' "$TMP/err" "$TMP/out" "$TMP/syslog" || bad "S11: не сказано, что замок остался и как его снять"
+note "S11 nikki не поднялся: 5, замок держится"
+
+# S12 — режим off: владелец сам выбрал «без обхода» — замок снимается и не ставится.
+reset
+: >"$STATE/guard"
+apply off
+expect_rc 0 "выключение снимает замок"
+did "nft guard-on" && bad "S12: в режиме off поставлен замок"
+[ -f "$STATE/guard" ] && bad "S12: замок от прошлого провала не снят выключением"
+note "S12 off: замок снят"
+
 if [ "$failed" -ne 0 ]; then
 	echo "" >&2
 	echo "netmode-apply ведёт себя не так, как обещает его контракт" >&2
@@ -253,4 +307,4 @@ if [ "$failed" -ne 0 ]; then
 	exit 1
 fi
 
-echo "-- check-netmode-apply: синтаксис и 9 сценариев поведения"
+echo "-- check-netmode-apply: синтаксис и 12 сценариев поведения"
