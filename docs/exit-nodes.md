@@ -83,9 +83,9 @@ yq -i '(.proxy-groups[] | select(.name == "PROXY") | .proxies) |= map(select(tes
 yq -i '.proxy-providers.exits = {"type": "file", "path": "./providers/exits.yaml"}' "$P"
 yq -i '.proxy-groups |= map(select(.name | test("^EXIT-") | not)) | .proxy-groups += [
   {"name": "EXIT-DC-HOP", "type": "url-test", "use": ["exits"], "filter": "-dc ⇢ ",
-   "url": "https://www.gstatic.com/generate_204", "interval": 300, "tolerance": 100, "timeout": 8000},
+   "url": "https://www.gstatic.com/generate_204", "interval": 300, "tolerance": 100, "timeout": 8000, "empty-fallback": "REJECT"},
   {"name": "EXIT-RESI-HOP", "type": "url-test", "use": ["exits"], "filter": "-resi ⇢ ",
-   "url": "https://www.gstatic.com/generate_204", "interval": 900, "tolerance": 500, "timeout": 15000, "lazy": true},
+   "url": "https://www.gstatic.com/generate_204", "interval": 900, "tolerance": 500, "timeout": 15000, "lazy": true, "empty-fallback": "REJECT"},
   {"name": "EXIT-DC-DIRECT", "type": "select", "use": ["exits"], "filter": "-dc$"},
   {"name": "EXIT-RESI-DIRECT", "type": "select", "use": ["exits"], "filter": "-resi$"},
   {"name": "EXIT-DC", "type": "select", "proxies": ["EXIT-DC-DIRECT", "EXIT-DC-HOP", "REJECT"]},
@@ -98,6 +98,11 @@ yq -i '.proxy-groups |= map(select(.name | test("^EXIT-") | not)) | .proxy-group
 умолчанию выбиралась бы `…-HOP` — а при выключенном пуле она пустая
 (`COMPATIBLE`), и выход молча не работает. Так и случилось на роутере
 14.11.2026 — проверено и исправлено на VM.
+
+**`empty-fallback: REJECT` у `…-HOP` обязателен.** Пустая группа (пул хопов
+выключен) иначе становится `COMPATIBLE`, а он у mihomo ведёт себя как `DIRECT`:
+выбранное «через хоп» уходило бы с домашнего IP — fail-open. Замерено на
+роутере 14.11.2026: пустая `…-HOP` отвечала за 30 мс, то есть напрямую.
 
 `EXIT-RESI-HOP` с `lazy` и длинным интервалом: каждая проверка — новое
 соединение через ISP-прокси, который на частых соединениях отказывает.

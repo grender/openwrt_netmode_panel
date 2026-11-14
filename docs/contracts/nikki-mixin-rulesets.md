@@ -656,7 +656,7 @@ closed, ADR-0049), без участия в `AUTO`. Для цепочек (ADR-0
 proxy-providers:
   exits: { type: file, path: ./providers/exits.yaml }
 proxy-groups:
-  - { name: EXIT-DC-HOP, type: url-test, use: [exits], filter: '-dc ⇢ ', url: https://www.gstatic.com/generate_204, interval: 300, tolerance: 100, timeout: 8000 }
+  - { name: EXIT-DC-HOP, type: url-test, use: [exits], filter: '-dc ⇢ ', url: https://www.gstatic.com/generate_204, interval: 300, tolerance: 100, timeout: 8000, empty-fallback: REJECT }   # пустая иначе = COMPATIBLE = DIRECT
   - { name: EXIT-DC-DIRECT, type: select, use: [exits], filter: '-dc$' }
   - { name: EXIT-DC, type: select, proxies: [EXIT-DC-DIRECT, EXIT-DC-HOP, REJECT] }   # прямой — первым: пустой HOP по умолчанию = выход не работает
 ```

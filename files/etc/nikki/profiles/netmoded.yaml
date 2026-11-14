@@ -74,6 +74,7 @@ proxy-groups:
   #   interval: 300
   #   tolerance: 100
   #   timeout: 8000
+  #   empty-fallback: REJECT   # пустая (пул выключен) иначе = COMPATIBLE = DIRECT
   # - name: EXIT-DC-DIRECT        # прямой узел — отдельной группой, чтобы стоять первым
   #   type: select
   #   use: [exits]
