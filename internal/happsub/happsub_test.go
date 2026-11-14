@@ -347,3 +347,31 @@ func TestConfigsPassXrayTest(t *testing.T) {
 		}
 	}
 }
+
+// На живом роутере группы названы по стране: EXIT-KZ-RESI, EXIT-KZ-DC.
+// Это выход «resi» нод страны kz, а не несуществующий выход «kz-resi»: без
+// разбора такие наборы ушли бы в block.
+func TestExitGroupWithCountry(t *testing.T) {
+	r := mixin.Config{Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect, Sets: []mixin.Set{
+		{Name: "anthropic", Action: mixin.ActionExit, Group: "EXIT-KZ-RESI"},
+		{Name: "telegram", Action: mixin.ActionExit, Group: "EXIT-KZ-DC"},
+		{Name: "openai", Action: mixin.ActionExit, Group: "EXIT-KG-RESI"},
+	}}
+	cs := build(t, Input{Nodes: []exits.Node{node(t)}, Hops: hops(), Tunnel: tunnel(), Rules: r})
+	for i, wantSel := range map[int]string{0: "exit-resi-kz-", 1: "chain-resi-kz-"} {
+		rs, bal := routing(cs[i])
+		if got := target(findRule(rs, "domain", "geosite:anthropic")); got != "balancer:resi@kz" {
+			t.Errorf("%s: anthropic → %s", cs[i]["remarks"], got)
+		}
+		if strings.Join(bal["resi@kz"], ",") != wantSel {
+			t.Errorf("%s: resi@kz %v, ждали %s", cs[i]["remarks"], bal["resi@kz"], wantSel)
+		}
+		if got := target(findRule(rs, "domain", "geosite:telegram")); got != "balancer:dc@kz" {
+			t.Errorf("%s: telegram → %s", cs[i]["remarks"], got)
+		}
+		// Нод страны kg нет — fail closed.
+		if got := target(findRule(rs, "domain", "geosite:openai")); got != "block" {
+			t.Errorf("%s: openai (kg) → %s", cs[i]["remarks"], got)
+		}
+	}
+}

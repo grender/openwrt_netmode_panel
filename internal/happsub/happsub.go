@@ -141,12 +141,17 @@ func smart(in Input, tun, hops []Hop) map[string]any {
 		}
 	}
 	sortStrings(exitNames)
-	for _, ex := range exitNames {
-		prefix := "exit-" + ex + "-"
+	prefixOf := func(ex string) string {
 		if hops != nil {
-			name = smartViaHop
-			prefix = "chain-" + ex + "-"
+			return "chain-" + ex + "-"
 		}
+		return "exit-" + ex + "-"
+	}
+	if hops != nil {
+		name = smartViaHop
+	}
+	for _, ex := range exitNames {
+		prefix := prefixOf(ex)
 		for _, n := range in.Nodes {
 			if _, ok := n.Users[ex]; !ok {
 				continue
@@ -167,18 +172,45 @@ func smart(in Input, tun, hops []Hop) map[string]any {
 	if len(tun) > 0 {
 		tunnel = "balancer:tunnel"
 	}
+	// exitTarget — группа выхода профиля в балансировщик:
+	//   EXIT-<ВЫХОД>       → выход всех нод (EXIT-RESI → resi);
+	//   EXIT-<CC>-<ВЫХОД>  → выход нод страны CC (EXIT-KZ-RESI → resi нод kz).
+	// Тег цепочки содержит имя ноды, а оно начинается с кода страны
+	// (правило имён репо нод), поэтому страну отсекает префикс селектора.
+	// Ни то, ни другое — fail closed, как REJECT в группе на роутере.
+	perCountry := map[string]bool{}
+	exitTarget := func(group string) string {
+		tail := strings.ToLower(strings.TrimPrefix(group, mixin.ExitGroupPrefix))
+		if exitSet[tail] {
+			return "balancer:" + tail
+		}
+		i := strings.LastIndex(tail, "-")
+		if i <= 0 {
+			return "block"
+		}
+		cc, ex := tail[:i], tail[i+1:]
+		found := false
+		for _, n := range in.Nodes {
+			if _, ok := n.Users[ex]; ok && n.Country == cc {
+				found = true
+			}
+		}
+		if !found {
+			return "block"
+		}
+		tag := ex + "@" + cc
+		if !perCountry[tag] {
+			perCountry[tag] = true
+			balancers = append(balancers, balancer(tag, prefixOf(ex)+cc+"-"))
+		}
+		return "balancer:" + tag
+	}
 	target := func(a mixin.RuleAction, group string) string {
 		switch a {
 		case mixin.ActionDirect:
 			return "direct"
 		case mixin.ActionExit:
-			// EXIT-<X> → выход «x» всех нод. Нет такого выхода — fail
-			// closed, как REJECT в группе на роутере.
-			ex := strings.ToLower(strings.TrimPrefix(group, mixin.ExitGroupPrefix))
-			if exitSet[ex] {
-				return "balancer:" + ex
-			}
-			return "block"
+			return exitTarget(group)
 		default:
 			return tunnel
 		}
