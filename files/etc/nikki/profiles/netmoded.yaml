@@ -74,11 +74,13 @@ proxy-groups:
   #   interval: 300
   #   tolerance: 100
   #   timeout: 8000
-  # - name: EXIT-DC
+  # - name: EXIT-DC-DIRECT        # прямой узел — отдельной группой, чтобы стоять первым
   #   type: select
   #   use: [exits]
   #   filter: '-dc$'
-  #   proxies: [EXIT-DC-HOP, REJECT]
+  # - name: EXIT-DC
+  #   type: select
+  #   proxies: [EXIT-DC-DIRECT, EXIT-DC-HOP, REJECT]
   # EXIT-RESI / EXIT-RESI-HOP — так же по '-resi', у url-test lazy: true и
   # interval 900: проверки идут через ISP-прокси.
 

@@ -23,7 +23,18 @@ func exitMemberKind(name string, p nikki.Proxy, known bool) string {
 	case name == "REJECT":
 		return "reject"
 	case known && p.IsGroup():
-		return "chains"
+		// Группа — «через хоп», только если в ней цепочки. Группа из
+		// прямого узла (EXIT-…-DIRECT) нужна лишь затем, чтобы стоять
+		// первой в select (ADR-0050, «Раскладка профиля»).
+		for _, m := range p.Members {
+			if strings.Contains(m, exits.ChainSep) {
+				return "chains"
+			}
+		}
+		if len(p.Members) == 1 && p.Members[0] == "COMPATIBLE" {
+			return "chains"
+		}
+		return "direct"
 	case strings.Contains(name, exits.ChainSep):
 		return "chain"
 	default:

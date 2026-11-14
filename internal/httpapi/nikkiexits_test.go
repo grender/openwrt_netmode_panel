@@ -161,3 +161,29 @@ func TestNikkiExitsChainsDelayFromNow(t *testing.T) {
 		t.Errorf("задержка группы цепочек %v, ждали 929 от текущей цепочки", hop.DelayMS)
 	}
 }
+
+// Прямой узел завёрнут в группу (EXIT-KZ-DC-DIRECT), чтобы стоять первым
+// в select: mihomo ставит proxies: раньше узлов провайдера, и пустая группа
+// цепочек при выключенном пуле иначе выбиралась по умолчанию. Такая группа
+// — «напрямую», а не «через хоп»: в ней нет ни одной цепочки.
+func TestNikkiExitsDirectGroupKind(t *testing.T) {
+	s, _ := newServer(t)
+	f := engineWithExits(t, s)
+	f.mu.Lock()
+	f.all["EXIT-DC"] = nikki.Proxy{Name: "EXIT-DC", Type: "Selector", Alive: true, Selectable: true,
+		Members: []string{"EXIT-DC-DIRECT", "EXIT-DC-HOP", "REJECT"}, Now: "EXIT-DC-DIRECT"}
+	f.all["EXIT-DC-DIRECT"] = nikki.Proxy{Name: "EXIT-DC-DIRECT", Type: "Selector", Alive: true, Selectable: true,
+		Members: []string{"kz-nqz-exit-01-dc"}, Now: "kz-nqz-exit-01-dc"}
+	f.mu.Unlock()
+	b := getExits(t, s)
+	if len(b.Groups) != 1 {
+		t.Fatalf("группы %+v — EXIT-DC-DIRECT не должна быть отдельным выходом", b.Groups)
+	}
+	kinds := map[string]string{}
+	for _, m := range b.Groups[0].Members {
+		kinds[m.Name] = m.Kind
+	}
+	if kinds["EXIT-DC-DIRECT"] != "direct" || kinds["EXIT-DC-HOP"] != "chains" {
+		t.Errorf("виды %v", kinds)
+	}
+}

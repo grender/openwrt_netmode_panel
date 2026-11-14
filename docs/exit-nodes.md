@@ -32,8 +32,7 @@
 В каждой группе выхода три варианта, выбор ручной:
 
 ```
-EXIT-DC = select [ EXIT-DC-HOP (url-test над цепочками) | REJECT | kz-nqz-exit-01-dc (прямо) ]
-# порядок — как отдаёт mihomo: сначала proxies:, потом узлы провайдера
+EXIT-DC = select [ EXIT-DC-DIRECT (прямо) | EXIT-DC-HOP (url-test над цепочками) | REJECT ]
 ```
 
 - **`url-test` меряет всю цепочку до ноды**, а не хоп: хопы ss и ws провайдера
@@ -87,10 +86,18 @@ yq -i '.proxy-groups |= map(select(.name | test("^EXIT-") | not)) | .proxy-group
    "url": "https://www.gstatic.com/generate_204", "interval": 300, "tolerance": 100, "timeout": 8000},
   {"name": "EXIT-RESI-HOP", "type": "url-test", "use": ["exits"], "filter": "-resi ⇢ ",
    "url": "https://www.gstatic.com/generate_204", "interval": 900, "tolerance": 500, "timeout": 15000, "lazy": true},
-  {"name": "EXIT-DC", "type": "select", "use": ["exits"], "filter": "-dc$", "proxies": ["EXIT-DC-HOP", "REJECT"]},
-  {"name": "EXIT-RESI", "type": "select", "use": ["exits"], "filter": "-resi$", "proxies": ["EXIT-RESI-HOP", "REJECT"]}
+  {"name": "EXIT-DC-DIRECT", "type": "select", "use": ["exits"], "filter": "-dc$"},
+  {"name": "EXIT-RESI-DIRECT", "type": "select", "use": ["exits"], "filter": "-resi$"},
+  {"name": "EXIT-DC", "type": "select", "proxies": ["EXIT-DC-DIRECT", "EXIT-DC-HOP", "REJECT"]},
+  {"name": "EXIT-RESI", "type": "select", "proxies": ["EXIT-RESI-DIRECT", "EXIT-RESI-HOP", "REJECT"]}
 ]' "$P"
 ```
+
+**Прямой узел — первым, отдельной группой `…-DIRECT`.** В `select` mihomo ставит
+`proxies:` раньше узлов провайдера, и если бы прямой узел шёл через `use:`, по
+умолчанию выбиралась бы `…-HOP` — а при выключенном пуле она пустая
+(`COMPATIBLE`), и выход молча не работает. Так и случилось на роутере
+14.11.2026 — проверено и исправлено на VM.
 
 `EXIT-RESI-HOP` с `lazy` и длинным интервалом: каждая проверка — новое
 соединение через ISP-прокси, который на частых соединениях отказывает.
