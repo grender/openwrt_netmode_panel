@@ -1174,6 +1174,87 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/RulesetsFileError" }
+  /api/nikki/exits:
+    get:
+      tags: [nikki]
+      summary: Свои выходы — группы EXIT-* у движка
+      description: |
+        Живые группы `EXIT-*` (ADR-0049, ADR-0050), кроме тех, что сами
+        участники другой `EXIT-*` (`EXIT-DC-HOP` — часть `EXIT-DC`). У
+        участника `kind`: `direct` — узел своей ноды напрямую, `chains` —
+        группа цепочек (её `now` — через какую цепочку она работает),
+        `chain` — цепочка, `reject` — закрыто. Задержка — последний замер
+        движка, `null` — замера не было.
+      responses:
+        "200":
+          description: Группы выходов
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NikkiExitsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "502":
+          description: "`nikki_error` — движок ответил ошибкой."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "`nikki_unavailable` — Clash API не отвечает."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/nikki/exits/select:
+    post:
+      tags: [nikki]
+      summary: Ручной выбор в группе выхода (прямо / через хоп / закрыть)
+      description: |
+        `Select` в Clash API — как выбор узла в `PROXY`: живёт до перезапуска
+        движка, профиль не трогается. Только группы `EXIT-*` и только их
+        участники. Ответ — то же тело, что `GET /api/nikki/exits`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [group, member]
+              additionalProperties: false
+              properties:
+                group: { type: string, examples: ["EXIT-DC"] }
+                member: { type: string, examples: ["EXIT-DC-HOP"] }
+      responses:
+        "200":
+          description: Выбор применён
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NikkiExitsResponse" }
+        "400":
+          description: |
+            `bad_request` — нет group или member. `bad_group` — группа не
+            `EXIT-*`. `unknown_member` — не участник этой группы.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`unknown_group` — у движка нет такой группы."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`group_not_selectable` — группа не принимает ручной выбор."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: "`nikki_error`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "`nikki_unavailable`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /api/nikki/hops:
     get:
       tags: [nikki]
@@ -3833,6 +3914,33 @@ components:
             properties:
               user_agent: { type: string, examples: ["Happ/4.8.0/Android/…"] }
               at: { type: string, format: date-time }
+    NikkiExitsResponse:
+      type: object
+      required: [groups]
+      additionalProperties: false
+      properties:
+        groups:
+          type: array
+          items:
+            type: object
+            required: [name, type, now, members]
+            additionalProperties: false
+            properties:
+              name: { type: string, examples: ["EXIT-DC"] }
+              type: { type: string, examples: ["Selector"] }
+              now: { type: string }
+              members:
+                type: array
+                items:
+                  type: object
+                  required: [name, kind, delay_ms, alive]
+                  additionalProperties: false
+                  properties:
+                    name: { type: string }
+                    kind: { type: string, enum: [direct, chains, chain, reject] }
+                    now: { type: string, description: "Только у `chains`." }
+                    delay_ms: { type: [integer, "null"] }
+                    alive: { type: boolean }
     RulesetsResponse:
       type: object
       description: |

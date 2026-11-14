@@ -1,13 +1,16 @@
 import type { Lock } from '../state/lock';
 import type { Side } from '../state/side';
 import { jobOn, type SvcState } from '../state/job';
-import type { Job, Mode, ProxiesResponse, SetsResponse, Status } from '../api/types';
+import type { Job, Mode, NikkiExitsResponse, ProxiesResponse, SetsResponse, Status } from '../api/types';
 import type { T } from '../i18n';
 import { Meter, Skel, Spin } from './bits';
+import { ExitsBlock } from './Exits';
 
 export interface EngineProps {
 	mode: Mode | 'unknown';
 	nikki: Side<ProxiesResponse>;
+	/** Свои выходы EXIT-* у движка (ADR-0050). */
+	exits: Side<NikkiExitsResponse>;
 	sets: Side<SetsResponse>;
 	svcNikki: SvcState;
 	svcB4: SvcState;
@@ -18,6 +21,7 @@ export interface EngineProps {
 	running: Job | null;
 	t: T;
 	onPickProxy(name: string): void;
+	onPickExit(group: string, member: string): void;
 	onToggleSet(id: string, enabled: boolean): void;
 	onTest(): void;
 	onMode(m: Mode): void;
@@ -69,7 +73,7 @@ export function engineSummary(
 
 // ─────────── Nikki ───────────
 
-function Nikki({ nikki, svcNikki, status, lock, locked, t, onPickProxy, onTest }: EngineProps) {
+function Nikki({ nikki, exits, svcNikki, status, lock, locked, t, onPickProxy, onPickExit, onTest }: EngineProps) {
 	if (svcNikki === 'starting') {
 		return (
 			<>
@@ -108,6 +112,10 @@ function Nikki({ nikki, svcNikki, status, lock, locked, t, onPickProxy, onTest }
 					</div>
 				</div>
 			) : null}
+
+			{/* Свои выходы — первыми: это ответ на «через что сейчас идут
+			    AI и Telegram», и переключают его чаще, чем узел туннеля. */}
+			<ExitsBlock exits={exits} lock={lock} locked={locked} t={t} onPick={onPickExit} />
 
 			{/* «Авто» стоит ОТДЕЛЬНО от списка узлов и это не косметика:
 			    в списке провайдера это балансировщик, а у нас — снятие

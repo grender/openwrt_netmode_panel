@@ -478,6 +478,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/nikki/rulesets", s.handleRulesetsPut)
 	s.mux.HandleFunc("GET /api/nikki/autopool", s.handleAutopool)
 	s.mux.HandleFunc("PUT /api/nikki/autopool", s.handleAutopoolPut)
+	s.mux.HandleFunc("GET /api/nikki/exits", s.handleNikkiExits)
+	s.mux.HandleFunc("POST /api/nikki/exits/select", s.handleNikkiExitSelect)
 	s.mux.HandleFunc("GET /api/nikki/hops", s.handleHops)
 	s.mux.HandleFunc("PUT /api/nikki/hops", s.handleHopsPut)
 	s.mux.HandleFunc("POST /api/exits/reload", s.handleExitsReload)

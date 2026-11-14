@@ -2,7 +2,7 @@ import type { T } from '../i18n';
 
 export interface ShelfRow {
 	/** Хеш экрана: #routes, #sub, #bridge — настройки, #watch — наблюдатель. */
-	id: 'routes' | 'pool' | 'sub' | 'bridge' | 'watch';
+	id: 'routes' | 'pool' | 'hops' | 'phones' | 'sub' | 'bridge' | 'watch';
 	title: string;
 	summary: string;
 	/** Жёлтая сводка — про аномалию: шлюз молчит, ПК не отвечает. */

@@ -512,3 +512,69 @@ export interface WatchSummary {
 export interface WatchHosts {
 	hosts: WatchHost[];
 }
+
+// ─── Свои выходы и цепочки (ADR-0050) ───
+
+/** Режим пула хопов. off — цепочек нет (умолчание). */
+export type HopsMode = 'off' | 'deny' | 'allow' | 'provider';
+
+/** Своя нода из /etc/netmoded/exits — без секретов. */
+export interface ExitNodeInfo {
+	name: string;
+	country: string;
+	address: string;
+	port: number;
+	sni: string;
+	exits: string[];
+}
+
+export interface HopsResponse {
+	fingerprint: string;
+	mode: HopsMode;
+	nodes: string[];
+	/** Вычисленный демоном состав в порядке подписки. */
+	pool: string[];
+	available: string[];
+	provider_pool: string[];
+	missing: string[];
+	max_pool: number;
+	foreign: boolean;
+	exits: ExitNodeInfo[];
+	/** Почему каталог экспортов не читается; null — читается. */
+	exits_error: string | null;
+	skip_sni: string[];
+}
+
+/** Черновик пула хопов. null — совпадает с применённым. */
+export interface HopsDraft {
+	mode: HopsMode;
+	nodes: string[];
+}
+
+export interface SubLinkResponse {
+	/** Ссылка на подписку для телефонов; null — не выпущена. Секрет. */
+	url: string | null;
+	clients: { user_agent: string; at: string }[];
+}
+
+export type ExitMemberKind = 'direct' | 'chains' | 'chain' | 'reject';
+
+export interface ExitMember {
+	name: string;
+	kind: ExitMemberKind;
+	/** Только у chains: через какую цепочку группа работает сейчас. */
+	now?: string;
+	delay_ms: number | null;
+	alive: boolean;
+}
+
+export interface ExitGroup {
+	name: string;
+	type: string;
+	now: string;
+	members: ExitMember[];
+}
+
+export interface NikkiExitsResponse {
+	groups: ExitGroup[];
+}

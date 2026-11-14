@@ -2,6 +2,9 @@ import type { ComponentChildren } from 'preact';
 import type {
 	AutopoolDraft,
 	AutopoolResponse,
+	HopsDraft,
+	HopsResponse,
+	SubLinkResponse,
 	BridgeState,
 	Job,
 	LogsResponse,
@@ -18,12 +21,14 @@ import type { Side } from '../state/side';
 import { Section } from './bits';
 import { Autopool, poolSummary } from './Autopool';
 import { Bridge, bridgeProblem, bridgeSummary } from './Bridge';
+import { Hops, hopsSummary } from './Hops';
+import { Phones, phonesSummary } from './Phones';
 import { Rulesets, rulesSummary } from './Rulesets';
 import { Subscription, subSummary } from './Subscription';
 
-/** Разделы экрана настроек — они же хеши адреса: #routes, #sub, #bridge. */
-export type SettingsRow = 'routes' | 'pool' | 'sub' | 'bridge';
-export const SETTINGS_ROWS: SettingsRow[] = ['routes', 'pool', 'sub', 'bridge'];
+/** Разделы экрана настроек — они же хеши адреса: #routes, #hops, #phones, #sub, #bridge. */
+export type SettingsRow = 'routes' | 'pool' | 'hops' | 'phones' | 'sub' | 'bridge';
+export const SETTINGS_ROWS: SettingsRow[] = ['routes', 'pool', 'hops', 'phones', 'sub', 'bridge'];
 
 export interface SettingsProps {
 	/** Открытый раздел на узком экране; на широком раскрыты все. */
@@ -50,6 +55,15 @@ export interface SettingsProps {
 	poolDraft: AutopoolDraft | null;
 	setPoolDraft(d: AutopoolDraft | null): void;
 	onApplyPool(d: AutopoolDraft): void;
+
+	hops: Side<HopsResponse>;
+	hopsDraft: HopsDraft | null;
+	setHopsDraft(d: HopsDraft | null): void;
+	onApplyHops(d: HopsDraft): void;
+	onReloadExits(): void;
+
+	subLink: Side<SubLinkResponse>;
+	onRotateSub(first: boolean): void;
 
 	sub: Side<SubscriptionURL>;
 	logs: Side<LogsResponse>;
@@ -114,6 +128,26 @@ export function Settings(p: SettingsProps) {
 					t={t}
 					onApply={p.onApplyPool}
 				/>
+			</Section>
+
+			{/* Цепочки и подписка для телефонов — следом за пулом: та же
+			    третья секция mixin.yaml и те же узлы подписки (ADR-0050). */}
+			<Section id="hops" title={t('shelf.hops')} summary={hopsSummary(p.hops, p.hopsDraft, t)} wide={wide} open={open('hops')} onToggle={() => p.onRow('hops')} t={t} full>
+				<Hops
+					applied={p.hops}
+					draft={p.hopsDraft}
+					setDraft={p.setHopsDraft}
+					lock={p.lock}
+					locked={p.locked}
+					running={p.running}
+					t={t}
+					onApply={p.onApplyHops}
+					onReload={p.onReloadExits}
+				/>
+			</Section>
+
+			<Section id="phones" title={t('shelf.phones')} summary={phonesSummary(p.subLink, t)} wide={wide} open={open('phones')} onToggle={() => p.onRow('phones')} t={t} full>
+				<Phones link={p.subLink} open={open('phones')} lang={p.lang} lock={p.lock} locked={p.locked} t={t} onRotate={p.onRotateSub} />
 			</Section>
 
 			<Section id="sub" title={t('shelf.sub')} summary={subSummary(p.status, p.lang, t)} wide={wide} open={open('sub')} onToggle={() => p.onRow('sub')} t={t} full>

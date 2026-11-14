@@ -147,6 +147,8 @@ export function jobText(job: Job, t: T): string {
 	if (job.kind === 'subscription') return t('job.subscription');
 	if (job.kind === 'bridge') return t('job.bridge');
 	if (job.kind === 'rulesets') return t('job.rulesets');
+	if (job.kind === 'hops') return t('job.hops');
+	if (job.kind === 'exits') return t('job.exits');
 	// У upstream arg — ssid целевой сети, и подставляется он как ДАННЫЕ, а не
 	// как часть ключа: набор ssid открыт, ключа под каждый не заведёшь.
 	if (job.kind === 'upstream' && job.arg) return t('job.upstream', { ssid: job.arg });
@@ -159,6 +161,8 @@ export function failText(job: Job, t: T): string {
 	if (job.kind === 'subscription') return t('job.fail.subscription');
 	if (job.kind === 'bridge') return t('job.fail.bridge');
 	if (job.kind === 'rulesets') return t('job.fail.rulesets');
+	if (job.kind === 'hops') return t('job.fail.hops');
+	if (job.kind === 'exits') return t('job.fail.exits');
 	if (job.kind === 'upstream') return t('job.fail.upstream');
 	return t('job.fail');
 }

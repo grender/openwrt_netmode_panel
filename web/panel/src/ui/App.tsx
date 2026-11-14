@@ -4,6 +4,10 @@ import { describe, errCode, failText, jobText, STALE_CODES, BRIDGE_STALE_CODES, 
 import type {
 	AutopoolDraft,
 	AutopoolResponse,
+	HopsDraft,
+	HopsResponse,
+	NikkiExitsResponse,
+	SubLinkResponse,
 	BridgeState,
 	Job,
 	JobAccepted,
@@ -35,6 +39,8 @@ import { bridgeProblem, bridgeSummary } from './Bridge';
 import { Engine, engineSummary, engineTitle } from './Engine';
 import { rulesSummary } from './Rulesets';
 import { poolLeft, poolSummary } from './Autopool';
+import { hopsSummary } from './Hops';
+import { phonesSummary } from './Phones';
 import { Settings, SETTINGS_ROWS, type SettingsRow } from './Settings';
 import { BridgeForm, NetworkForm, type BridgeBody, type NetBody, type NetSeed } from './Sheets';
 import { Shelf } from './Shelf';
@@ -85,6 +91,11 @@ export function App() {
 	const rulesets = useSide<RulesetsResponse>('nikkiRulesets');
 	const catalog = useSide<RulesetsCatalog>('nikkiRulesetsCatalog');
 	const autopool = useSide<AutopoolResponse>('nikkiAutopool');
+	// Свои выходы (ADR-0050): пул хопов и ноды — из файлов демона, группы
+	// EXIT-* — у живого движка, ссылка на подписку телефонов — по запросу.
+	const hops = useSide<HopsResponse>('nikkiHops');
+	const exitGroups = useSide<NikkiExitsResponse>('nikkiExits');
+	const subLink = useSide<SubLinkResponse>('subLink');
 
 	const [netForm, setNetForm] = useState<NetSeed | null>(null);
 	// Экран — из адреса, и только из него: кнопка «назад» браузера обязана
@@ -100,10 +111,12 @@ export function App() {
 	// не помнит.
 	const [rulesDraft, setRulesDraft] = useState<RulesDraft | null>(null);
 	const [poolDraft, setPoolDraft] = useState<AutopoolDraft | null>(null);
+	const [hopsDraft, setHopsDraft] = useState<HopsDraft | null>(null);
 	// Какой черновик ушёл каким джобом: снимается он только успехом этого
 	// джоба (эффект конца операции ниже).
 	const rulesApplied = useRef<{ id: string; draft: RulesDraft } | null>(null);
 	const poolApplied = useRef<{ id: string; draft: AutopoolDraft } | null>(null);
+	const hopsApplied = useRef<{ id: string; draft: HopsDraft } | null>(null);
 	const [bridgeForm, setBridgeForm] = useState(false);
 	// Наблюдатель опрашивается СВОИМ циклом и только пока его экран открыт:
 	// состояние сессии велико, а нужно оно ровно здесь. И только этот опрос
@@ -208,6 +221,16 @@ export function App() {
 		if (hasStatus) autopool.ensure();
 	}, [hasStatus, autopool]);
 
+	// Пул хопов — по тому же правилу: он из файлов демона, движок не нужен.
+	// Ссылка на подписку — только на экране настроек: в ней секрет, и
+	// держать её в памяти вкладки без нужды незачем.
+	useEffect(() => {
+		if (hasStatus) hops.ensure();
+	}, [hasStatus, hops]);
+	useEffect(() => {
+		if (hasStatus && route.screen === 'settings') void subLink.load();
+	}, [hasStatus, route.screen, subLink]);
+
 	// Подписка обновилась — журнал, узлы и пул перечитываются ПО ФАКТУ, а не
 	// по нажатию. last_update — метка последней строки журнала (status.go):
 	// она сдвигается и на удачном обновлении, и на провале, и на обновлении
@@ -224,7 +247,9 @@ export function App() {
 		void logs.load({ query: { n: '5' } });
 		if (svcNikki === 'up') void nikki.load();
 		void autopool.load();
-	}, [subAt, svcNikki, logs, nikki, autopool]);
+		// Пул хопов демон пересобирает после обновления подписки.
+		void hops.load();
+	}, [subAt, svcNikki, logs, nikki, autopool, hops]);
 
 	// Список устройств грузится при КАЖДОМ заходе на экран и после остановки
 	// наблюдения: между этими моментами он не меняется настолько, чтобы
@@ -258,9 +283,10 @@ export function App() {
 			// null, и без перечитывания раздел до F5 утверждал бы «движок не
 			// ответил» про уже собранную группу.
 			void autopool.load();
+			void exitGroups.load();
 		}
 		wasUp.current.nikki = svcNikki === 'up';
-	}, [svcNikki, nikki, rulesets, autopool]);
+	}, [svcNikki, nikki, rulesets, autopool, exitGroups]);
 	useEffect(() => {
 		if (svcB4 === 'up' && !wasUp.current.b4) void sets.load();
 		wasUp.current.b4 = svcB4 === 'up';
@@ -307,6 +333,9 @@ export function App() {
 		const dropPool = () => {
 			if (pa && poolMine) setPoolDraft((cur) => (cur === pa.draft ? null : cur));
 		};
+		const ha = hopsApplied.current;
+		const hopsMine = !!ha && ha.id === j.id;
+		if (hopsMine) hopsApplied.current = null;
 
 		// Проброс перечитывается по концу джоба, а не на 202: тогда джоб
 		// едва начинался, и раздел до F5 показывал состояние «до».
@@ -319,6 +348,30 @@ export function App() {
 		// У пула свой тост: важно не «готово», а сколько узлов в нём
 		// осталось — иначе владелец узнает о слишком жадном фильтре только
 		// по неработающему обходу.
+		// Пул хопов и перечитка нод: после них движок перезапущен или
+		// перечитал провайдер — группы выходов и экран пула надо обновить.
+		if (j.kind === 'hops' || j.kind === 'exits') {
+			void (async () => {
+				const dropHops = () => {
+					if (ha && hopsMine) setHopsDraft((cur) => (cur === ha.draft ? null : cur));
+				};
+				void exitGroups.load();
+				try {
+					const r = await api<HopsResponse>('nikkiHops', { timeoutMs: BUDGET.SIDE });
+					hops.put(r);
+					dropHops();
+					lock.flash(
+						j.kind === 'hops' ? t('hops.done', { n: r.pool.length }) : t('job.done', { what: jobText(j, t) }),
+						'ok',
+					);
+				} catch {
+					await hops.load();
+					dropHops();
+					lock.flash(t('job.done', { what: jobText(j, t) }), 'ok');
+				}
+			})();
+			return;
+		}
 		if (j.kind === 'autopool') {
 			void (async () => {
 				try {
@@ -381,7 +434,7 @@ export function App() {
 				: t('job.done', { what: jobText(j, t) }),
 			'ok',
 		);
-	}, [status, lock, t, rulesets, autopool, bridge]);
+	}, [status, lock, t, rulesets, autopool, bridge, hops, exitGroups]);
 
 	// ─── действия ───
 
@@ -621,6 +674,50 @@ export function App() {
 			async () => {
 				await watchHosts.load();
 			},
+		);
+
+	const onApplyHops = (d: HopsDraft) =>
+		void lock.act(
+			'hops',
+			async () => {
+				try {
+					const r = await api<JobAccepted>('nikkiHops', {
+						method: 'PUT',
+						body: JSON.stringify(d),
+						headers: { 'If-Match': hops.value?.fingerprint ?? '' },
+						timeoutMs: BUDGET.MODE,
+					});
+					poll.sow(r);
+					if (r?.job) hopsApplied.current = { id: r.job.id, draft: d };
+					else setHopsDraft(null);
+				} catch (e) {
+					if (errCode(e) === 'stale_hops') await hops.load();
+					throw e;
+				}
+			},
+			async () => {},
+		);
+
+	const onReloadExits = () =>
+		void lock.act('exits', async () => {
+			poll.sow(await post<JobAccepted>('exitsReload', {}, BUDGET.MODE));
+		});
+
+	const onRotateSub = (first: boolean) =>
+		void lock.act(
+			'subrotate',
+			async () => {
+				await post<{ url: string }>('subRotate', {}, BUDGET.SIDE);
+				lock.flash(t(first ? 'phones.issued' : 'phones.rotated'), 'ok');
+			},
+			() => subLink.load(),
+		);
+
+	// Выбор в группе выхода — Select в движке, без джоба: ответ уже несёт
+	// новое состояние групп.
+	const onPickExit = (group: string, member: string) =>
+		void lock.act(`exit:${group}|${member}`, async () =>
+			exitGroups.put(await post<NikkiExitsResponse>('nikkiExitsSelect', { group, member })),
 		);
 
 	const onApplyPool = (d: AutopoolDraft) =>
@@ -974,6 +1071,13 @@ export function App() {
 						poolDraft={poolDraft}
 						setPoolDraft={setPoolDraft}
 						onApplyPool={onApplyPool}
+						hops={hops.value}
+						hopsDraft={hopsDraft}
+						setHopsDraft={setHopsDraft}
+						onApplyHops={onApplyHops}
+						onReloadExits={onReloadExits}
+						subLink={subLink.value}
+						onRotateSub={onRotateSub}
 						catalog={catalog.value}
 						catalogLoading={catalogLoading}
 						draft={rulesDraft}
@@ -1217,6 +1321,7 @@ export function App() {
 						<Engine
 							mode={mode}
 							nikki={nikki.value}
+							exits={exitGroups.value}
 							sets={sets.value}
 							svcNikki={svcNikki}
 							svcB4={svcB4}
@@ -1226,6 +1331,7 @@ export function App() {
 							running={running}
 							t={t}
 							onPickProxy={onPickProxy}
+							onPickExit={onPickExit}
 							onToggleSet={onToggleSet}
 							onTest={onTest}
 							onMode={onMode}
@@ -1240,6 +1346,8 @@ export function App() {
 						rows={[
 							{ id: 'routes', title: t('shelf.rules'), summary: rulesSummary(rulesets.value, rulesDraft, t) },
 							{ id: 'pool', title: t('shelf.pool'), summary: poolSummary(autopool.value, poolDraft, t) },
+							{ id: 'hops', title: t('shelf.hops'), summary: hopsSummary(hops.value, hopsDraft, t) },
+							{ id: 'phones', title: t('shelf.phones'), summary: phonesSummary(subLink.value, t) },
 							{ id: 'sub', title: t('shelf.sub'), summary: subSummary(status, lang, t) },
 							{ id: 'bridge', title: t('shelf.bridge'), summary: bridgeSummary(bridge.value, t), warn: !!problem },
 							// Сводка наблюдателя называет СОСТОЯНИЕ: «выключен» — это

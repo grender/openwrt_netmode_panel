@@ -18,6 +18,8 @@ export const ROUTES = {
 	logs: '/api/logs',
 	mode: '/api/mode',
 	nikkiAutopool: '/api/nikki/autopool',
+	nikkiExits: '/api/nikki/exits',
+	nikkiExitsSelect: '/api/nikki/exits/select',
 	nikkiHops: '/api/nikki/hops',
 	nikkiPanel: '/api/nikki/panel',
 	nikkiProxies: '/api/nikki/proxies',

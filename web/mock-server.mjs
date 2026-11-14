@@ -684,6 +684,43 @@ const busyJob = () => !!state.job && state.job.state === 'running';
 // Общая для всех операций механика — секунды ожидания, потом ещё немного
 // показа исхода, — не дублируется: upstream отличается только тем, ЧТО
 // происходит по истечении sec, а не КОГДА.
+
+// Свои выходы (ADR-0050): пул хопов, ноды, группы EXIT-* и подписка для
+// телефонов. Ноды — выдуманные, без секретов, как отдаёт демон.
+const MOCK_EXITS = [{ name: 'kz-nqz-exit-01', country: 'kz', address: 'kz-nqz-exit-01.example.net', port: 443, sni: 'krisha.kz', exits: ['dc', 'resi'] }];
+const hopsBody = async () => {
+	const proxies = await readProxies();
+	const available = (proxies.members || []).filter((m) => m.kind === 'node').map((m) => m.name);
+	const o = state.overlay.hops || {};
+	const mode = o.mode || 'off';
+	const nodes = o.nodes || [];
+	const pool = mode === 'off' ? [] : mode === 'provider' ? available.slice(0, 2)
+		: available.filter((n) => (mode === 'deny') !== nodes.includes(n));
+	return {
+		fingerprint: o.fingerprint || 'sha256:1a2b3c4d5e6f7081', mode, nodes, pool, available,
+		provider_pool: available.slice(0, 2), missing: nodes.filter((n) => !available.includes(n)),
+		max_pool: 8, foreign: state.scenario === 'rulesets-foreign',
+		exits: MOCK_EXITS, exits_error: null, skip_sni: ['krisha.kz'],
+	};
+};
+const exitsBody = async () => {
+	const h = await hopsBody();
+	const sel = state.overlay.exitSel || {};
+	const groups = ['dc', 'resi'].map((ex) => {
+		const name = 'EXIT-' + ex.toUpperCase();
+		const chains = h.pool.map((hop) => `kz-nqz-exit-01-${ex} ⇢ ${hop}`);
+		return {
+			name, type: 'Selector', now: sel[name] || name + '-HOP',
+			members: [
+				{ name: name + '-HOP', kind: 'chains', now: chains[0] || 'COMPATIBLE', delay_ms: chains.length ? (ex === 'dc' ? 929 : 3124) : null, alive: chains.length > 0 },
+				{ name: 'REJECT', kind: 'reject', delay_ms: null, alive: true },
+				{ name: `kz-nqz-exit-01-${ex}`, kind: 'direct', delay_ms: null, alive: false },
+			],
+		};
+	});
+	return { groups };
+};
+
 // autopoolBody — тело GET /api/nikki/autopool.
 //
 // Узлы берутся из того же примера, что и список в карточке Nikki: два
@@ -1334,6 +1371,65 @@ async function handleAPI(req, res, u) {
 	// Авто-пул. Своего примера у него нет: список узлов совпадает с тем,
 	// что отдаёт /api/nikki/proxies, и разводить два источника значило бы
 	// показывать в панели два разных списка одних и тех же серверов.
+	if (p === '/api/nikki/hops' && method === 'GET') {
+		return send(res, 200, await hopsBody());
+	}
+	if (p === '/api/nikki/hops' && method === 'PUT') {
+		const body = await readBody(req);
+		if (!['off', 'deny', 'allow', 'provider'].includes(body.mode)) {
+			return fail(res, 400, 'bad_request', 'Неизвестный режим пула хопов «' + body.mode + '»: ожидались off, deny, allow или provider.');
+		}
+		const cur = await hopsBody();
+		if ((req.headers['if-match'] || '').trim() !== cur.fingerprint) {
+			return fail(res, 409, 'stale_hops', 'Пул хопов изменился, пока вы его правили: перечитайте GET /api/nikki/hops и повторите.');
+		}
+		const nodes = body.nodes || [];
+		const unknown = nodes.filter((n) => !cur.available.includes(n));
+		if (body.mode !== 'off' && unknown.length > 0) {
+			return fail(res, 400, 'unknown_node', 'В подписке нет таких узлов: ' + unknown.slice(0, 3).join(', '));
+		}
+		state.overlay.hops = { mode: body.mode, nodes };
+		const next = await hopsBody();
+		if (body.mode !== 'off' && (next.pool.length === 0 || next.pool.length > next.max_pool)) {
+			state.overlay.hops = { mode: cur.mode, nodes: cur.nodes, fingerprint: cur.fingerprint };
+			return fail(res, 400, 'bad_hops', 'Пул хопов не принят: хопов ' + next.pool.length + ', допустимо 1–' + next.max_pool);
+		}
+		state.overlay.hops = { mode: cur.mode, nodes: cur.nodes, fingerprint: cur.fingerprint };
+		startJob('hops', '', 'Применение пула хопов', 6, () => {
+			state.overlay.hops = { mode: body.mode, nodes, fingerprint: nextFingerprint() };
+			state.job.state = 'done';
+		});
+		return send(res, 202, { job: state.job });
+	}
+	if (p === '/api/exits/reload' && method === 'POST') {
+		startJob('exits', '', 'Перечитка своих нод', 2);
+		return send(res, 202, { job: state.job });
+	}
+	if (p === '/api/nikki/exits' && method === 'GET') {
+		if (!(await engineUp('nikki'))) return fail(res, 503, 'nikki_unavailable', 'Clash API не отвечает.');
+		return send(res, 200, await exitsBody());
+	}
+	if (p === '/api/nikki/exits/select' && method === 'POST') {
+		const body = await readBody(req);
+		if (!/^EXIT-/.test(body.group || '')) return fail(res, 400, 'bad_group', 'Переключать здесь можно только группы своих выходов (EXIT-…)');
+		const cur = await exitsBody();
+		const g = cur.groups.find((x) => x.name === body.group);
+		if (!g) return fail(res, 404, 'unknown_group', 'У движка нет группы «' + body.group + '»');
+		if (!g.members.some((m) => m.name === body.member)) return fail(res, 400, 'unknown_member', '«' + body.member + '» не участник группы');
+		state.overlay.exitSel = { ...(state.overlay.exitSel || {}), [body.group]: body.member };
+		return send(res, 200, await exitsBody());
+	}
+	if (p === '/api/sub/link' && method === 'GET') {
+		const tok = state.overlay.subToken;
+		return send(res, 200, {
+			url: tok ? 'http://192.168.9.1:8088/sub/happ/' + tok : null,
+			clients: tok ? [{ user_agent: 'Happ/4.8.0/Android/17921395329952009531', at: new Date(Date.now() - 3600e3).toISOString() }] : [],
+		});
+	}
+	if (p === '/api/sub/rotate' && method === 'POST') {
+		state.overlay.subToken = crypto.randomBytes(32).toString('base64url');
+		return send(res, 200, { url: 'http://192.168.9.1:8088/sub/happ/' + state.overlay.subToken });
+	}
 	if (p === '/api/nikki/autopool' && method === 'GET') {
 		return send(res, 200, await autopoolBody());
 	}
