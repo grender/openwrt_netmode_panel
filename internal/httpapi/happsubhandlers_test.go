@@ -3,8 +3,11 @@ package httpapi
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"netmoded/internal/happ"
+	"netmoded/internal/nikki"
 	"os"
 	"strings"
 	"testing"
@@ -209,5 +212,54 @@ func TestSubTunnelFollowsAutopool(t *testing.T) {
 	}
 	if strings.Join(tun, ",") != "203.0.113.2" {
 		t.Errorf("туннель «Умного» через %v, ждали только узел авто-пула 203.0.113.2", tun)
+	}
+}
+
+// Пул хопов теперь до 40, а Xray повторителя не умеет: в подписку
+// телефона идут только 3 лучших хопа по замерам цепочек dc на роутере —
+// иначе 80+ записей и пробы resi через каждый хоп с каждого телефона.
+func TestSubTopHopsByRouterRanking(t *testing.T) {
+	s, _ := newServer(t)
+	names := []string{"h1", "h2", "h3", "h4", "h5"}
+	var entries []happ.Entry
+	obs := map[string]any{}
+	for i, n := range names {
+		entries = append(entries, happ.Entry{Name: n, Kind: happ.KindNode, Type: "vless"})
+		obs[n] = map[string]any{"tag": "proxy", "protocol": "vless", "settings": map[string]any{"vnext": []any{
+			map[string]any{"address": fmt.Sprintf("203.0.113.%d", i+1), "port": 443,
+				"users": []any{map[string]any{"id": "00000000-0000-0000-0000-000000000001", "encryption": "none"}}}}}}
+	}
+	seedManifest(t, s, entries)
+	seedExport(t, s, "kz-nqz-exit-01", "krisha.kz")
+	writeMixin(t, s, mixin.Render(mixin.Config{Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
+		Hops:        mixin.HopConfig{Mode: mixin.AutoAllow, Nodes: names, Pool: names},
+		FollowNodes: []string{"kz-nqz-exit-01"}}))
+	b, _ := json.Marshal(obs)
+	if err := os.WriteFile(s.cfg.OutboundsPath, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := nikkiFake(t, s)
+	f.mu.Lock()
+	for n, d := range map[string]int{"h2": 300, "h4": 100, "h5": 200, "h1": 900} {
+		name := "kz-nqz-exit-01-dc ⇢ " + n
+		dd := d
+		f.all[name] = nikki.Proxy{Name: name, Alive: true, DelayMS: &dd, Provider: "exits"}
+	}
+	f.mu.Unlock()
+
+	rec := getSub(t, s, pathOf(rotateSub(t, s)), "Happ", false)
+	var cs []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &cs); err != nil {
+		t.Fatal(err)
+	}
+	var viaHop []string
+	for _, c := range cs {
+		r := c["remarks"].(string)
+		if strings.HasPrefix(r, "kz-nqz-exit-01 · dc ⇢ ") {
+			viaHop = append(viaHop, strings.TrimPrefix(r, "kz-nqz-exit-01 · dc ⇢ "))
+		}
+	}
+	if strings.Join(viaHop, ",") != "h4,h5,h2" {
+		t.Fatalf("хопы в подписке %v, ждали 3 лучших по замеру: h4,h5,h2", viaHop)
 	}
 }

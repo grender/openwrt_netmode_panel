@@ -20,7 +20,10 @@ function memberLabel(m: ExitMember, t: T): string {
 		case 'chains': {
 			// Через какой хоп группа работает сейчас — хвост имени цепочки.
 			const i = m.now ? m.now.indexOf(CHAIN_SEP) : -1;
-			return i >= 0 && m.now ? t('exits.kind.chains.now', { via: m.now.slice(i + CHAIN_SEP.length) }) : t('exits.kind.chains');
+			if (i < 0 || !m.now) return t('exits.kind.chains');
+			const via = m.now.slice(i + CHAIN_SEP.length);
+			// REJECT — повторитель не нашёл живого хопа: resi через хоп закрыт.
+			return via === 'REJECT' ? t('exits.kind.chains.none') : t('exits.kind.chains.now', { via });
 		}
 		case 'reject':
 			return t('exits.kind.reject');

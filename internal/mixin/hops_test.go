@@ -171,3 +171,54 @@ func TestHopFingerprintIndependent(t *testing.T) {
 		t.Fatal("пул хопов изменил отпечаток наборов")
 	}
 }
+
+// Повторители — по одной группе на ноду с dc (exits.FollowGroup): select из
+// групп-однохопников пула и REJECT. Пишутся и без пула — тогда [REJECT],
+// и цепочка «⇢ авто» отказывает (kill switch).
+func TestFollowGroupsRendered(t *testing.T) {
+	c := hopBase()
+	c.Hops = HopConfig{Mode: AutoAllow, Nodes: []string{hopDE, hopRU}, Pool: []string{hopDE, hopRU}}
+	c.FollowNodes = []string{"kz-nqz-exit-01"}
+	out := string(Render(c))
+	line := "  - {name: '" + exits.FollowGroupName("kz-nqz-exit-01") + "', type: select, proxies: ['" +
+		exits.HopGroupName(hopDE) + "', '" + exits.HopGroupName(hopRU) + "', 'REJECT']}\n"
+	if !strings.Contains(out, line) {
+		t.Fatalf("нет повторителя:\n%s\nв файле:\n%s", line, out)
+	}
+
+	off := hopBase()
+	off.FollowNodes = []string{"kz-nqz-exit-01"}
+	if !strings.Contains(string(Render(off)), "proxies: ['REJECT']}") {
+		t.Fatalf("без пула повторитель не [REJECT]:\n%s", Render(off))
+	}
+}
+
+func TestFollowRoundTripAndCorruption(t *testing.T) {
+	c := hopBase()
+	c.Hops = HopConfig{Mode: AutoAllow, Nodes: []string{hopDE}, Pool: []string{hopDE}}
+	c.FollowNodes = []string{"kz-nqz-exit-01", "kz-ala-exit-02"}
+	got, _, err := Parse(Render(c))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if strings.Join(got.FollowNodes, ",") != "kz-nqz-exit-01,kz-ala-exit-02" {
+		t.Errorf("FollowNodes %v", got.FollowNodes)
+	}
+	out := string(Render(c))
+	i := strings.Index(out, "  - {name: 'nm-follow-")
+	j := strings.Index(out[i:], "\n")
+	if _, _, err := Parse([]byte(out[:i] + out[i+j+1:])); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("вычеркнутый повторитель не замечен: %v", err)
+	}
+	if ValidateFollowNodes([]string{"KZ bad"}) == nil {
+		t.Error("битое имя ноды принято")
+	}
+}
+
+// Потолок поднят: хоп выбирается по дешёвым проверкам dc, resi не
+// проверяется вовсе — 40 хопов не нагружают ISP-прокси.
+func TestMaxHopPoolRaised(t *testing.T) {
+	if MaxHopPool < 40 {
+		t.Fatalf("MaxHopPool = %d", MaxHopPool)
+	}
+}

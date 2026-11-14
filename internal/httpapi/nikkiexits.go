@@ -74,6 +74,14 @@ func exitGroups(all map[string]nikki.Proxy) []map[string]any {
 				"delay_ms": p.DelayMS, "alive": p.Alive}
 			if known && p.IsGroup() {
 				row["now"] = p.Now
+				// «<нода>-<выход> ⇢ авто» — хоп выбирает повторитель:
+				// показываем его хоп и замер цепочки dc через него.
+				if via, delay, ok := autoChainHop(all, p.Now); ok {
+					row["now"] = strings.TrimSuffix(p.Now, exits.AutoHop) + via
+					row["delay_ms"], row["alive"] = delay, delay != nil
+					members = append(members, row)
+					continue
+				}
 				// У url-test-группы своей истории часто нет — берём замер
 				// цепочки, через которую она работает.
 				if p.DelayMS == nil {
@@ -161,4 +169,36 @@ func (s *Server) handleNikkiExitSelect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeExits(w, r)
+}
+
+// autoChainHop — для цепочки «<нода>-<выход> ⇢ авто»: хоп, который сейчас
+// стоит в повторителе ноды, и замер цепочки dc через него. ok=false — это
+// не автоцепочка или повторителя у движка нет.
+func autoChainHop(all map[string]nikki.Proxy, chain string) (string, *int, bool) {
+	suffix := exits.ChainSep + exits.AutoHop
+	if !strings.HasSuffix(chain, suffix) {
+		return "", nil, false
+	}
+	base := strings.TrimSuffix(chain, suffix) // <нода>-<выход>
+	i := strings.LastIndex(base, "-")
+	if i <= 0 {
+		return "", nil, false
+	}
+	node := base[:i]
+	fg, ok := all[exits.FollowGroupName(node)]
+	if !ok {
+		return "", nil, false
+	}
+	if fg.Now == "REJECT" {
+		return "REJECT", nil, true
+	}
+	hg, ok := all[fg.Now]
+	if !ok || hg.Now == "" {
+		return fg.Now, nil, true
+	}
+	var delay *int
+	if dc, ok := all[node+"-"+exits.MeasuredExit+exits.ChainSep+hg.Now]; ok && dc.Alive {
+		delay = dc.DelayMS
+	}
+	return hg.Now, delay, true
 }

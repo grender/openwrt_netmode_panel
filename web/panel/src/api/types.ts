@@ -543,6 +543,8 @@ export interface HopsResponse {
 	/** Почему каталог экспортов не читается; null — читается. */
 	exits_error: string | null;
 	skip_sni: string[];
+	/** Нода → хоп, через который сейчас идёт её resi; REJECT — живого хопа нет. */
+	follow: Record<string, string>;
 }
 
 /** Черновик пула хопов. null — совпадает с применённым. */

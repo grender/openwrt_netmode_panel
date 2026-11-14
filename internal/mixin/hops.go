@@ -65,14 +65,21 @@ const (
 	hopPoolField  = "hop-pool="
 	skipSNIField  = "skip-sni="
 
-	hopGroupsKV    = "nikki-proxy-groups:\n"
-	hopLinePrefix  = "  - {name: 'nm-hop-"
-	snifferKV      = "sniffer:\n  skip-domain:\n"
-	skipLinePrefix = "    - '"
+	hopGroupsKV   = "nikki-proxy-groups:\n"
+	hopLinePrefix = "  - {name: 'nm-hop-"
+	// followLinePrefix — строка группы-повторителя (exits.FollowGroup).
+	followLinePrefix = "  - {name: 'nm-follow-"
+	followField      = "follow="
+	snifferKV        = "sniffer:\n  skip-domain:\n"
+	skipLinePrefix   = "    - '"
 
 	// MaxHopPool — потолок пула: на каждый хоп — цепочка на каждый выход
 	// каждой ноды, и у каждой своя проверка здоровья через выход.
-	MaxHopPool = 8
+	//
+	// 40, а не 8: хоп выбирается по проверкам цепочек dc (через VPS в
+	// freedom — дёшево), а цепочка resi одна на ноду и не проверяется вовсе
+	// (повторитель, ADR-0050 «Автоподбор хопа»). Подписка — 38 узлов.
+	MaxHopPool = 40
 	// MaxSkipSNI — своих нод единицы; потолок ограничивает строку
 	// состояния, а не владельца.
 	MaxSkipSNI = 32
@@ -86,13 +93,24 @@ var sniRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$`
 // бы с autoFilterKey, и Parse посчитал бы их строками авто-пула.
 func hopBody(c Config) string {
 	var b strings.Builder
-	if len(c.Hops.Pool) > 0 {
+	if len(c.Hops.Pool) > 0 || len(c.FollowNodes) > 0 {
 		b.WriteString(hopGroupsKV)
 		for _, h := range c.Hops.Pool {
 			// empty-fallback — kill switch: пустая группа иначе COMPATIBLE = DIRECT.
 			fmt.Fprintf(&b, "  - {name: %s, type: select, use: [%s], filter: %s, empty-fallback: 'REJECT'}\n",
 				yamlSingleQuoted(exits.HopGroupName(h)), yamlSingleQuoted(exits.SubProvider),
 				yamlSingleQuoted("^"+regexp.QuoteMeta(h)+"$"))
+		}
+		// Повторители — после однохопников, на которые ссылаются. Пишутся
+		// и без пула: тогда [REJECT], и «⇢ авто» отказывает (kill switch).
+		for _, node := range c.FollowNodes {
+			g := exits.FollowGroup(node, c.Hops.Pool)
+			members := make([]string, 0)
+			for _, m := range g["proxies"].([]string) {
+				members = append(members, yamlSingleQuoted(m))
+			}
+			fmt.Fprintf(&b, "  - {name: %s, type: select, proxies: [%s]}\n",
+				yamlSingleQuoted(g["name"].(string)), strings.Join(members, ", "))
 		}
 	}
 	if len(c.SkipSNI) > 0 {
@@ -120,6 +138,9 @@ func hopStateFields(c Config) string {
 	}
 	if len(c.SkipSNI) > 0 {
 		out += " " + skipSNIField + strings.Join(c.SkipSNI, ",")
+	}
+	if len(c.FollowNodes) > 0 {
+		out += " " + followField + strings.Join(c.FollowNodes, ",")
 	}
 	return out
 }
@@ -157,6 +178,12 @@ func parseHopField(cfg *Config, key, val string) (bool, error) {
 		} else {
 			cfg.Hops.Pool = nodes
 		}
+	case "follow":
+		list := strings.Split(val, ",")
+		if err := ValidateFollowNodes(list); err != nil {
+			return true, fmt.Errorf("%w: %v", ErrCorrupt, err)
+		}
+		cfg.FollowNodes = list
 	case "skip-sni":
 		list := strings.Split(val, ",")
 		if err := ValidateSkipSNI(list); err != nil {
@@ -257,4 +284,22 @@ func HopFingerprint(h HopConfig) string {
 	}
 	sum := sha256.Sum256([]byte(b.String()))
 	return "sha256:" + hex.EncodeToString(sum[:8])
+}
+
+// followNodeRe — то же правило имён, что у экспортов (internal/exits).
+var followNodeRe = regexp.MustCompile(`^[a-z]{2}-[a-z]{3}-(exit|relay)-[0-9]{2}$`)
+
+// ValidateFollowNodes — имена нод для повторителей.
+func ValidateFollowNodes(list []string) error {
+	seen := make(map[string]bool, len(list))
+	for _, n := range list {
+		if !followNodeRe.MatchString(n) {
+			return fmt.Errorf("нода %q — имя не по правилу", n)
+		}
+		if seen[n] {
+			return fmt.Errorf("нода %q дважды", n)
+		}
+		seen[n] = true
+	}
+	return nil
 }

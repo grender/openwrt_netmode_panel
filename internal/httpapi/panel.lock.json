@@ -7,10 +7,10 @@
     "web/panel/src/api/describe.ts": "19e053bea26590e8ef153cbec867333dd7e81c01",
     "web/panel/src/api/reasons.gen.ts": "0034a00188b5e0fdcfb68214e0358426a8e507c6",
     "web/panel/src/api/routes.gen.ts": "191d224a367ff5e9eee03d0b120a5c85b208f14b",
-    "web/panel/src/api/types.ts": "e6f3f70a4b2eb82602254e8d2f2beeb3d148f05c",
-    "web/panel/src/i18n/en.json": "6c3488212171d8f9d17a2c25f5fea2148ac08127",
+    "web/panel/src/api/types.ts": "b6476b7531739a6de71547fed4c8d4e8bf2b1c48",
+    "web/panel/src/i18n/en.json": "0807545db4018e03dd82dc99adaeb725b4b1720d",
     "web/panel/src/i18n/index.ts": "f496c11836c903af7d62bb0109f49dcdc6a37be5",
-    "web/panel/src/i18n/ru.json": "5f31017e5e2f3f6db5866c7bbe7575168ee92ffd",
+    "web/panel/src/i18n/ru.json": "cf93a71c0cafb4e981216abfd52e669cdcb483de",
     "web/panel/src/main.tsx": "d849dd510cfdbf4c607f7a20e3d7a2d9d91d0712",
     "web/panel/src/state/consts.ts": "1243ae77582ef79923d5ecf6feb066387806d34c",
     "web/panel/src/state/job.ts": "a125d5cdff971db7b17dfc6ce229648f692db3f9",
@@ -23,8 +23,8 @@
     "web/panel/src/ui/Autopool.tsx": "cb8e532b8dbb8cdf1c116047a5e19d6c58ec47d9",
     "web/panel/src/ui/Bridge.tsx": "5f3b054fd2638d707018913777543901777b586c",
     "web/panel/src/ui/Engine.tsx": "49d93d225c2a762a83fab7f43ad67b756a177c36",
-    "web/panel/src/ui/Exits.tsx": "78e6b2d722e734b7697703a437e9a14c038c5000",
-    "web/panel/src/ui/Hops.tsx": "4ae84932d56080ccf8d1c4077d08f7cde8b6c851",
+    "web/panel/src/ui/Exits.tsx": "799de9e9c0dd9e0b2e781ae97e2f5b66f427d783",
+    "web/panel/src/ui/Hops.tsx": "d68b690260acea58b177b26fee9d7d5b2474a6fb",
     "web/panel/src/ui/Phones.tsx": "eb01b0f48841d44974d26ea0e5027cb90ffa4145",
     "web/panel/src/ui/Rulesets.tsx": "48b9ab64855a394d5390a8c29e775be62a533428",
     "web/panel/src/ui/Settings.tsx": "87ca8274b0eeb00e7498a49ff7948a38da3903b9",
@@ -37,16 +37,16 @@
     "web/panel/tsconfig.json": "2ee4ff881e2dbfd1abfe8024273340d7c8e94a94",
     "web/panel/vite.config.ts": "229d4555da50f27791ae3765994f04ce40371edd"
   },
-  "inputs_digest": "795e930a2d7455e5c14bb3142ed47cbe82484eb710cb61172258b89974f14864",
+  "inputs_digest": "e95862a153b34f92a9fa7d43be264abf7c70732737b4fdde213dbef5e8aafb8b",
   "artifact": {
-    "assets/app.js": "eb51577070d575723c325f9962bc208270ac687df6b5e6411975b2fa429035a1",
+    "assets/app.js": "c04d19422936667d6ba536ff2990a7a644392def31cd30f8f03bfd848e2a8407",
     "assets/style.css": "2ccdcbb4f7a7f0fd3fbb29cbcc86ec06e37a0b62b0246307918275c9a1906ec7",
-    "index.html": "ec37a2f4cee7eda65b04297149e584b3807d896e40632cbd739c7927b9632b29"
+    "index.html": "a8f7f04796eb5b75b7da72f9cfd3362a980458e3c3774124e0056eafa498c0b3"
   },
   "sizes_gzip": {
-    "assets/app.js": 68499,
+    "assets/app.js": 68885,
     "assets/style.css": 6535,
-    "index.html": 578,
-    "total": 75612
+    "index.html": 579,
+    "total": 75999
   }
 }

@@ -114,6 +114,12 @@ export function Hops(p: HopsProps) {
 				</div>
 			) : null}
 			{a.skip_sni.length > 0 ? <p class="hint">{t('hops.skip', { sni: a.skip_sni.join(', ') })}</p> : null}
+			{/* Хоп resi выбирает демон по замерам цепочек dc — показать, на чём он сейчас. */}
+			{Object.entries(a.follow ?? {}).map(([node, hop]) => (
+				<p key={node} class={`hint${hop === 'REJECT' ? ' warn' : ''}`}>
+					{hop === 'REJECT' ? t('hops.follow.none', { node }) : t('hops.follow', { node, hop })}
+				</p>
+			))}
 			<button type="button" class="wide" disabled={off} aria-busy={reloading} onClick={p.onReload}>
 				{reloading ? (
 					<>
@@ -147,7 +153,10 @@ export function Hops(p: HopsProps) {
 
 			{eff.mode === 'allow' || eff.mode === 'deny' ? (
 				<>
-					<div class={`label${over ? ' warn' : ''}`}>{t('hops.left', { n: left, max: a.max_pool })}</div>
+					<div class={`label${over ? ' warn' : ''}`}>
+						{eff.mode === 'deny' && eff.nodes.length === 0 ? `${t('hops.all')} · ` : ''}
+						{t('hops.left', { n: left, max: a.max_pool })}
+					</div>
 					{over ? <p class="hint warn">{t('hops.over', { max: a.max_pool })}</p> : null}
 					<div class="rows">
 						{a.available.map((n) => {

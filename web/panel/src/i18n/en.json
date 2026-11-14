@@ -690,11 +690,11 @@
 	"hops.mode.deny": "All but marked",
 	"hops.mode.provider": "As in subscription",
 	"hops.mode.hint.off": "Own nodes are direct only. Safer for the resi proxy: every chain is one more health check through it.",
-	"hops.mode.hint.allow": "Hops are exactly the marked nodes. Prefer vless-reality and hysteria2: the provider's ss and ws nodes rewrite the destination by SNI, and a chain through them dies.",
-	"hops.mode.hint.deny": "Hops are all nodes except the marked ones. New provider nodes join on their own.",
+	"hops.mode.hint.allow": "Hops are exactly the marked nodes. The daemon picks resi's hop itself from dc chain measurements; the provider's ss and ws nodes break Reality and are filtered out by measurement.",
+	"hops.mode.hint.deny": "Hops are all subscription nodes except the marked ones: auto-pick from the whole subscription. dc chains are measured via the VPS — cheap; resi follows the best hop without probes of its own.",
 	"hops.mode.hint.provider": "Hops follow the provider's auto mode and are rebuilt on every subscription update.",
 	"hops.left": "{n} hops of {max} allowed",
-	"hops.over": "No more than {max} hops: each one is a chain to each node with its own health check.",
+	"hops.over": "No more than {max} hops.",
 	"hops.in": "hop",
 	"hops.out": "—",
 	"hops.dirty.title": "Hop pool changed",
@@ -736,5 +736,9 @@
 	"exits.kind.chain": "chain",
 	"exits.kind.reject": "closed",
 	"exits.now": "now",
-	"phones.issued": "Link issued — show it and copy it into Happ"
+	"phones.issued": "Link issued — show it and copy it into Happ",
+	"hops.follow": "resi of {node} now goes via {hop} — the hop with the best dc chain measurement, re-checked every 30 s.",
+	"hops.follow.none": "resi of {node} via hop is closed: no dc chain answers. The direct exit is unaffected.",
+	"hops.all": "all subscription nodes",
+	"exits.kind.chains.none": "via hop · none alive"
 }

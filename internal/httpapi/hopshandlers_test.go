@@ -150,9 +150,56 @@ func engineHasHopGroups(t *testing.T, s *Server, hops ...string) {
 	f := nikkiFake(t, s)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	members := []string{}
 	for _, h := range hops {
 		n := exits.HopGroupName(h)
 		f.all[n] = nikki.Proxy{Name: n, Type: "Selector", Alive: true, Members: []string{h}, Now: h, Selectable: true}
+		members = append(members, n)
+	}
+	// Повторитель ноды из seedExport — его тоже пишет миксин.
+	fg := exits.FollowGroupName("kz-nqz-exit-01")
+	f.all[fg] = nikki.Proxy{Name: fg, Type: "Selector", Alive: true, Members: append(members, "REJECT"), Now: "REJECT", Selectable: true}
+}
+
+// После перезапуска демон сверяет и повторители: нет — «⇢ авто» отказывала
+// бы на каждом соединении, и это провал джоба.
+func TestHopsPutFailsWhenEngineLacksFollower(t *testing.T) {
+	s, _ := newServer(t)
+	seedManifest(t, s, threeNodes())
+	seedExport(t, s, "kz-nqz-exit-01", "krisha.kz")
+	engineHasHopGroups(t, s, "🇭🇳⚡Отель")
+	f := nikkiFake(t, s)
+	f.mu.Lock()
+	delete(f.all, exits.FollowGroupName("kz-nqz-exit-01"))
+	f.mu.Unlock()
+	rec := putHops(t, s, `{"mode":"allow","nodes":["🇭🇳⚡Отель"]}`, mixin.HopFingerprint(mixin.HopConfig{}))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("код %d: %s", rec.Code, rec.Body.String())
+	}
+	if state, msg := jobOutcome(t, s); state != job.Failed || !strings.Contains(msg, "kz-nqz-exit-01") {
+		t.Fatalf("джоб %s: %s — ждали провал с именем ноды", state, msg)
+	}
+}
+
+// GET показывает, через какой хоп сейчас идёт resi каждой ноды.
+func TestHopsGetShowsFollow(t *testing.T) {
+	s, _ := newServer(t)
+	seedManifest(t, s, threeNodes())
+	seedExport(t, s, "kz-nqz-exit-01", "krisha.kz")
+	writeMixin(t, s, mixin.Render(mixin.Config{Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
+		Hops:        mixin.HopConfig{Mode: mixin.AutoAllow, Nodes: []string{"🇭🇳⚡Отель"}, Pool: []string{"🇭🇳⚡Отель"}},
+		FollowNodes: []string{"kz-nqz-exit-01"}}))
+	engineHasHopGroups(t, s, "🇭🇳⚡Отель")
+	f := nikkiFake(t, s)
+	f.mu.Lock()
+	g := f.all[exits.FollowGroupName("kz-nqz-exit-01")]
+	g.Now = exits.HopGroupName("🇭🇳⚡Отель")
+	f.all[exits.FollowGroupName("kz-nqz-exit-01")] = g
+	f.mu.Unlock()
+	got, _ := getHops(t, s)
+	fw, _ := got["follow"].(map[string]any)
+	if fw["kz-nqz-exit-01"] != "🇭🇳⚡Отель" {
+		t.Fatalf("follow = %v", got["follow"])
 	}
 }
 
@@ -200,10 +247,14 @@ func TestHopsPutAllowWritesMixinAndProvider(t *testing.T) {
 	if len(got.Sets) != 1 {
 		t.Errorf("наборы потерялись: %+v", got.Sets)
 	}
+	// Повторитель: у resi одна цепочка «⇢ авто», хоп ей выбирает демон.
+	if strings.Join(got.FollowNodes, ",") != "kz-nqz-exit-01" {
+		t.Errorf("FollowNodes %v", got.FollowNodes)
+	}
 	names := exitsProvider(t, s)
 	want := []string{"kz-nqz-exit-01-dc", "kz-nqz-exit-01-dc" + exits.ChainSep + "🇭🇳⚡Отель",
 		"kz-nqz-exit-01-dc" + exits.ChainSep + "🇦🇬💳Альфа", "kz-nqz-exit-01-resi",
-		"kz-nqz-exit-01-resi" + exits.ChainSep + "🇭🇳⚡Отель", "kz-nqz-exit-01-resi" + exits.ChainSep + "🇦🇬💳Альфа"}
+		"kz-nqz-exit-01-resi" + exits.ChainSep + exits.AutoHop}
 	if strings.Join(names, "|") != strings.Join(want, "|") {
 		t.Errorf("exits.yaml:\n%s", strings.Join(names, "\n"))
 	}
@@ -269,6 +320,7 @@ func TestHopsPutOffClears(t *testing.T) {
 		Hops:    mixin.HopConfig{Mode: mixin.AutoAllow, Nodes: []string{"🇭🇳⚡Отель"}, Pool: []string{"🇭🇳⚡Отель"}},
 		SkipSNI: []string{"krisha.kz"}}
 	writeMixin(t, s, mixin.Render(cur))
+	engineHasHopGroups(t, s)
 
 	rec := putHops(t, s, `{"mode":"off"}`, mixin.HopFingerprint(cur.Hops))
 	if rec.Code != http.StatusAccepted {
@@ -285,7 +337,7 @@ func TestHopsPutOffClears(t *testing.T) {
 	if strings.Join(got.SkipSNI, ",") != "krisha.kz" {
 		t.Errorf("SNI своих нод нужны и без цепочек (прямой вход из LAN): %v", got.SkipSNI)
 	}
-	if names := exitsProvider(t, s); strings.Join(names, ",") != "kz-nqz-exit-01-dc,kz-nqz-exit-01-resi" {
+	if names := exitsProvider(t, s); strings.Join(names, ",") != "kz-nqz-exit-01-dc,kz-nqz-exit-01-resi,kz-nqz-exit-01-resi ⇢ авто" {
 		t.Errorf("exits.yaml: %v", names)
 	}
 }
@@ -317,6 +369,7 @@ func TestExitsReload(t *testing.T) {
 	s, f := newServer(t)
 	seedManifest(t, s, threeNodes())
 	seedExport(t, s, "kz-nqz-exit-01", "krisha.kz")
+	engineHasHopGroups(t, s)
 
 	rec := do(t, s, http.MethodPost, "/api/exits/reload", true)
 	if rec.Code != http.StatusAccepted {
@@ -330,8 +383,11 @@ func TestExitsReload(t *testing.T) {
 	if strings.Join(got.SkipSNI, ",") != "krisha.kz" {
 		t.Errorf("SkipSNI %v", got.SkipSNI)
 	}
-	if names := exitsProvider(t, s); len(names) != 2 {
+	if names := exitsProvider(t, s); len(names) != 3 {
 		t.Errorf("exits.yaml: %v", names)
+	}
+	if strings.Join(got.FollowNodes, ",") != "kz-nqz-exit-01" {
+		t.Errorf("перечитка не записала повторитель: %v", got.FollowNodes)
 	}
 	restarts := len(f.CallsContaining("apply-mode nikki"))
 	if restarts != 1 {
@@ -392,9 +448,10 @@ func TestRulesetsApplyKeepsHopsAndSNI(t *testing.T) {
 	s, _ := newServer(t)
 	s.SetNikkiClient(newFakeNikkiSelectorClient())
 	before := mixin.Config{Policy: mixin.PolicyDirect, Download: mixin.DownloadDirect,
-		Sets:    []mixin.Set{{Name: "youtube", Action: mixin.ActionTunnel}},
-		Hops:    mixin.HopConfig{Mode: mixin.AutoAllow, Nodes: []string{"🇭🇳⚡Отель"}, Pool: []string{"🇭🇳⚡Отель"}},
-		SkipSNI: []string{"krisha.kz"}}
+		Sets:        []mixin.Set{{Name: "youtube", Action: mixin.ActionTunnel}},
+		Hops:        mixin.HopConfig{Mode: mixin.AutoAllow, Nodes: []string{"🇭🇳⚡Отель"}, Pool: []string{"🇭🇳⚡Отель"}},
+		SkipSNI:     []string{"krisha.kz"},
+		FollowNodes: []string{"kz-nqz-exit-01"}}
 	writeMixin(t, s, mixin.Render(before))
 	nikkiFake(t, s).ruleProviders = loadedProviders(mixin.Set{Name: "openai", Action: mixin.ActionTunnel})
 
@@ -410,7 +467,8 @@ func TestRulesetsApplyKeepsHopsAndSNI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("разбор: %v", err)
 	}
-	if strings.Join(got.Hops.Pool, "|") != "🇭🇳⚡Отель" || strings.Join(got.SkipSNI, ",") != "krisha.kz" {
+	if strings.Join(got.Hops.Pool, "|") != "🇭🇳⚡Отель" || strings.Join(got.SkipSNI, ",") != "krisha.kz" ||
+		strings.Join(got.FollowNodes, ",") != "kz-nqz-exit-01" {
 		t.Errorf("после применения наборов: пул %v, SNI %v", got.Hops.Pool, got.SkipSNI)
 	}
 	if len(got.Sets) != 1 || got.Sets[0].Name != "openai" {
@@ -445,7 +503,9 @@ func TestMixinStateCoversHops(t *testing.T) {
 	b.Hops = mixin.HopConfig{Mode: mixin.AutoAllow, Nodes: []string{"x"}, Pool: []string{"x"}}
 	c := a
 	c.SkipSNI = []string{"krisha.kz"}
-	if mixinState(a, nil) == mixinState(b, nil) || mixinState(a, nil) == mixinState(c, nil) {
+	d := a
+	d.FollowNodes = []string{"kz-nqz-exit-01"}
+	if mixinState(a, nil) == mixinState(b, nil) || mixinState(a, nil) == mixinState(c, nil) || mixinState(a, nil) == mixinState(d, nil) {
 		t.Fatal("mixinState не видит пул хопов или SNI")
 	}
 }

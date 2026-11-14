@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -38,6 +39,10 @@ const (
 	// провайдера, раз в 12 часов.
 	subUpdateHours = "12"
 	maxSubClients  = 16
+	// maxPhoneHops — сколько хопов идёт в подписку телефона. Пул — до 40, а
+	// Xray повторителя не умеет: на каждый хоп — запись и проба resi с
+	// каждого телефона. Три лучших по замеру роутера.
+	maxPhoneHops = 3
 	// maxSubTunnel — сколько узлов авто-пула идёт в туннель «Умного»: их
 	// observatory пробует разом раз в интервал.
 	maxSubTunnel = 12
@@ -135,8 +140,8 @@ func (s *Server) handleHappSub(w http.ResponseWriter, r *http.Request) {
 		s.logf("подписка для телефонов: %v — отдана без хопов", err)
 	}
 	var hops []happsub.Hop
-	for _, name := range cfg.Hops.Pool {
-		if ob, ok := obs[name]; ok {
+	for _, name := range s.phoneHops(r.Context(), cfg, nodes) {
+		if ob, ok := obs[name]; ok && len(hops) < maxPhoneHops {
 			hops = append(hops, happsub.Hop{Name: name, Outbound: ob})
 		}
 	}
@@ -210,4 +215,34 @@ func (s *Server) handleSubRotate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.subSeen.reset()
 	writeJSON(w, http.StatusOK, map[string]any{"url": s.phoneSubURL(tok)})
+}
+
+// phoneHops — хопы пула для телефона: сначала живые по замеру цепочек dc на
+// роутере (hopRanking), затем остальные в порядке пула — на случай, если
+// движок молчит или замеров ещё нет.
+func (s *Server) phoneHops(ctx context.Context, cfg mixin.Config, nodes []exits.Node) []string {
+	var ranked []rankedHop
+	if s.nikki != nil {
+		if all, err := s.nikki.Proxies(ctx); err == nil {
+			names := make([]string, 0, len(nodes))
+			for _, n := range nodes {
+				names = append(names, n.Name)
+			}
+			ranked = hopRanking(all, names, cfg.Hops.Pool)
+		}
+	}
+	out := make([]string, 0, len(cfg.Hops.Pool))
+	seen := map[string]bool{}
+	for _, r := range ranked {
+		out = append(out, r.Hop)
+		seen[r.Hop] = true
+	}
+	if len(ranked) == 0 {
+		for _, h := range cfg.Hops.Pool {
+			if !seen[h] {
+				out = append(out, h)
+			}
+		}
+	}
+	return out
 }

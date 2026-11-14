@@ -45,7 +45,7 @@ func mixinState(cfg mixin.Config, herr *httpErr) string {
 		return "error:" + herr.code
 	}
 	return mixin.Fingerprint(cfg) + "|" + mixin.AutoFingerprint(cfg.Auto) + "|" +
-		mixin.HopFingerprint(cfg.Hops) + "|" + strings.Join(cfg.Hops.Pool, ";") + "|" + strings.Join(cfg.SkipSNI, ",")
+		mixin.HopFingerprint(cfg.Hops) + "|" + strings.Join(cfg.Hops.Pool, ";") + "|" + strings.Join(cfg.SkipSNI, ",") + "|" + strings.Join(cfg.FollowNodes, ",")
 }
 
 // mixinStill — повторная сверка файла наборов перед записью (ADR-0011).
@@ -522,6 +522,7 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 	// остались бы ссылаться на исчезнувшие группы.
 	want.Hops = cur.Hops
 	want.SkipSNI = cur.SkipSNI
+	want.FollowNodes = cur.FollowNodes
 
 	// Испорченный файл записи НЕ мешает, и это не поблажка. Его содержимое
 	// нам неизвестно, значит и отпечаток его бессмыслен; а PUT как раз
@@ -875,7 +876,7 @@ func (s *Server) applyRulesets(ctx context.Context, want mixin.Config) error {
 // файл остался бы на диске, а движок перестал бы его читать.
 func (s *Server) switchMixinFlag(ctx context.Context, c mixin.Config) error {
 	want := "1"
-	if c.Policy == mixin.PolicyProfile && c.Auto.IsDefault() && c.Hops.IsDefault() && len(c.SkipSNI) == 0 {
+	if c.Policy == mixin.PolicyProfile && c.Auto.IsDefault() && c.Hops.IsDefault() && len(c.SkipSNI) == 0 && len(c.FollowNodes) == 0 {
 		// Все секции пусты: файл из одной шапки, и склеивать его не нужно
 		// вовсе.
 		want = "0"

@@ -88,6 +88,9 @@ func run() error {
 			"список узлов будет показан таким, каким его отдаёт mihomo")
 	}
 	go srv.Scheduler().Run(ctx)
+	// Автоподбор хопа для resi: повторители держат хоп с лучшим замером
+	// цепочки dc (ADR-0050, internal/httpapi/hopsync.go).
+	go srv.RunHopSync(ctx)
 
 	log.Printf("netmoded %s слушает http://%s", version, srv.Addr())
 	if err := srv.ListenAndServe(ctx); err != nil && !errors.Is(err, context.Canceled) {

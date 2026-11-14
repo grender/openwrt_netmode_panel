@@ -117,6 +117,9 @@ func (s *Server) handleHops(w http.ResponseWriter, r *http.Request) {
 		"exits":         list,
 		"exits_error":   exitsError,
 		"skip_sni":      nonNil(cfg.SkipSNI),
+		// follow — через какой хоп сейчас идёт resi каждой ноды (выставляет
+		// hopsync). Пусто — движок молчит; «REJECT» — живого хопа нет.
+		"follow": s.followNow(r.Context(), cfg),
 	})
 }
 
@@ -204,6 +207,7 @@ func (s *Server) handleHopsPut(w http.ResponseWriter, r *http.Request) {
 	next := cur
 	next.Hops = want
 	next.SkipSNI = exitSNIs(nodes)
+	next.FollowNodes = exits.FollowNodes(nodes)
 	seen := mixinState(cur, herr)
 	s.startExitsJob(w, "hops", "Применение пула хопов", func(ctx context.Context) error {
 		if err := s.mixinStill(seen); err != nil {
@@ -236,7 +240,10 @@ func (s *Server) handleExitsReload(w http.ResponseWriter, r *http.Request) {
 	}
 	next := cur
 	next.SkipSNI = exitSNIs(nodes)
-	restart := herr != nil || strings.Join(next.SkipSNI, ",") != strings.Join(cur.SkipSNI, ",")
+	next.FollowNodes = exits.FollowNodes(nodes)
+	// Перезапуск — если в миксине что-то меняется: SNI или повторители.
+	restart := herr != nil || strings.Join(next.SkipSNI, ",") != strings.Join(cur.SkipSNI, ",") ||
+		strings.Join(next.FollowNodes, ",") != strings.Join(cur.FollowNodes, ",")
 	seen := mixinState(cur, herr)
 	s.startExitsJob(w, "exits", "Перечитка своих нод", func(ctx context.Context) error {
 		if err := s.mixinStill(seen); err != nil {
@@ -301,13 +308,26 @@ func (s *Server) applyExits(ctx context.Context, want mixin.Config, nodes []exit
 
 	// Сверка у движка: группы-однохопники должны быть. Нет — склейка не
 	// доехала, и каждая цепочка отказывает на каждом соединении.
-	if s.nikki == nil || len(want.Hops.Pool) == 0 {
+	if s.nikki == nil || (len(want.Hops.Pool) == 0 && len(want.FollowNodes) == 0) {
 		return nil
 	}
 	all, err := s.nikki.Proxies(ctx)
 	if err != nil {
 		s.logf("пул хопов: группы у движка не сверены: %v", err)
 		return nil
+	}
+	// Повторители — так же: без группы «⇢ авто» отказывает на каждом
+	// соединении, то есть resi через хоп не работает вовсе.
+	var lostFollow []string
+	for _, n := range want.FollowNodes {
+		if g, ok := all[exits.FollowGroupName(n)]; !ok || !g.IsGroup() {
+			lostFollow = append(lostFollow, n)
+		}
+	}
+	if len(lostFollow) > 0 {
+		return fmt.Errorf("пул хопов записан и Nikki перезапущен, но у движка нет повторителей хопа для нод %s: "+
+			"resi через хоп отказывает. Проверьте, что склейка включена (nikki.mixin.%s=1)",
+			firstThree(lostFollow), mixinFlagOpt)
 	}
 	var lost []string
 	for _, h := range want.Hops.Pool {
@@ -351,9 +371,32 @@ func (s *Server) resyncHops(ctx context.Context) {
 	}
 	next := cur
 	next.Hops = want
+	next.FollowNodes = exits.FollowNodes(nodes)
 	if err := s.applyExits(ctx, next, nodes, true); err != nil {
 		s.logf("пул хопов: состав подписки изменился, но не применён: %v", err)
 		return
 	}
 	s.logf("пул хопов: состав пересобран из подписки, хопов %d", len(want.Pool))
+}
+
+// followNow — текущий хоп повторителя каждой ноды у живого движка.
+func (s *Server) followNow(ctx context.Context, cfg mixin.Config) map[string]string {
+	out := map[string]string{}
+	if s.nikki == nil || len(cfg.FollowNodes) == 0 {
+		return out
+	}
+	all, err := s.nikki.Proxies(ctx)
+	if err != nil {
+		return out
+	}
+	byGroup := map[string]string{}
+	for _, h := range cfg.Hops.Pool {
+		byGroup[exits.HopGroupName(h)] = h
+	}
+	for _, n := range cfg.FollowNodes {
+		if g, ok := all[exits.FollowGroupName(n)]; ok {
+			out[n] = hopLabel(byGroup, g.Now)
+		}
+	}
+	return out
 }

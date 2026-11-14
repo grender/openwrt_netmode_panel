@@ -701,6 +701,7 @@ const hopsBody = async () => {
 		provider_pool: available.slice(0, 2), missing: nodes.filter((n) => !available.includes(n)),
 		max_pool: 8, foreign: state.scenario === 'rulesets-foreign',
 		exits: MOCK_EXITS, exits_error: null, skip_sni: ['krisha.kz'],
+		follow: pool.length ? { 'kz-nqz-exit-01': pool[0] } : { 'kz-nqz-exit-01': 'REJECT' },
 	};
 };
 const exitsBody = async () => {

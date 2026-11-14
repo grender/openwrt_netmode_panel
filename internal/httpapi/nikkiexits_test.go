@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"netmoded/internal/exits"
 	"strings"
 	"testing"
 
@@ -185,5 +186,45 @@ func TestNikkiExitsDirectGroupKind(t *testing.T) {
 	}
 	if kinds["EXIT-DC-DIRECT"] != "direct" || kinds["EXIT-DC-HOP"] != "chains" {
 		t.Errorf("виды %v", kinds)
+	}
+}
+
+// Цепочка «⇢ авто» в выходах подписывается реальным хопом повторителя, а
+// не словом «авто»: владелец должен видеть, через что идёт resi.
+func TestNikkiExitsAutoChainShowsHop(t *testing.T) {
+	s, _ := newServer(t)
+	f := engineWithExits(t, s)
+	d := func(v int) *int { return &v }
+	auto := "kz-nqz-exit-01-resi" + exits.ChainSep + exits.AutoHop
+	hg := exits.HopGroupName("🇷🇺💳Россия")
+	fg := exits.FollowGroupName("kz-nqz-exit-01")
+	f.mu.Lock()
+	f.all["EXIT-RESI"] = nikki.Proxy{Name: "EXIT-RESI", Type: "Selector", Alive: true, Selectable: true,
+		Members: []string{"EXIT-RESI-HOP", "REJECT"}, Now: "EXIT-RESI-HOP"}
+	f.all["EXIT-RESI-HOP"] = nikki.Proxy{Name: "EXIT-RESI-HOP", Type: "Selector", Alive: true, Selectable: true,
+		Members: []string{auto}, Now: auto}
+	f.all[auto] = nikki.Proxy{Name: auto, Type: "Vless", Alive: true, Provider: "exits"}
+	f.all[fg] = nikki.Proxy{Name: fg, Type: "Selector", Alive: true, Selectable: true, Members: []string{hg, "REJECT"}, Now: hg}
+	f.all[hg] = nikki.Proxy{Name: hg, Type: "Selector", Alive: true, Selectable: true, Members: []string{"🇷🇺💳Россия"}, Now: "🇷🇺💳Россия"}
+	f.all["kz-nqz-exit-01-dc ⇢ 🇷🇺💳Россия"] = nikki.Proxy{Name: "kz-nqz-exit-01-dc ⇢ 🇷🇺💳Россия", Alive: true, DelayMS: d(137), Provider: "exits"}
+	f.mu.Unlock()
+	var resi *struct {
+		Name    string `json:"name"`
+		Kind    string `json:"kind"`
+		Now     string `json:"now"`
+		DelayMS *int   `json:"delay_ms"`
+		Alive   bool   `json:"alive"`
+	}
+	b := getExits(t, s)
+	for gi := range b.Groups {
+		if b.Groups[gi].Name == "EXIT-RESI" {
+			resi = &b.Groups[gi].Members[0]
+		}
+	}
+	if resi == nil || resi.Kind != "chains" || resi.Now != "kz-nqz-exit-01-resi ⇢ 🇷🇺💳Россия" {
+		t.Fatalf("resi через повторитель: %+v", resi)
+	}
+	if resi.DelayMS == nil || *resi.DelayMS != 137 {
+		t.Errorf("задержка — замер цепочки dc через тот же хоп: %v", resi.DelayMS)
 	}
 }

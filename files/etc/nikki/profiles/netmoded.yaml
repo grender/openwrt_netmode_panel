@@ -83,8 +83,9 @@ proxy-groups:
   # - name: EXIT-DC
   #   type: select
   #   proxies: [EXIT-DC-DIRECT, EXIT-DC-HOP, REJECT]
-  # EXIT-RESI / EXIT-RESI-HOP — так же по '-resi', у url-test lazy: true и
-  # interval 900: проверки идут через ISP-прокси.
+  # EXIT-RESI — так же по '-resi', но EXIT-RESI-HOP — select без проверок
+  # (filter: '-resi ⇢ ', empty-fallback: REJECT): внутри одна цепочка
+  # «⇢ авто», хоп которой демон выбирает по замерам цепочек dc.
 
 # Что идёт в туннель, решают наборы в панели: их правила nikki ставит
 # ПЕРЕД этими (ADR-0039, ADR-0040). Всё остальное — напрямую.

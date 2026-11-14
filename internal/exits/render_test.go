@@ -35,15 +35,12 @@ func proxyNames(ps []map[string]any) []string {
 	return out
 }
 
-func TestRenderDirectOnlyWithoutHops(t *testing.T) {
+func TestRenderDirectNodesHaveNoDialer(t *testing.T) {
 	ps := decodeProvider(t, RenderProvider([]Node{mustNode(t)}, nil))
-	got := strings.Join(proxyNames(ps), ",")
-	if got != "kz-nqz-exit-01-dc,kz-nqz-exit-01-resi" {
-		t.Fatalf("узлы = %s", got)
-	}
 	for _, p := range ps {
-		if _, ok := p["dialer-proxy"]; ok {
-			t.Errorf("%s: у прямого узла dialer-proxy", p["name"])
+		name := p["name"].(string)
+		if _, ok := p["dialer-proxy"]; ok != strings.Contains(name, ChainSep) {
+			t.Errorf("%s: dialer-proxy %v", name, p["dialer-proxy"])
 		}
 	}
 }
@@ -75,25 +72,6 @@ func TestRenderDirectFields(t *testing.T) {
 	}
 }
 
-func TestRenderChainsPerHop(t *testing.T) {
-	hops := []string{"🇩🇪⚡Германия", "🇷🇺💳Россия"}
-	ps := decodeProvider(t, RenderProvider([]Node{mustNode(t)}, hops))
-	want := []string{
-		"kz-nqz-exit-01-dc", "kz-nqz-exit-01-dc ⇢ 🇩🇪⚡Германия", "kz-nqz-exit-01-dc ⇢ 🇷🇺💳Россия",
-		"kz-nqz-exit-01-resi", "kz-nqz-exit-01-resi ⇢ 🇩🇪⚡Германия", "kz-nqz-exit-01-resi ⇢ 🇷🇺💳Россия",
-	}
-	if got := proxyNames(ps); strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("узлы:\n%s\nждали:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
-	}
-	if ps[1]["dialer-proxy"] != HopGroupName("🇩🇪⚡Германия") || ps[5]["dialer-proxy"] != HopGroupName("🇷🇺💳Россия") {
-		t.Errorf("dialer-proxy: %v, %v", ps[1]["dialer-proxy"], ps[5]["dialer-proxy"])
-	}
-	// Цепочка — та же нода, отличается только dialer-proxy и именем.
-	if ps[1]["uuid"] != ps[0]["uuid"] || ps[1]["server"] != ps[0]["server"] {
-		t.Errorf("цепочка не повторяет узел: %v", ps[1])
-	}
-}
-
 // Главный инвариант раскладки (docs/recon/exit-chains.md): dialer-proxy
 // разрешается только в группу верхнего уровня, mihomo -t это не ловит, и
 // узел провайдера со ссылкой в пустоту отказывает на каждом соединении.
@@ -101,12 +79,12 @@ func TestRenderChainsPerHop(t *testing.T) {
 // HopGroups из того же пула.
 func TestEveryDialerProxyHasItsGroup(t *testing.T) {
 	hops := []string{"🇩🇪⚡Германия", "🇹🇷⚪Турция (БС-3)☁️", "a.b|c"}
-	groups := map[string]bool{}
-	for _, g := range HopGroups(hops) {
-		groups[g["name"].(string)] = true
-	}
 	n2 := mustNode(t)
 	n2.Name = "kz-ala-exit-02"
+	groups := map[string]bool{}
+	for _, g := range append(HopGroups(hops), FollowGroups([]Node{mustNode(t), n2}, hops)...) {
+		groups[g["name"].(string)] = true
+	}
 	for _, p := range decodeProvider(t, RenderProvider([]Node{mustNode(t), n2}, hops)) {
 		if d, ok := p["dialer-proxy"].(string); ok && !groups[d] {
 			t.Errorf("%s: dialer-proxy %q — группы нет", p["name"], d)

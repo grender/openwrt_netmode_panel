@@ -203,6 +203,10 @@ type Config struct {
 	Auto AutoConfig
 	// Hops — третья секция: пул хопов для цепочек до своих нод (hops.go).
 	Hops HopConfig
+	// FollowNodes — ноды с повторителем хопа (exits.FollowNodes): их resi
+	// идёт через хоп, выбранный демоном по замерам dc (hops.go). Как и
+	// SkipSNI — следствие нод, а не выбор владельца.
+	FollowNodes []string
 	// SkipSNI — SNI своих нод, которые sniffer не должен переписывать
 	// (hops.go). Не выбор владельца, а следствие его нод: заполняет
 	// обработчик по каталогу экспортов.
@@ -572,7 +576,7 @@ func Parse(b []byte) (Config, bool, error) {
 	}
 
 	state := ""
-	rules, custom, autoFilters, hopLines, skipLines := 0, 0, 0, 0, 0
+	rules, custom, autoFilters, hopLines, skipLines, followLines := 0, 0, 0, 0, 0, 0
 	for _, ln := range lines[1:] {
 		switch {
 		case state == "" && strings.HasPrefix(ln, stateMark):
@@ -584,6 +588,8 @@ func Parse(b []byte) (Config, bool, error) {
 			custom++
 		case strings.HasPrefix(ln, autoFilterKey), strings.HasPrefix(ln, autoExcludeKey):
 			autoFilters++
+		case strings.HasPrefix(ln, followLinePrefix):
+			followLines++
 		case strings.HasPrefix(ln, hopLinePrefix):
 			hopLines++
 		case strings.HasPrefix(ln, skipLinePrefix):
@@ -624,6 +630,9 @@ func Parse(b []byte) (Config, bool, error) {
 	}
 	// Пул хопов и sniffer — тем же счётом: вычеркнутая руками группа
 	// оставила бы цепочку exits.yaml ссылаться в пустоту.
+	if followLines != len(cfg.FollowNodes) {
+		return profile, false, fmt.Errorf("%w: повторителей %d при нодах %d", ErrCorrupt, followLines, len(cfg.FollowNodes))
+	}
 	if hopLines != len(cfg.Hops.Pool) || skipLines != len(cfg.SkipSNI) {
 		return profile, false, fmt.Errorf("%w: групп хопов %d при пуле %d, строк skip-domain %d при %d",
 			ErrCorrupt, hopLines, len(cfg.Hops.Pool), skipLines, len(cfg.SkipSNI))

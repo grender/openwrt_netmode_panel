@@ -188,6 +188,9 @@ type Server struct {
 	mux   *http.ServeMux
 	// subSeen — кто забирал подписку для телефонов (happsubhandlers.go).
 	subSeen *subClients
+	// hopSyncMu и hopSyncLogged — прореживание журнала автоподбора хопа.
+	hopSyncMu     sync.Mutex
+	hopSyncLogged map[string]time.Time
 }
 
 // Пути файлов подписки — константы, а не настройка в /etc/config/netmode.

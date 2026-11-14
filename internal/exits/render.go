@@ -54,9 +54,71 @@ func HopGroups(hops []string) []map[string]any {
 	return out
 }
 
-// RenderProvider — тело файла провайдера exits для mihomo: для каждой
-// ноды и выхода прямой узел «<нода>-<выход>» и по цепочке на каждый хоп
-// «<нода>-<выход> ⇢ <хоп>» с dialer-proxy на группу-однохопник.
+// MeasuredExit — выход, по чьим цепочкам выбирается хоп. dc выходит с IP
+// самого VPS (freedom), и проверка цепочки через него дешёвая; проверка
+// resi — новое соединение через ISP-прокси, который отказывает на частых
+// соединениях (docs/recon/exit-chains.md). Участок «хоп → VPS» у выходов
+// общий, поэтому хоп, годный для dc, годен и для остальных.
+const MeasuredExit = "dc"
+
+// AutoHop — хвост имени цепочки, хоп которой выбирает демон: «<нода>-resi ⇢ авто».
+const AutoHop = "авто"
+
+// FollowGroupName — группа-повторитель ноды: select из групп-однохопников
+// пула и REJECT; демон держит в ней хоп с лучшим замером цепочки dc этой
+// ноды (internal/httpapi/hopsync.go). Имя — от ноды, по той же причине,
+// что HopGroupName.
+func FollowGroupName(node string) string {
+	sum := sha256.Sum256([]byte(node))
+	return "nm-follow-" + hex.EncodeToString(sum[:4])
+}
+
+// follows — нужен ли ноде повторитель: есть измеряемый выход и есть что
+// повторять.
+func follows(n Node) bool {
+	_, ok := n.Users[MeasuredExit]
+	return ok && len(n.Users) > 1
+}
+
+// FollowNodes — ноды, которым нужен повторитель, в порядке нод.
+func FollowNodes(nodes []Node) []string {
+	var out []string
+	for _, n := range nodes {
+		if follows(n) {
+			out = append(out, n.Name)
+		}
+	}
+	return out
+}
+
+// FollowGroups — повторители для nikki-proxy-groups миксина. REJECT
+// последним и всегда: без пула повторитель — [REJECT], и цепочка «⇢ авто»
+// отказывает, а не идёт мимо (kill switch). DIRECT здесь не бывает.
+func FollowGroups(nodes []Node, hops []string) []map[string]any {
+	var out []map[string]any
+	for _, name := range FollowNodes(nodes) {
+		out = append(out, FollowGroup(name, hops))
+	}
+	return out
+}
+
+// FollowGroup — повторитель одной ноды.
+func FollowGroup(node string, hops []string) map[string]any {
+	members := make([]string, 0, len(hops)+1)
+	for _, h := range hops {
+		members = append(members, HopGroupName(h))
+	}
+	members = append(members, "REJECT")
+	return map[string]any{"name": FollowGroupName(node), "type": "select", "proxies": members}
+}
+
+// RenderProvider — тело файла провайдера exits для mihomo. Для каждой
+// ноды и выхода — прямой узел «<нода>-<выход>». Цепочки:
+//   - измеряемый выход (dc) — по одной на каждый хоп, «<нода>-dc ⇢ <хоп>»
+//     с dialer-proxy на группу-однохопник: их меряет url-test профиля;
+//   - остальные выходы ноды с dc — одна «<нода>-<выход> ⇢ авто» через
+//     повторитель, всегда, даже без пула;
+//   - у ноды без dc мерить нечем — цепочки на каждый хоп у всех выходов.
 //
 // JSON, а не YAML, — по той же причине, что happ.Render: YAML 1.2 —
 // надмножество JSON, а stdlib YAML не умеет.
@@ -66,9 +128,14 @@ func HopGroups(hops []string) []map[string]any {
 func RenderProvider(nodes []Node, hops []string) []byte {
 	proxies := make([]map[string]any, 0, len(nodes)*2*(1+len(hops)))
 	for _, n := range nodes {
+		follow := follows(n)
 		for _, exit := range n.Exits() {
 			base := n.Name + "-" + exit
 			proxies = append(proxies, proxy(n, exit, base, ""))
+			if follow && exit != MeasuredExit {
+				proxies = append(proxies, proxy(n, exit, base+ChainSep+AutoHop, FollowGroupName(n.Name)))
+				continue
+			}
 			for _, h := range hops {
 				proxies = append(proxies, proxy(n, exit, base+ChainSep+h, HopGroupName(h)))
 			}

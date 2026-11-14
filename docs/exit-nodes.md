@@ -84,8 +84,7 @@ yq -i '.proxy-providers.exits = {"type": "file", "path": "./providers/exits.yaml
 yq -i '.proxy-groups |= map(select(.name | test("^EXIT-") | not)) | .proxy-groups += [
   {"name": "EXIT-DC-HOP", "type": "url-test", "use": ["exits"], "filter": "-dc ⇢ ",
    "url": "https://www.gstatic.com/generate_204", "interval": 300, "tolerance": 100, "timeout": 8000, "empty-fallback": "REJECT"},
-  {"name": "EXIT-RESI-HOP", "type": "url-test", "use": ["exits"], "filter": "-resi ⇢ ",
-   "url": "https://www.gstatic.com/generate_204", "interval": 900, "tolerance": 500, "timeout": 15000, "lazy": true, "empty-fallback": "REJECT"},
+  {"name": "EXIT-RESI-HOP", "type": "select", "use": ["exits"], "filter": "-resi ⇢ ", "empty-fallback": "REJECT"},
   {"name": "EXIT-DC-DIRECT", "type": "select", "use": ["exits"], "filter": "-dc$", "empty-fallback": "REJECT"},
   {"name": "EXIT-RESI-DIRECT", "type": "select", "use": ["exits"], "filter": "-resi$", "empty-fallback": "REJECT"},
   {"name": "EXIT-DC", "type": "select", "proxies": ["EXIT-DC-DIRECT", "EXIT-DC-HOP", "REJECT"]},
@@ -105,8 +104,13 @@ yq -i '.proxy-groups |= map(select(.name | test("^EXIT-") | not)) | .proxy-group
 выбранное «через хоп» уходило бы с домашнего IP — fail-open. Замерено на
 роутере 14.11.2026: пустая `…-HOP` отвечала за 30 мс, то есть напрямую.
 
-`EXIT-RESI-HOP` с `lazy` и длинным интервалом: каждая проверка — новое
-соединение через ISP-прокси, который на частых соединениях отказывает.
+**Автоподбор хопа для resi.** `EXIT-DC-HOP` — `url-test` над цепочками dc:
+это и есть замеры, по которым выбирается хоп (через VPS в freedom — дёшево).
+`EXIT-RESI-HOP` — `select` без проверок: внутри одна цепочка
+`<нода>-resi ⇢ авто`, а её хоп раз в 30 с выставляет демон — лучший по
+замеру цепочки dc той же ноды (гистерезис 150 мс; живых нет — `REJECT`).
+Проверок через ISP-прокси нет вовсе: на частых новых соединениях он
+отказывает, а участок «хоп → VPS» у dc и resi общий.
 
 Проверить и применить:
 

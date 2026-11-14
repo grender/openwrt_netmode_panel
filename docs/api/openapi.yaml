@@ -3835,7 +3835,7 @@ components:
       description: |
         Тело `GET /api/nikki/hops`. Собирается из `map[string]any`, порядок
         ключей в примере алфавитный.
-      required: [fingerprint, mode, nodes, pool, available, provider_pool, missing, max_pool, foreign, exits, exits_error, skip_sni]
+      required: [fingerprint, mode, nodes, pool, available, provider_pool, missing, max_pool, foreign, exits, exits_error, skip_sni, follow]
       additionalProperties: false
       properties:
         fingerprint:
@@ -3897,6 +3897,13 @@ components:
           type: array
           items: { type: string }
           description: SNI своих нод в `sniffer.skip-domain` миксина.
+        follow:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Нода → хоп, через который сейчас идёт её resi (повторитель
+            `nm-follow-*`, выставляет демон по лучшему замеру цепочки dc).
+            `REJECT` — живого хопа нет. Пусто — движок молчит.
     SubLinkResponse:
       type: object
       required: [url, clients]
