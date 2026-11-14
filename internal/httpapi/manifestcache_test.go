@@ -42,6 +42,7 @@ func liveServer(t *testing.T) *Server {
 		LogPath:         filepath.Join(dir, "updates.log"),
 		ProviderPath:    filepath.Join(dir, "sub.yaml"),
 		ManifestPath:    filepath.Join(dir, "subscription.json"),
+		OutboundsPath:   filepath.Join(dir, "outbounds.json"),
 		SubscriptionURL: "https://example.invalid/sub/secret-id",
 		SubscriptionFetch: func(context.Context, string) ([]byte, error) {
 			return []byte(twoNodes), nil

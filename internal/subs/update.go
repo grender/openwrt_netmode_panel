@@ -70,6 +70,10 @@ type Updater struct {
 	ProviderPath string
 	// ManifestPath — порядок и виды записей (/etc/netmoded/subscription.json).
 	ManifestPath string
+	// OutboundsPath — исходные outbounds узлов для подписки телефонов
+	// (/etc/netmoded/outbounds.json, happ.RenderOutbounds). Пусто — не
+	// пишется: обновление работает как раньше.
+	OutboundsPath string
 	// Reload — перечитать провайдера движком (nikki.Client.ReloadProvider).
 	Reload func(ctx context.Context) error
 	// Proxies — имена узлов, которые движок держит в провайдере после
@@ -165,6 +169,14 @@ func (u *Updater) Update(ctx context.Context) (happ.Summary, error) {
 	}
 	if err := atomicfile.Write(u.ManifestPath, append(manifest, '\n'), filePerm); err != nil {
 		return sum, fmt.Errorf("subs: манифест: %w", err)
+	}
+	// Outbounds — после манифеста: их читает только подписка телефонов, и
+	// отказ здесь оставляет движок и панель согласованными, а телефоны —
+	// на прежних хопах до следующего обновления.
+	if u.OutboundsPath != "" {
+		if err := atomicfile.Write(u.OutboundsPath, happ.RenderOutbounds(entries), filePerm); err != nil {
+			return sum, fmt.Errorf("subs: outbounds для подписки телефонов: %w", err)
+		}
 	}
 
 	if err := u.Reload(ctx); err != nil {

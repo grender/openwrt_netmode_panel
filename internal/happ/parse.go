@@ -146,7 +146,29 @@ func parseRecord(rec json.RawMessage, index int, xhttp bool) (Entry, string) {
 	if reason != "" {
 		return Entry{Name: name, Kind: KindUnsupported, Reason: reason, unknown: unknown}, id
 	}
-	return Entry{Name: name, Kind: KindNode, Type: typ, Proxy: proxy, unknown: unknown}, id
+	return Entry{Name: name, Kind: KindNode, Type: typ, Proxy: proxy, Outbound: rawOutbound(rec, useful.Tag),
+		unknown: unknown}, id
+}
+
+// rawOutbound — исходный JSON outbound с заданным тегом. Повторный разбор
+// записи, а не сохранение при первом: xrayRecord держит только поля,
+// нужные переводу, и вернуть по нему исходник нельзя.
+func rawOutbound(rec json.RawMessage, tag string) json.RawMessage {
+	var r struct {
+		Outbounds []json.RawMessage `json:"outbounds"`
+	}
+	if json.Unmarshal(rec, &r) != nil {
+		return nil
+	}
+	for _, ob := range r.Outbounds {
+		var t struct {
+			Tag string `json:"tag"`
+		}
+		if json.Unmarshal(ob, &t) == nil && t.Tag == tag {
+			return ob
+		}
+	}
+	return nil
 }
 
 // markSeparators опознаёт заголовки разделов — вторым проходом по всем

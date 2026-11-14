@@ -100,6 +100,8 @@ func newServer(t *testing.T) (*Server, *executor.Fake) {
 		// Свои ноды — туда же, по той же причине.
 		ExitsDir:          filepath.Join(t.TempDir(), "exits"),
 		ExitsProviderPath: filepath.Join(t.TempDir(), "exits.yaml"),
+		SubTokenPath:      filepath.Join(t.TempDir(), "sub-token"),
+		OutboundsPath:     filepath.Join(t.TempDir(), "outbounds.json"),
 		// Каталог наборов ходит в GitHub. Стенд поднимается на КАЖДЫЙ
 		// тест, а не один на пакет: `make verify` обязан быть зелёным
 		// офлайн, а тест, который лезет в сеть, зелёный только дома.

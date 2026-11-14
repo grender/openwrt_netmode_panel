@@ -490,3 +490,28 @@ func TestUpdateReadsURLAtCallTime(t *testing.T) {
 		t.Errorf("второе скачивание пошло по адресу %q — снимок вместо живого значения", h.fetchArgs[1])
 	}
 }
+
+// outbounds.json — исходные outbounds узлов для подписки телефонов. Пишется
+// вместе с провайдером и манифестом, с теми же правами, и только если путь
+// задан: без него (тесты, дев-стенд) обновление работает как раньше.
+func TestUpdateWritesOutbounds(t *testing.T) {
+	h := newHarness(t, oneNode, nil)
+	h.up.OutboundsPath = filepath.Join(filepath.Dir(h.provider), "outbounds.json")
+	if _, err := h.up.Update(context.Background()); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	b, err := os.ReadFile(h.up.OutboundsPath)
+	if err != nil {
+		t.Fatalf("outbounds.json не записан: %v", err)
+	}
+	var m map[string]map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("outbounds.json не JSON: %v", err)
+	}
+	if ob := m["🇧🇧 Браво"]; ob == nil || ob["tag"] != "proxy" || ob["protocol"] != "vless" {
+		t.Errorf("outbounds.json: %s", b)
+	}
+	if fi, _ := os.Stat(h.up.OutboundsPath); fi.Mode().Perm() != filePerm {
+		t.Errorf("права %v, ожидались %v — в outbound учётные данные провайдера", fi.Mode().Perm(), os.FileMode(filePerm))
+	}
+}

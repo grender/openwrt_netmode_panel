@@ -62,3 +62,23 @@ func Render(entries []Entry) []byte {
 	}
 	return buf.Bytes()
 }
+
+// RenderOutbounds — файл /etc/netmoded/outbounds.json: имя узла → его
+// исходный outbound Xray. Только узлы и только с outbound.
+//
+// Отдельный файл, а не поле манифеста: манифест отдаётся панели, а в
+// outbound — учётные данные провайдера. Права у файла — как у провайдера.
+func RenderOutbounds(entries []Entry) []byte {
+	m := make(map[string]json.RawMessage, len(entries))
+	for _, e := range entries {
+		if e.Kind == KindNode && len(e.Outbound) > 0 {
+			m[e.Name] = e.Outbound
+		}
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		// Недостижимо: значения — уже валидный JSON из разбора.
+		panic("happ: outbounds не сериализуются: " + err.Error())
+	}
+	return b
+}

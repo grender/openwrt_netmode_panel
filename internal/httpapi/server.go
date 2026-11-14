@@ -80,6 +80,11 @@ type Config struct {
 	// поля ради тестов — по той же причине, что пути выше.
 	ExitsDir          string
 	ExitsProviderPath string
+	// SubTokenPath и OutboundsPath — токен подписки для телефонов и
+	// исходные outbounds узлов подписки. Пусто → subTokenPath и
+	// outboundsPath. Поля ради тестов, как пути выше.
+	SubTokenPath  string
+	OutboundsPath string
 	// CatalogBaseURL — корень GitHub API для каталога наборов. Пусто →
 	// боевой api.github.com. Только для тестов и дев-стенда: боевой адрес
 	// зашит в internal/geosite и в конфигурацию владельца не выведен.
@@ -181,6 +186,8 @@ type Server struct {
 	// синхронные записи (сети, адрес подписки) идут мимо менеджера.
 	uciMu map[string]*sync.Mutex
 	mux   *http.ServeMux
+	// subSeen — кто забирал подписку для телефонов (happsubhandlers.go).
+	subSeen *subClients
 }
 
 // Пути файлов подписки — константы, а не настройка в /etc/config/netmode.
@@ -224,6 +231,14 @@ const (
 	// нод в профиле (use: [exits]). Договор с профилем владельца, как sub.
 	exitsProviderPath = "/etc/nikki/run/providers/exits.yaml"
 	exitsProviderName = "exits"
+
+	// subTokenPath — токен подписки для телефонов, отдельный от токена
+	// панели (/etc/netmoded/token): этот уезжает в Happ.
+	subTokenPath = "/etc/netmoded/sub-token"
+	// outboundsPath — исходные outbounds узлов подписки провайдера: хопы
+	// для подписки телефонов (happ.RenderOutbounds). Права — как у
+	// провайдера: внутри учётные данные.
+	outboundsPath = "/etc/netmoded/outbounds.json"
 )
 
 // apiError — единая форма ошибки (docs/contracts/errors.md).
@@ -288,6 +303,13 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 	if cfg.ExitsProviderPath == "" {
 		cfg.ExitsProviderPath = exitsProviderPath
 	}
+	if cfg.SubTokenPath == "" {
+		cfg.SubTokenPath = subTokenPath
+	}
+	if cfg.OutboundsPath == "" {
+		cfg.OutboundsPath = outboundsPath
+	}
+	s.subSeen = &subClients{}
 	s.cfg = cfg
 	// Каталог наборов. Нулевой Client рабочий: боевой адрес, HTTP-клиент и
 	// TTL он подставляет сам, а BaseURL здесь непуст только на стенде.
@@ -295,10 +317,11 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 	s.rulesetsWait, s.rulesetsPoll = rulesetsWait, rulesetsPoll
 	s.subURL = &subURLStore{v: cfg.SubscriptionURL}
 	up := &subs.Updater{
-		URL:          s.subURL.get,
-		ProviderPath: cfg.ProviderPath,
-		ManifestPath: cfg.ManifestPath,
-		Fetch:        cfg.SubscriptionFetch,
+		URL:           s.subURL.get,
+		ProviderPath:  cfg.ProviderPath,
+		ManifestPath:  cfg.ManifestPath,
+		OutboundsPath: cfg.OutboundsPath,
+		Fetch:         cfg.SubscriptionFetch,
 		Reload: func(ctx context.Context) error {
 			// Проверка ВНУТРИ замыкания, а не при сборке: клиент
 			// подменяется после конструктора, и nil здесь — это
@@ -458,6 +481,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/nikki/hops", s.handleHops)
 	s.mux.HandleFunc("PUT /api/nikki/hops", s.handleHopsPut)
 	s.mux.HandleFunc("POST /api/exits/reload", s.handleExitsReload)
+	s.mux.HandleFunc("GET /api/sub/link", s.handleSubLink)
+	s.mux.HandleFunc("POST /api/sub/rotate", s.handleSubRotate)
+	s.mux.HandleFunc("GET /sub/happ/{token}", s.handleHappSub)
 	s.mux.HandleFunc("GET /api/nikki/rulesets/catalog", s.handleRulesetsCatalog)
 	s.mux.HandleFunc("GET /api/subscription", s.handleSubscriptionGet)
 	s.mux.HandleFunc("PUT /api/subscription", s.handleSubscriptionPut)
@@ -506,6 +532,17 @@ func (s *Server) Addr() string {
 // API, а разведка целей — нет.
 func (s *Server) withToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Подписка для телефонов — со своим токеном в пути (happsubhandlers.go).
+		// Мимо токена панели — ровно один шаблон, всё прочее под префиксом —
+		// пустой 404, а не статика панели.
+		if strings.HasPrefix(r.URL.Path, subPathPrefix) {
+			if !subPathAllowed(r) {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
 		ok, fromQuery := s.tokenOK(r)
 		if !ok {
 			writeErr(w, http.StatusUnauthorized, "unauthorized", "Неверный или отсутствующий токен")

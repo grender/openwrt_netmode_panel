@@ -1286,6 +1286,80 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/RulesetsFileError" }
+  /api/sub/link:
+    get:
+      tags: [subscription]
+      summary: Ссылка на подписку для телефонов и кто её забирал
+      description: |
+        Подписка для Happ (`GET /sub/happ/{token}`, ADR-0050). `url` — `null`,
+        пока токен не выпущен (`POST /api/sub/rotate`). Ссылка — секрет:
+        панель показывает её только по явному нажатию и не хранит.
+        `clients` — последние скачивания по User-Agent, без адресов.
+      responses:
+        "200":
+          description: Ссылка и клиенты
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubLinkResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/sub/rotate:
+    post:
+      tags: [subscription]
+      summary: Выпустить новый токен подписки для телефонов
+      description: |
+        Новый токен в `/etc/netmoded/sub-token` (0600); старая ссылка перестаёт
+        работать сразу на всех телефонах. Первый вызов — выпуск.
+      responses:
+        "200":
+          description: Новая ссылка
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url]
+                additionalProperties: false
+                properties:
+                  url: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500":
+          description: "`internal` — токен не записан."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /sub/happ/{token}:
+    get:
+      tags: [subscription]
+      summary: Подписка для Happ (свой токен в пути, без токена панели)
+      description: |
+        JSON-массив конфигов Xray, как у провайдера на User-Agent Happ
+        (`internal/happsub`): «Умный · прямо» и «Умный ⇢ хоп» с правилами из
+        наборов панели, затем по ноде и выходу — прямо и через каждый хоп
+        пула. Хопы — исходные outbounds провайдера (`outbounds.json`).
+
+        **Без токена панели:** Happ умеет только адрес. Неверный токен или
+        невыпущенная подписка — пустой `404`. Демон слушает только LAN, то
+        есть подписка доступна только из домашней сети.
+
+        Заголовки: `profile-title` (`base64:…`), `profile-update-interval: 12`,
+        `Cache-Control: no-store`.
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Подписка
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: object }
+        "404":
+          description: Неверный токен или подписка не выпущена. Тело пустое.
+        "503":
+          description: Экспорты своих нод не читаются. Тело пустое.
   /api/nikki/rulesets/catalog:
     get:
       tags: [nikki]
@@ -3742,6 +3816,23 @@ components:
           type: array
           items: { type: string }
           description: SNI своих нод в `sniffer.skip-domain` миксина.
+    SubLinkResponse:
+      type: object
+      required: [url, clients]
+      additionalProperties: false
+      properties:
+        url:
+          type: [string, "null"]
+          description: Ссылка на подписку; `null` — не выпущена.
+        clients:
+          type: array
+          items:
+            type: object
+            required: [user_agent, at]
+            additionalProperties: false
+            properties:
+              user_agent: { type: string, examples: ["Happ/4.8.0/Android/…"] }
+              at: { type: string, format: date-time }
     RulesetsResponse:
       type: object
       description: |

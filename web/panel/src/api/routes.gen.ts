@@ -26,6 +26,8 @@ export const ROUTES = {
 	nikkiRulesetsCatalog: '/api/nikki/rulesets/catalog',
 	nikkiTest: '/api/nikki/test',
 	status: '/api/status',
+	subLink: '/api/sub/link',
+	subRotate: '/api/sub/rotate',
 	subscription: '/api/subscription',
 	subscriptionUpdate: '/api/subscription/update',
 	upstream: '/api/upstream',
