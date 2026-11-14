@@ -45,6 +45,10 @@ func HopGroups(hops []string) []map[string]any {
 			"type":   "select",
 			"use":    []string{SubProvider},
 			"filter": "^" + regexp.QuoteMeta(h) + "$",
+			// Хоп пропал из подписки — группа пуста. Пустая группа у mihomo —
+			// COMPATIBLE, то есть DIRECT: цепочка молча пошла бы на ноду без
+			// хопа. Kill switch требует отказа (docs/recon/exit-chains.md).
+			"empty-fallback": "REJECT",
 		})
 	}
 	return out

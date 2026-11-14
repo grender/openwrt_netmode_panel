@@ -123,6 +123,9 @@ func TestHopGroupFilterMatchesExactlyOne(t *testing.T) {
 		if g["type"] != "select" {
 			t.Errorf("type = %v", g["type"])
 		}
+		if g["empty-fallback"] != "REJECT" {
+			t.Errorf("empty-fallback = %v: пустая группа хопа иначе COMPATIBLE = DIRECT", g["empty-fallback"])
+		}
 		if use, _ := g["use"].([]string); len(use) != 1 || use[0] != "sub" {
 			t.Errorf("use = %v, ждали [sub]", g["use"])
 		}

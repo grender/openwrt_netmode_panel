@@ -89,7 +89,8 @@ func hopBody(c Config) string {
 	if len(c.Hops.Pool) > 0 {
 		b.WriteString(hopGroupsKV)
 		for _, h := range c.Hops.Pool {
-			fmt.Fprintf(&b, "  - {name: %s, type: select, use: [%s], filter: %s}\n",
+			// empty-fallback — kill switch: пустая группа иначе COMPATIBLE = DIRECT.
+			fmt.Fprintf(&b, "  - {name: %s, type: select, use: [%s], filter: %s, empty-fallback: 'REJECT'}\n",
 				yamlSingleQuoted(exits.HopGroupName(h)), yamlSingleQuoted(exits.SubProvider),
 				yamlSingleQuoted("^"+regexp.QuoteMeta(h)+"$"))
 		}

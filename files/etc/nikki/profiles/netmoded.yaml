@@ -79,6 +79,7 @@ proxy-groups:
   #   type: select
   #   use: [exits]
   #   filter: '-dc$'
+  #   empty-fallback: REJECT   # kill switch: пустая иначе = COMPATIBLE = DIRECT
   # - name: EXIT-DC
   #   type: select
   #   proxies: [EXIT-DC-DIRECT, EXIT-DC-HOP, REJECT]

@@ -47,8 +47,11 @@ func TestHopsRenderGroups(t *testing.T) {
 		t.Fatalf("нет nikki-proxy-groups:\n%s", out)
 	}
 	for _, h := range []string{hopDE, hopTR} {
+		// empty-fallback REJECT: хоп пропал из подписки — группа пуста, а пустая
+		// группа у mihomo это COMPATIBLE = DIRECT, и цепочка молча пошла бы на
+		// VPS без хопа (замерено на VM). Kill switch: отказ, а не другой путь.
 		line := "  - {name: '" + exits.HopGroupName(h) + "', type: select, use: ['" + exits.SubProvider + "'], filter: '" +
-			"^" + regexp.QuoteMeta(h) + "$" + "'}\n"
+			"^" + regexp.QuoteMeta(h) + "$" + "', empty-fallback: 'REJECT'}\n"
 		if !strings.Contains(out, line) {
 			t.Errorf("нет строки группы для %q:\n%s\nв файле:\n%s", h, line, out)
 		}

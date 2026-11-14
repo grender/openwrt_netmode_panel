@@ -577,7 +577,7 @@ uci set nikki.mixin.mixin_file_content=0 && uci commit nikki && netmode-apply ni
 
 ```yaml
 nikki-proxy-groups:
-  - {name: 'nm-hop-d42fba92', type: select, use: ['sub'], filter: '^🇩🇪⚡Германия$'}
+  - {name: 'nm-hop-d42fba92', type: select, use: ['sub'], filter: '^🇩🇪⚡Германия$', empty-fallback: 'REJECT'}
 sniffer:
   skip-domain:
     - 'krisha.kz'
@@ -657,7 +657,7 @@ proxy-providers:
   exits: { type: file, path: ./providers/exits.yaml }
 proxy-groups:
   - { name: EXIT-DC-HOP, type: url-test, use: [exits], filter: '-dc ⇢ ', url: https://www.gstatic.com/generate_204, interval: 300, tolerance: 100, timeout: 8000, empty-fallback: REJECT }   # пустая иначе = COMPATIBLE = DIRECT
-  - { name: EXIT-DC-DIRECT, type: select, use: [exits], filter: '-dc$' }
+  - { name: EXIT-DC-DIRECT, type: select, use: [exits], filter: '-dc$', empty-fallback: REJECT }
   - { name: EXIT-DC, type: select, proxies: [EXIT-DC-DIRECT, EXIT-DC-HOP, REJECT] }   # прямой — первым: пустой HOP по умолчанию = выход не работает
 ```
 
