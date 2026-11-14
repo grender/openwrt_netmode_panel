@@ -6,7 +6,7 @@
     "web/panel/src/api/client.ts": "3115b5831272e556d24ab51c97f7167fe2d26ebe",
     "web/panel/src/api/describe.ts": "442172fd17dffb58c0486c81f88d5900edaebe86",
     "web/panel/src/api/reasons.gen.ts": "0034a00188b5e0fdcfb68214e0358426a8e507c6",
-    "web/panel/src/api/routes.gen.ts": "b93a8eab744ef3ecbc035331194bf268effd2f17",
+    "web/panel/src/api/routes.gen.ts": "24806b8690abb4f9f430c70b648f477171bd465e",
     "web/panel/src/api/types.ts": "20b1ed46913e1eff85f136bd1627dde7ed2f974d",
     "web/panel/src/i18n/en.json": "d5fc5200de6d689dc195817aebb0b7f49bc73f78",
     "web/panel/src/i18n/index.ts": "f496c11836c903af7d62bb0109f49dcdc6a37be5",
@@ -34,16 +34,16 @@
     "web/panel/tsconfig.json": "2ee4ff881e2dbfd1abfe8024273340d7c8e94a94",
     "web/panel/vite.config.ts": "229d4555da50f27791ae3765994f04ce40371edd"
   },
-  "inputs_digest": "47e8b1ddf40b2979350fada25632d4f3f8d87e33e3c144b973dab49791832170",
+  "inputs_digest": "67dbbfac2dd54f6befc7168bb89db91217d7acd8f537b5ee5ee4eab473336a69",
   "artifact": {
-    "assets/app.js": "cf019f49853ab063cc59f3598d299c396971bd84105cd73e0fc89ac52e7fba3c",
+    "assets/app.js": "74216ed704873e94dff968dded1c764b791dda1e50225d13e18594c5d1814d7d",
     "assets/style.css": "2ccdcbb4f7a7f0fd3fbb29cbcc86ec06e37a0b62b0246307918275c9a1906ec7",
-    "index.html": "60c8c778a49fe0e8e4b5b70074f28e1d41776a797d8e76d137bb4f0dd8edad82"
+    "index.html": "3b885107559d50b0613daaed2fc31cbf54a94fba1e45863d0c286817e85d6c49"
   },
   "sizes_gzip": {
-    "assets/app.js": 63376,
+    "assets/app.js": 63402,
     "assets/style.css": 6535,
     "index.html": 579,
-    "total": 70490
+    "total": 70516
   }
 }

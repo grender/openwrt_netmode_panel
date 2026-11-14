@@ -75,6 +75,11 @@ type Config struct {
 	// имя файла назначает nikki, а не мы. Поле есть ради тестов, которые
 	// уводят запись в t.TempDir(): /etc/nikki на машине разработчика нет.
 	MixinPath string
+	// ExitsDir и ExitsProviderPath — экспорты своих нод и файл провайдера
+	// exits. Пусто → exitsDir и exitsProviderPath. Не настройка владельца,
+	// поля ради тестов — по той же причине, что пути выше.
+	ExitsDir          string
+	ExitsProviderPath string
 	// CatalogBaseURL — корень GitHub API для каталога наборов. Пусто →
 	// боевой api.github.com. Только для тестов и дев-стенда: боевой адрес
 	// зашит в internal/geosite и в конфигурацию владельца не выведен.
@@ -210,6 +215,15 @@ const (
 	// ничего не чинит и не ломает, а «парная» правка по прежней редакции
 	// этого комментария дала бы 404 от движка при корректном файле на диске.
 	providerName = "sub"
+
+	// exitsDir — экспорты своих выходных нод (exports/<нода>.json репо
+	// нод, кладёт scripts/exits-push.sh). Свой каталог, рядом с токеном и
+	// манифестом: это наши данные, а не конфигурация nikki.
+	exitsDir = "/etc/netmoded/exits"
+	// exitsProviderPath и exitsProviderName — файл и имя провайдера своих
+	// нод в профиле (use: [exits]). Договор с профилем владельца, как sub.
+	exitsProviderPath = "/etc/nikki/run/providers/exits.yaml"
+	exitsProviderName = "exits"
 )
 
 // apiError — единая форма ошибки (docs/contracts/errors.md).
@@ -267,6 +281,12 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 	}
 	if cfg.MixinPath == "" {
 		cfg.MixinPath = mixinPath
+	}
+	if cfg.ExitsDir == "" {
+		cfg.ExitsDir = exitsDir
+	}
+	if cfg.ExitsProviderPath == "" {
+		cfg.ExitsProviderPath = exitsProviderPath
 	}
 	s.cfg = cfg
 	// Каталог наборов. Нулевой Client рабочий: боевой адрес, HTTP-клиент и
@@ -435,6 +455,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/nikki/rulesets", s.handleRulesetsPut)
 	s.mux.HandleFunc("GET /api/nikki/autopool", s.handleAutopool)
 	s.mux.HandleFunc("PUT /api/nikki/autopool", s.handleAutopoolPut)
+	s.mux.HandleFunc("GET /api/nikki/hops", s.handleHops)
+	s.mux.HandleFunc("PUT /api/nikki/hops", s.handleHopsPut)
+	s.mux.HandleFunc("POST /api/exits/reload", s.handleExitsReload)
 	s.mux.HandleFunc("GET /api/nikki/rulesets/catalog", s.handleRulesetsCatalog)
 	s.mux.HandleFunc("GET /api/subscription", s.handleSubscriptionGet)
 	s.mux.HandleFunc("PUT /api/subscription", s.handleSubscriptionPut)
@@ -601,6 +624,9 @@ func (m *manifestRefresher) Update(ctx context.Context) (happ.Summary, error) {
 	// иначе он врал бы названием. Только здесь: это единственная точка,
 	// через которую проходят и расписание, и кнопка в панели.
 	m.srv.resyncProviderPool(ctx)
+	// Пул хопов — так же: «все, кроме» и «как в подписке» следуют за ней,
+	// а «только отмеченные» теряет исчезнувший узел.
+	m.srv.resyncHops(ctx)
 	return sum, err
 }
 

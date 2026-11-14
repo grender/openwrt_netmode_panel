@@ -1174,6 +1174,118 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/RulesetsFileError" }
+  /api/nikki/hops:
+    get:
+      tags: [nikki]
+      summary: Пул хопов для цепочек до своих нод и сами ноды
+      description: |
+        Третья секция `/etc/nikki/mixin.yaml` (`internal/mixin/hops.go`):
+        через какие узлы подписки строятся цепочки до своих выходных нод
+        (ADR-0050, `docs/recon/exit-chains.md`). На каждый хоп пула демон
+        пишет в миксин группу-однохопник `nm-hop-<hash>`, а в файл
+        провайдера `exits` — цепочку `<нода>-<выход> ⇢ <хоп>` с
+        `dialer-proxy` на неё.
+
+        `mode: off` — цепочек нет. Это умолчание, и в отличие от авто-пула
+        оно означает ноль хопов, а не весь список: каждая цепочка — своя
+        проверка здоровья через выход.
+
+        `exits` — свои ноды из `/etc/netmoded/exits` **без секретов**: UUID,
+        ключ и shortId Reality наружу не уходят. `exits_error` — почему
+        каталог не читается (битый экспорт); тогда `exits` пуст, а `PUT`
+        отказывает с `exits_broken`.
+
+        `skip_sni` — SNI своих нод, записанные в `sniffer.skip-domain`.
+      responses:
+        "200":
+          description: Пул хопов и свои ноды
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HopsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/RulesetsFileError" }
+    put:
+      tags: [nikki]
+      summary: Применить пул хопов (джоб)
+      description: |
+        Пишет файл провайдера `exits` и `mixin.yaml` целиком (наборы и
+        авто-пул переносятся), включает склейку и перезапускает Nikki.
+        После перезапуска сверяет у движка, что группы-однохопники есть:
+        нет — джоб проваливается, потому что каждая цепочка отказывала бы
+        на каждом соединении.
+
+        Состав пула (`pool`) считает демон по манифесту подписки, в её
+        порядке: `allow` — отмеченные, `deny` — все, кроме отмеченных,
+        `provider` — балансировщик подписки (присланные `nodes`
+        игнорируются). Не больше `max_pool` хопов.
+
+        **`If-Match` обязателен** — отпечаток из `GET`, свой у секции.
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          schema: { type: string }
+          description: Отпечаток из `GET /api/nikki/hops`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HopsRequest" }
+      responses:
+        "202":
+          description: Джоб принят. Ход выполнения — в `GET /api/status`, поле `job`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobEnvelope" }
+        "400":
+          description: |
+            `bad_request` — тело не разбирается или режим незнаком.
+            `unknown_node` — отмечено имя, которого в подписке нет.
+            `bad_hops` — форма не принята: пустой пул, больше `max_pool`
+            хопов, дубликат.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: |
+            `stale_hops` — нет `If-Match` либо отпечаток разошёлся.
+            `foreign_mixin` — файл написан не нами.
+            `no_provider_pool` — режим `provider`, а балансировщика нет.
+            `exits_broken` — экспорт своей ноды не читается: цепочки строить
+            не из чего, а молча выкинуть ноду нельзя.
+            `job_busy` — уже идёт другая операция.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/RulesetsFileError" }
+  /api/exits/reload:
+    post:
+      tags: [nikki]
+      summary: Перечитать экспорты своих нод (джоб)
+      description: |
+        Зовёт `scripts/exits-push.sh` после того, как положил
+        `exports/<нода>.json` в `/etc/netmoded/exits`. Пересобирает файл
+        провайдера `exits` по текущему пулу хопов. Если изменился набор SNI
+        своих нод (он в миксине, `sniffer.skip-domain`) — пишет миксин и
+        перезапускает Nikki; иначе только просит движок перечитать
+        провайдер `exits`, без разрыва связи.
+      responses:
+        "202":
+          description: Джоб принят.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: |
+            `exits_broken` — экспорт не читается (текст называет файл и
+            поле, но не значение). `foreign_mixin` — миксин не наш.
+            `job_busy` — уже идёт другая операция.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/RulesetsFileError" }
   /api/nikki/rulesets/catalog:
     get:
       tags: [nikki]
@@ -3547,6 +3659,89 @@ components:
           description: |
             Сколько узлов у движка в группе `AUTO` сейчас. `null` —
             «спросить не смогли», а не «пул пуст».
+    HopsRequest:
+      type: object
+      description: Тело `PUT /api/nikki/hops`.
+      required: [mode]
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum: ["off", deny, allow, provider]
+          description: |
+            `off` — цепочек нет. `allow` — хопы из отмеченных, `deny` — все,
+            кроме отмеченных, `provider` — балансировщик подписки.
+        nodes:
+          type: array
+          items: { type: string }
+          description: Имена узлов подписки. У `provider` и `off` игнорируются.
+    HopsResponse:
+      type: object
+      description: |
+        Тело `GET /api/nikki/hops`. Собирается из `map[string]any`, порядок
+        ключей в примере алфавитный.
+      required: [fingerprint, mode, nodes, pool, available, provider_pool, missing, max_pool, foreign, exits, exits_error, skip_sni]
+      additionalProperties: false
+      properties:
+        fingerprint:
+          type: string
+          description: Отпечаток выбора (режим и отмеченные) для `If-Match`.
+          examples: ["sha256:0f3c1a2b4d5e6f70"]
+        mode:
+          type: string
+          enum: ["off", deny, allow, provider]
+        nodes:
+          type: array
+          items: { type: string }
+          description: Отмеченные имена в смысле `mode`.
+        pool:
+          type: array
+          items: { type: string }
+          description: |
+            Вычисленный состав пула в порядке подписки — через эти узлы и
+            построены цепочки.
+        available:
+          type: array
+          items: { type: string }
+          description: Узлы подписки из манифеста.
+        provider_pool:
+          type: array
+          items: { type: string }
+          description: Состав балансировщика подписки; пуст — режим `provider` недоступен.
+        missing:
+          type: array
+          items: { type: string }
+          description: Отмеченные имена, которых больше нет в подписке.
+        max_pool:
+          type: integer
+          description: Потолок пула.
+        foreign:
+          type: boolean
+          description: Миксин написан не нами.
+        exits:
+          type: array
+          description: Свои ноды, без секретов.
+          items:
+            type: object
+            required: [name, country, address, port, sni, exits]
+            additionalProperties: false
+            properties:
+              name: { type: string, examples: ["kz-nqz-exit-01"] }
+              country: { type: string, examples: ["kz"] }
+              address: { type: string }
+              port: { type: integer }
+              sni: { type: string }
+              exits:
+                type: array
+                items: { type: string }
+                examples: [["dc", "resi"]]
+        exits_error:
+          type: [string, "null"]
+          description: Почему каталог экспортов не читается; `null` — читается.
+        skip_sni:
+          type: array
+          items: { type: string }
+          description: SNI своих нод в `sniffer.skip-domain` миксина.
     RulesetsResponse:
       type: object
       description: |

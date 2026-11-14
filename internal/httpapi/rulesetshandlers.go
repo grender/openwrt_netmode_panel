@@ -44,7 +44,8 @@ func mixinState(cfg mixin.Config, herr *httpErr) string {
 	if herr != nil {
 		return "error:" + herr.code
 	}
-	return mixin.Fingerprint(cfg) + "|" + mixin.AutoFingerprint(cfg.Auto)
+	return mixin.Fingerprint(cfg) + "|" + mixin.AutoFingerprint(cfg.Auto) + "|" +
+		mixin.HopFingerprint(cfg.Hops) + "|" + strings.Join(cfg.Hops.Pool, ";") + "|" + strings.Join(cfg.SkipSNI, ",")
 }
 
 // mixinStill — повторная сверка файла наборов перед записью (ADR-0011).
@@ -517,6 +518,10 @@ func (s *Server) handleRulesetsPut(w http.ResponseWriter, r *http.Request) {
 	// выбор владельца по узлам. У испорченного файла переносить нечего —
 	// там cur пустой, и это честно: его содержимое нам неизвестно.
 	want.Auto = cur.Auto
+	// Пул хопов и SNI своих нод — так же: без переноса цепочки в exits.yaml
+	// остались бы ссылаться на исчезнувшие группы.
+	want.Hops = cur.Hops
+	want.SkipSNI = cur.SkipSNI
 
 	// Испорченный файл записи НЕ мешает, и это не поблажка. Его содержимое
 	// нам неизвестно, значит и отпечаток его бессмыслен; а PUT как раз
@@ -870,8 +875,8 @@ func (s *Server) applyRulesets(ctx context.Context, want mixin.Config) error {
 // файл остался бы на диске, а движок перестал бы его читать.
 func (s *Server) switchMixinFlag(ctx context.Context, c mixin.Config) error {
 	want := "1"
-	if c.Policy == mixin.PolicyProfile && c.Auto.IsDefault() {
-		// Обе секции пусты: файл из одной шапки, и склеивать его не нужно
+	if c.Policy == mixin.PolicyProfile && c.Auto.IsDefault() && c.Hops.IsDefault() && len(c.SkipSNI) == 0 {
+		// Все секции пусты: файл из одной шапки, и склеивать его не нужно
 		// вовсе.
 		want = "0"
 	}

@@ -1,157 +1,161 @@
-# Свои выходные ноды: группы `EXIT-*` в профиле nikki
+# Свои выходные ноды: провайдер `exits`, цепочки и группы `EXIT-*`
 
-Как подключить свою выходную ноду (VLESS + Reality) и направлять в неё
-отдельные наборы geosite и свои правила. Решение и его цена —
-[ADR-0049](adr/0049-exit-groups-as-set-targets.md), формат файла —
+Как подключить свою выходную ноду (VLESS + Reality), ходить на неё напрямую
+или цепочкой через узел подписки, и направлять в неё отдельные наборы geosite.
+Решения — [ADR-0049](adr/0049-exit-groups-as-set-targets.md) (группы как цель
+набора) и [ADR-0050](adr/0050-exit-chains-via-subscription.md) (цепочки),
+разведка — [exit-chains.md](recon/exit-chains.md), формат файла —
 [контракт миксина](contracts/nikki-mixin-rulesets.md).
 
-**Демон профиль не пишет** (ADR-0002): ноды и группы добавляете вы, один раз.
-Панель только предлагает в цели набора живые группы с именем `EXIT-…` и пишет
-правила `RULE-SET,nm-geosite-<имя>,EXIT-…` в `mixin.yaml`.
+**Что делает демон, а что вы.** Узлы своих нод и цепочки демон пишет сам — в
+файл провайдера `exits`, из экспортов репо выходных нод. Группы `EXIT-*` —
+в профиле, их один раз добавляете вы (ADR-0002): демон только ссылается на
+них из наборов.
 
 ## Раскладка
 
 Пример — нода `kz-nqz-exit-01` с двумя выходами (выход выбирается по UUID):
 
-| Прокси | Выход | Группа | Для чего |
-|---|---|---|---|
-| `kz-nqz-exit-01-resi` | ISP-прокси, домашний IP | `EXIT-RESI` | только AI: `category-ai-!cn`, `openai`, `anthropic` — прокси медленный на новые соединения ([разведка](recon/exit-chains.md)) |
-| `kz-nqz-exit-01-dc` | IP самого VPS | `EXIT-DC` | то, что режется по IP: Telegram, Instagram |
+| Выход | Группа | Для чего |
+|---|---|---|
+| `resi` — ISP-прокси, домашний IP | `EXIT-RESI` | **только AI**: `category-ai-!cn`, `openai`, `anthropic`. Прокси даёт 2–5 с на новое соединение и отказывает при частых соединениях — Google, PayPal и стриминги на нём не живут |
+| `dc` — IP самого VPS | `EXIT-DC` | то, что режется по IP: Telegram, Instagram |
 
-```yaml
-proxies:                       # из exports/kz-nqz-exit-01.mihomo.yaml — с секретами
-  - name: kz-nqz-exit-01-resi
-    # …
-  - name: kz-nqz-exit-01-dc
-    # …
+Что демон пишет в `/etc/nikki/run/providers/exits.yaml` (провайдер `exits`):
 
-proxy-groups:
-  # AUTO, BYPASS — как были.
-  - name: PROXY
-    type: select
-    proxies: [AUTO, kz-nqz-exit-01-resi, kz-nqz-exit-01-dc]   # ручной выбор
-    use: [sub]
-  - name: EXIT-RESI            # нода легла — отказ, а не утечка через чужой IP
-    type: select
-    proxies: [kz-nqz-exit-01-resi, REJECT]
-  - name: EXIT-DC
-    type: select
-    proxies: [kz-nqz-exit-01-dc, REJECT]
+| Узел | Путь |
+|---|---|
+| `kz-nqz-exit-01-dc` | напрямую на ноду |
+| `kz-nqz-exit-01-dc ⇢ 🇷🇺💳Россия` | через узел подписки (хоп) — по цепочке на каждый хоп пула |
+| то же для `resi` | |
+
+В каждой группе выхода три варианта, выбор ручной:
+
+```
+EXIT-DC = select [ EXIT-DC-HOP (url-test над цепочками) | REJECT | kz-nqz-exit-01-dc (прямо) ]
+# порядок — как отдаёт mihomo: сначала proxies:, потом узлы провайдера
 ```
 
-- **`select` + `REJECT` — fail closed.** `select` сам не переключается:
-  упала нода — соединения рвутся. `REJECT` вторым участником — способ закрыть
-  выход руками. Ноды других стран дописываются в ту же группу участниками.
-- **В `AUTO` ноды не добавлять:** url-test смешал бы их с подпиской
-  (ADR-0031, ADR-0044). В `PROXY` — можно: они встанут в конец списка узлов
-  панели как обычные узлы. `REJECT` в `PROXY` не добавлять — панель показала
-  бы его вечно мёртвым узлом.
-- **Имя группы:** `EXIT-` и 1–32 знака из `A-Za-z0-9._-`. Другие имена панель
-  в цели не предлагает.
-- **`udp: false`** у ноды: UDP через выход не пройдёт. QUIC браузер переведёт
-  на TCP; звонки Telegram через `EXIT-DC`, скорее всего, не заработают.
+- **`url-test` меряет всю цепочку до ноды**, а не хоп: хопы ss и ws провайдера
+  подменяют адрес по SNI и ломают Reality, хотя сами живы. Такие цепочки
+  отсеиваются сами.
+- **`select` + `REJECT` — fail closed.** Сам `select` не переключается: нода
+  легла — соединения рвутся, а не уходят через чужой IP.
+- **В `AUTO` ноды не добавлять:** url-test смешал бы их с подпиской.
+- **`udp: false`:** UDP через выход не пройдёт; звонки Telegram через `EXIT-DC`,
+  скорее всего, не заработают.
 
-## Пошагово на роутере
+## 1. Экспорты нод на роутер
 
-Файлы на роутер — только `ssh … 'cat > …' < файл`: `scp` там не работает (в
-dropbear нет sftp-сервера). Команды ниже ничего секретного не печатают.
+В репо выходных нод: `ansible-playbook node-export.yml` → `exports/<нода>.json`
+(формат `schema: 1` — README там). Затем отсюда:
 
-**1. Найти профиль и сделать копию.**
+```sh
+./scripts/exits-push.sh                                   # все exports/*.json соседнего репо
+./scripts/exits-push.sh --host root@127.0.0.1 --ssh-port 18022   # тестовая VM
+```
+
+Скрипт кладёт файлы в `/etc/netmoded/exits/` (0600) потоком по ssh, не
+печатая их, и зовёт `POST /api/exits/reload`: демон пересобирает
+`exits.yaml` и записывает SNI своих нод в `sniffer.skip-domain` миксина (без
+этого sniffer роутера ломает прямой вход на ноду для клиентов LAN).
+
+**Сначала этот шаг, потом профиль:** профиль ссылается на `exits.yaml`, и
+файл должен уже существовать.
+
+## 2. Профиль — один раз
+
+Файлы на роутер — только `ssh … 'cat > …' < файл`: `scp` там не работает
+(в dropbear нет sftp-сервера).
 
 ```sh
 ssh root@192.168.9.1
 P=/etc/nikki/profiles/$(uci get nikki.config.profile | sed 's/^file://')
-echo "$P"
 cp "$P" "$P.bak-$(date +%F)"
 ```
 
-**2. Доставить ноды** — с Mac, из соседнего репозитория:
+**Переезд с ручной раскладки** (ноды в `proxies:` по прежней версии этой
+инструкции): убрать узлы ноды из `proxies:` и из `PROXY`, старые `EXIT-*`
+заменить новыми. Имена групп те же — наборы в панели переназначать не нужно.
 
 ```sh
-ssh root@192.168.9.1 'umask 077; cat > /tmp/kz.yaml' \
-  < ~/sources/wall-breaker-exit-node/exports/kz-nqz-exit-01.mihomo.yaml
-```
-
-На роутере проверить форму, не печатая содержимого:
-
-```sh
-yq '.proxies | length' /tmp/kz.yaml          # ждём 2
-yq '.proxies[].name' /tmp/kz.yaml            # имена, без секретов
-```
-
-**3. Вписать ноды и группы** (`yq` уже стоит — им же nikki склеивает конфиг):
-
-```sh
-yq -i '.proxies = ((.proxies // []) + load("/tmp/kz.yaml").proxies)' "$P"
-yq -i '.proxy-groups += [
-  {"name": "EXIT-RESI", "type": "select", "proxies": ["kz-nqz-exit-01-resi", "REJECT"]},
-  {"name": "EXIT-DC",   "type": "select", "proxies": ["kz-nqz-exit-01-dc", "REJECT"]}
+yq -i '.proxies |= map(select(.name | test("^kz-nqz-exit-01-") | not))' "$P"
+yq -i '(.proxy-groups[] | select(.name == "PROXY") | .proxies) |= map(select(test("^kz-nqz-exit-01-") | not))' "$P"
+yq -i '.proxy-providers.exits = {"type": "file", "path": "./providers/exits.yaml"}' "$P"
+yq -i '.proxy-groups |= map(select(.name | test("^EXIT-") | not)) | .proxy-groups += [
+  {"name": "EXIT-DC-HOP", "type": "url-test", "use": ["exits"], "filter": "-dc ⇢ ",
+   "url": "https://www.gstatic.com/generate_204", "interval": 300, "tolerance": 100, "timeout": 8000},
+  {"name": "EXIT-RESI-HOP", "type": "url-test", "use": ["exits"], "filter": "-resi ⇢ ",
+   "url": "https://www.gstatic.com/generate_204", "interval": 900, "tolerance": 500, "timeout": 15000, "lazy": true},
+  {"name": "EXIT-DC", "type": "select", "use": ["exits"], "filter": "-dc$", "proxies": ["EXIT-DC-HOP", "REJECT"]},
+  {"name": "EXIT-RESI", "type": "select", "use": ["exits"], "filter": "-resi$", "proxies": ["EXIT-RESI-HOP", "REJECT"]}
 ]' "$P"
-yq -i '(.proxy-groups[] | select(.name == "PROXY") | .proxies) += ["kz-nqz-exit-01-resi", "kz-nqz-exit-01-dc"]' "$P"
-rm /tmp/kz.yaml
 ```
 
-`yq -i` переписывает файл своим форматированием; комментарии обычно
-переживает. Если профиль правите руками — то же самое через `vi "$P"`.
+`EXIT-RESI-HOP` с `lazy` и длинным интервалом: каждая проверка — новое
+соединение через ISP-прокси, который на частых соединениях отказывает.
 
-`netmode-apply` лежит в `/usr/local/bin` — в `PATH` сессии ssh его может не
-быть, поэтому ниже путь полный.
-
-**4. Проверить разбор и применить.**
+Проверить и применить:
 
 ```sh
-mihomo -t -d /etc/nikki/run -f "$P"   # профиль сам по себе; провайдеры не качает
+mihomo -t -d /etc/nikki/run -f "$P"
 /usr/local/bin/netmode-apply nikki
 ```
 
-**5. Убедиться, что движок видит группы.**
+## 3. Пул хопов
+
+Без пула цепочек нет — только прямые узлы (умолчание; так безопаснее для
+прокси resi). Пул — до 8 узлов подписки, режимы как у авто-пула: `allow`
+(отмеченные), `deny` (все, кроме), `provider` (балансировщик подписки), `off`.
+Брать vision- и hysteria2-узлы; ss/ws цепочку не держат (url-test их отсеет,
+но зачем). Пока экрана в панели нет — с роутера:
+
+```sh
+T=$(cat /etc/netmoded/token); B=http://192.168.9.1:8088
+FP=$(curl -s -H "Authorization: Bearer $T" $B/api/nikki/hops | jsonfilter -e @.fingerprint)
+curl -s -X PUT -H "Authorization: Bearer $T" -H "If-Match: $FP" -H 'Content-Type: application/json' \
+  -d '{"mode":"allow","nodes":["🇷🇺💳Россия","🇩🇪⚡Германия"]}' $B/api/nikki/hops
+```
+
+Применение — джоб с перезапуском Nikki; после него демон сверяет у движка,
+что группы `nm-hop-*` есть. После обновления подписки пул пересобирается сам.
+
+**Первые секунды после перезапуска** `url-test` стоит на первой цепочке, пока
+не замерил остальные, — она может быть мёртвой. Это проходит само.
+
+## 4. Наборы и проверка
+
+«Узлы Nikki» → «Что в туннель · наборы» → у набора «Выход…» → `EXIT-RESI` или
+`EXIT-DC` → «Применить». **Порядок решает, кто победит:** домен из двух
+наборов уходит по верхнему (`geosite:google` включает `youtube`). «Изменить
+порядок» в панели переставляет наборы; свои правила всегда раньше наборов.
+
+Выбор «прямо / через хоп / закрыть» — в Clash API (экран в панели — позже):
 
 ```sh
 S=$(uci get nikki.mixin.api_secret)
-for g in EXIT-RESI EXIT-DC; do
-  curl -s -H "Authorization: Bearer $S" http://127.0.0.1:9090/proxies/$g | jsonfilter -e '@.now'
-done
+curl -s -X PUT -H "Authorization: Bearer $S" -d '{"name":"EXIT-DC-HOP"}' http://127.0.0.1:9090/proxies/EXIT-DC
+curl -s -H "Authorization: Bearer $S" http://127.0.0.1:9090/proxies/EXIT-DC-HOP | jsonfilter -e '@.now'
 ```
 
-Ждём `kz-nqz-exit-01-resi` и `kz-nqz-exit-01-dc`.
-
-**6. Направить наборы в панели.** «Узлы Nikki» → «Что в туннель · наборы» →
-у набора выбрать «Выход…» → `EXIT-RESI` или `EXIT-DC` → «Применить».
-
-**Порядок решает, кто победит.** Наборы проверяются сверху вниз, и домен из
-двух наборов уходит по верхнему: `geosite:google` включает `youtube`, и при
-`google` → `EXIT-RESI` выше `youtube` → туннель YouTube уйдёт в домашний
-выход. «Изменить порядок» в панели переставляет наборы. Свои правила всегда
-стоят раньше наборов.
-
-**7. Проверка выхода.** Набор `category-ip-geo-detect` (в нём `ipinfo.io`)
-направить в `EXIT-RESI`, применить, с домашней машины:
-
-```sh
-curl -s https://ipinfo.io/json      # ждём IP и org домашнего провайдера в KZ
-```
-
-Затем перевести тот же набор в `EXIT-DC` — должен показаться IP VPS. После
-снятия набора — прежний адрес туннеля или прямой, как было.
+Проверка выхода: набор `category-ip-geo-detect` (в нём `ipinfo.io`) — в
+`EXIT-DC`, с домашней машины `curl -s https://ipinfo.io/json` → IP VPS; в
+`EXIT-RESI` → домашний провайдер страны ноды.
 
 ## Откат и восстановление
 
-Вернуть профиль из копии:
-
-```sh
-cp "$P.bak-<дата>" "$P" && /usr/local/bin/netmode-apply nikki
-```
-
-**Перед удалением группы из профиля снимите её с наборов в панели.**
-Профиль правится мимо демона, и правило на исчезнувшую группу не даст mihomo
-подняться. Проверено на VM 13.11.2026 (mihomo 1.19.27): `netmode-apply`
-выходит кодом 6 («nikki должен работать, но не работает»), в
-`/var/log/nikki/core.log` —
-`rules[…] [RULE-SET,nm-geosite-telegram,EXIT-DC] error: proxy [EXIT-DC] not found`. Если это уже случилось — выключить склейку (правила панели уйдут
-вместе с файлом, профиль останется рабочим), поправить, включить обратно:
+- Цепочки убрать: пул `{"mode":"off"}` — останутся прямые узлы.
+- Профиль из копии: `cp "$P.bak-<дата>" "$P" && /usr/local/bin/netmode-apply nikki`.
+- **Перед удалением группы `EXIT-*` из профиля снимите её с наборов в панели.**
+  Правило на исчезнувшую группу не даст mihomo подняться (`proxy [EXIT-DC] not
+  found` в `/var/log/nikki/core.log`, `netmode-apply` — код 6). Если уже
+  случилось — выключить склейку, поправить, включить:
 
 ```sh
 uci set nikki.mixin.mixin_file_content=0 && uci commit nikki && /usr/local/bin/netmode-apply nikki
 # … починить профиль или вернуть группу …
 uci set nikki.mixin.mixin_file_content=1 && uci commit nikki && /usr/local/bin/netmode-apply nikki
 ```
+
+Выключенная склейка уносит и группы `nm-hop-*`: цепочки отказывают, прямые
+узлы и движок живы.

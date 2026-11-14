@@ -56,35 +56,31 @@ proxy-groups:
     url: https://www.gstatic.com/generate_204
     interval: 120
 
-  # Свои выходы — цели наборов «Выход» в панели (ADR-0049, docs/exit-nodes.md).
-  # Необязательны; панель предлагает живые группы с приставкой EXIT-. Ноды —
-  # в proxies: ниже. select + REJECT: нода легла — отказ, а не утечка через
+  # Свои выходы — цели наборов «Выход» в панели (ADR-0049, ADR-0050,
+  # docs/exit-nodes.md). Необязательны; панель предлагает живые группы с
+  # приставкой EXIT-. Узлы своих нод и цепочки через узлы подписки пишет
+  # демон в провайдер exits (scripts/exits-push.sh); раскомментируйте
+  # провайдер в proxy-providers выше по форме
+  #   exits: { type: file, path: ./providers/exits.yaml }
+  # ПОСЛЕ первого exits-push.sh — файл должен уже быть. url-test меряет всю
+  # цепочку до ноды; select + REJECT — нода легла, отказ, а не утечка через
   # чужой IP. Перед удалением группы снимите её с наборов в панели, иначе
   # mihomo не поднимется.
-  # - name: EXIT-RESI
-  #   type: select
-  #   proxies: [my-exit-resi, REJECT]
+  # - name: EXIT-DC-HOP
+  #   type: url-test
+  #   use: [exits]
+  #   filter: '-dc ⇢ '
+  #   url: https://www.gstatic.com/generate_204
+  #   interval: 300
+  #   tolerance: 100
+  #   timeout: 8000
   # - name: EXIT-DC
   #   type: select
-  #   proxies: [my-exit-dc, REJECT]
-
-# Свои ноды (VLESS + Reality). Секреты — только в профиле на роутере, не в
-# репозитории. Пример формы:
-# proxies:
-#   - name: my-exit-resi
-#     type: vless
-#     server: exit.example.com
-#     port: 443
-#     uuid: <uuid>
-#     network: tcp
-#     udp: false
-#     tls: true
-#     flow: xtls-rprx-vision
-#     servername: <sni>
-#     client-fingerprint: chrome
-#     reality-opts:
-#       public-key: <public-key>
-#       short-id: <short-id>
+  #   use: [exits]
+  #   filter: '-dc$'
+  #   proxies: [EXIT-DC-HOP, REJECT]
+  # EXIT-RESI / EXIT-RESI-HOP — так же по '-resi', у url-test lazy: true и
+  # interval 900: проверки идут через ISP-прокси.
 
 # Что идёт в туннель, решают наборы в панели: их правила nikki ставит
 # ПЕРЕД этими (ADR-0039, ADR-0040). Всё остальное — напрямую.

@@ -97,6 +97,9 @@ func newServer(t *testing.T) (*Server, *executor.Fake) {
 		// тест, который туда пишет, либо не работает, либо портит машину
 		// разработчика.
 		MixinPath: filepath.Join(t.TempDir(), "mixin.yaml"),
+		// Свои ноды — туда же, по той же причине.
+		ExitsDir:          filepath.Join(t.TempDir(), "exits"),
+		ExitsProviderPath: filepath.Join(t.TempDir(), "exits.yaml"),
 		// Каталог наборов ходит в GitHub. Стенд поднимается на КАЖДЫЙ
 		// тест, а не один на пакет: `make verify` обязан быть зелёным
 		// офлайн, а тест, который лезет в сеть, зелёный только дома.
