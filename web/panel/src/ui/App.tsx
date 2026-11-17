@@ -679,7 +679,7 @@ export function App() {
 
 	const onPathTest = () =>
 		void lock.act('pathtest', async () => {
-			const res = await post<PathTestResponse>('nikkiPathtest', {}, BUDGET.TEST);
+			const res = await post<PathTestResponse>('nikkiPathtest', {}, BUDGET.PATHTEST);
 			setPathTest({ at: new Date().toISOString(), res });
 		});
 

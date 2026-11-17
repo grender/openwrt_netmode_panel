@@ -31,11 +31,16 @@ const (
 	// slowExitTimeout — сколько ждать выход через ISP-прокси: он открывает
 	// новое соединение 2–5 с (замер 2026-11-14, репо выходных нод).
 	slowExitTimeout = 8 * time.Second
-	// pathTestBudget — потолок всей проверки. Панель ждёт синхронно
-	// (T.TEST, 15 с): быстрые пробы и одна медленная обязаны уложиться.
-	pathTestBudget = 12 * time.Second
-	// pathTestParallel — как probeParallel у замера узлов.
-	pathTestParallel = 6
+	// Бюджеты шагов — раздельные: общий потолок на живой VM (пул из 38
+	// хопов, 17.11.2026) съедали мёртвые хопы, и до пробы выхода через
+	// ISP-прокси — ради которой экран и нужен — дело не доходило. Сумма
+	// (20 с) — потолок ответа; панель ждёт его 25 с.
+	pathHopsBudget   = 6 * time.Second
+	pathChainsBudget = 5 * time.Second
+	pathExitsBudget  = slowExitTimeout + time.Second
+	// pathTestParallel — больше probeParallel замера узлов: мёртвый хоп
+	// занимает работника на весь таймаут, а шаг ограничен по времени.
+	pathTestParallel = 10
 )
 
 // pathProbe — исход одной пробы.
@@ -121,15 +126,23 @@ func (s *Server) handlePathTest(w http.ResponseWriter, r *http.Request) {
 	follow := s.followNow(r.Context(), cfg)
 
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(r.Context(), pathTestBudget)
-	defer cancel()
+	// step — шаг проверки со своим бюджетом: не успевшие пробы шага —
+	// skipped, следующий шаг от них не страдает.
+	step := func(budget time.Duration, tasks []pathTask) {
+		ctx, cancel := context.WithTimeout(r.Context(), budget)
+		defer cancel()
+		s.runPathTasks(ctx, tasks)
+	}
 
 	task := func(name string, timeout time.Duration, out *pathProbe) pathTask {
 		p, ok := all[name]
 		return pathTask{name: name, provider: p.Provider, known: ok, timeout: timeout, out: out}
 	}
 
-	// ── Фаза 1: серверы подписки, прямой путь до нод, цепочки ──
+	// ── Шаг 1: прямой путь до нод и серверы подписки ──
+	//
+	// Прямые пробы нод — первыми в очереди: их мало, и от них зависит,
+	// каким путём пробовать выходы.
 	pool := cfg.Hops.Pool
 	hops := make([]pathHop, 0, len(pool)+1)
 	inPool := map[string]bool{}
@@ -151,28 +164,49 @@ func (s *Server) handlePathTest(w http.ResponseWriter, r *http.Request) {
 
 	res := make([]pathNode, len(nodes))
 	var tasks []pathTask
-	for i := range hops {
-		tasks = append(tasks, task(hops[i].Name, 0, &hops[i].pathProbe))
-	}
 	for i, n := range nodes {
 		res[i] = pathNode{Name: n.Name, Chains: []pathChain{}, Exits: []pathExit{}}
 		if _, ok := n.Users[exits.MeasuredExit]; !ok {
 			continue
 		}
-		base := n.Name + "-" + exits.MeasuredExit
 		res[i].Direct = &pathProbe{}
-		tasks = append(tasks, task(base, 0, res[i].Direct))
+		tasks = append(tasks, task(n.Name+"-"+exits.MeasuredExit, 0, res[i].Direct))
+	}
+	for i := range hops {
+		tasks = append(tasks, task(hops[i].Name, 0, &hops[i].pathProbe))
+	}
+	step(pathHopsBudget, tasks)
+
+	// ── Шаг 2: цепочки — только через ответившие хопы ──
+	//
+	// Через мёртвый хоп цепочка не ответит заведомо, а проба заняла бы
+	// работника на весь таймаут. Такое звено — skipped: про «хоп → нода»
+	// мы ничего не узнали, виноват хоп, и он уже помечен.
+	hopOK := map[string]bool{}
+	for _, h := range hops {
+		hopOK[h.Name] = h.State == "ok"
+	}
+	tasks = tasks[:0]
+	for i, n := range nodes {
+		if res[i].Direct == nil {
+			continue
+		}
+		base := n.Name + "-" + exits.MeasuredExit
 		res[i].Chains = make([]pathChain, len(pool))
 		for j, h := range pool {
 			res[i].Chains[j].Hop = h
+			if !hopOK[h] {
+				res[i].Chains[j].State = "skipped"
+				continue
+			}
 			tasks = append(tasks, task(base+exits.ChainSep+h, 0, &res[i].Chains[j].pathProbe))
 		}
 	}
-	s.runPathTasks(ctx, tasks)
+	step(pathChainsBudget, tasks)
 
-	// ── Фаза 2: выходы за нодой — по одной пробе на выход ──
+	// ── Шаг 3: выходы за нодой — по одной пробе на выход ──
 	//
-	// После фазы 1, а не вместе с ней: путь до ноды выбирается по её исходу.
+	// После первых двух, а не вместе с ними: путь до ноды выбирается по их исходу.
 	// Прямой путь мёртв, а цепочка через хоп повторителя жива — пробуем
 	// через «⇢ авто»; иначе «не дошли до ноды» читалось бы как «отказал
 	// ISP-прокси».
@@ -196,7 +230,7 @@ func (s *Server) handlePathTest(w http.ResponseWriter, r *http.Request) {
 			tasks = append(tasks, task(name, slowExitTimeout, &e.pathProbe))
 		}
 	}
-	s.runPathTasks(ctx, tasks)
+	step(pathExitsBudget, tasks)
 
 	elapsed := int(time.Since(start) / time.Millisecond)
 	s.logf("nikki: проверка путей — серверов подписки %d, своих нод %d, %d мс", len(hops), len(res), elapsed)

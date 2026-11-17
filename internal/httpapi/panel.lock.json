@@ -3,14 +3,14 @@
     "web/panel/index.html": "a6f7191cdf5584bb8786130af9ac310fb7fc79cb",
     "web/panel/package-lock.json": "22a05c96ad0d472887225de38f6cde5a7c8f125d",
     "web/panel/package.json": "18a542b381e23744e225bf497b1c32e941955777",
-    "web/panel/src/api/client.ts": "3115b5831272e556d24ab51c97f7167fe2d26ebe",
+    "web/panel/src/api/client.ts": "a8031aa6d83bb39e1bda29abc8b332de899df031",
     "web/panel/src/api/describe.ts": "19e053bea26590e8ef153cbec867333dd7e81c01",
     "web/panel/src/api/reasons.gen.ts": "0034a00188b5e0fdcfb68214e0358426a8e507c6",
     "web/panel/src/api/routes.gen.ts": "c8f60861f3af5672d4d6e72197845e857ecdd0b1",
     "web/panel/src/api/types.ts": "3bfe30d904bba68645a0b78c9878e5082b0eae56",
-    "web/panel/src/i18n/en.json": "ab9557c6c0f76c3994928c1f71efdf9b8f1e91e1",
+    "web/panel/src/i18n/en.json": "543b67f31fdd28e8f338caec4d259a68decdb91b",
     "web/panel/src/i18n/index.ts": "f496c11836c903af7d62bb0109f49dcdc6a37be5",
-    "web/panel/src/i18n/ru.json": "198bc5f677ae36bb460f790e89e373e135a45a45",
+    "web/panel/src/i18n/ru.json": "0051b5a73da0b81ac55f1947043e14407f0ec453",
     "web/panel/src/main.tsx": "d849dd510cfdbf4c607f7a20e3d7a2d9d91d0712",
     "web/panel/src/state/consts.ts": "1243ae77582ef79923d5ecf6feb066387806d34c",
     "web/panel/src/state/job.ts": "a125d5cdff971db7b17dfc6ce229648f692db3f9",
@@ -20,7 +20,7 @@
     "web/panel/src/state/side.ts": "a5d88afa51b188cf14df8108e80c4e80d09d1156",
     "web/panel/src/state/watch.ts": "224949878f70eaed87bfe86d96ed1ce7ac029b7d",
     "web/panel/src/styles.css": "6495189164b2d0ac52ca19c3e1b730d03b24cbd9",
-    "web/panel/src/ui/App.tsx": "23b9b767ef4f6d6168b52462cefd8b7cc35f0978",
+    "web/panel/src/ui/App.tsx": "0028c26729462b436baee2c4c1b1b186b1dfaf3b",
     "web/panel/src/ui/Autopool.tsx": "cb8e532b8dbb8cdf1c116047a5e19d6c58ec47d9",
     "web/panel/src/ui/Bridge.tsx": "5f3b054fd2638d707018913777543901777b586c",
     "web/panel/src/ui/Engine.tsx": "49d93d225c2a762a83fab7f43ad67b756a177c36",
@@ -39,16 +39,16 @@
     "web/panel/tsconfig.json": "2ee4ff881e2dbfd1abfe8024273340d7c8e94a94",
     "web/panel/vite.config.ts": "229d4555da50f27791ae3765994f04ce40371edd"
   },
-  "inputs_digest": "5e6db9d2a53221eedaa7ee174a097bf23cdf4f52daedd6f066008faf89d65d4a",
+  "inputs_digest": "e42dd27067d662643c98a57e0aa296ee5d6477f97a2fbfefc9c68b647e489d72",
   "artifact": {
-    "assets/app.js": "3ac1cf7aafb3f2cc62a06ff7fa2ef988d598377519607411e48816ed83815b7c",
+    "assets/app.js": "f327ad48d25bb27cb1e432ccbb851183c37fcc5ce5aeb3442780afa8aa3d200a",
     "assets/style.css": "6bcdcf7316e0436105b6d3ba227155b0ca5363c90aa9bfc313d71f2d45ac8215",
-    "index.html": "abb5a2ddab99eb0a4e2319f07310d308af3b23f4454d44ba9a78a709b44e29fa"
+    "index.html": "1b0cc30a1c9242befef2234ea73e1ef7415a541fbc0c2e5b81d90d119e5f69d3"
   },
   "sizes_gzip": {
-    "assets/app.js": 75010,
+    "assets/app.js": 75020,
     "assets/style.css": 7169,
-    "index.html": 580,
-    "total": 82759
+    "index.html": 579,
+    "total": 82768
   }
 }

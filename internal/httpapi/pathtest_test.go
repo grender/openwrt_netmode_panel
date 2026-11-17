@@ -217,3 +217,28 @@ func TestPathTestNeedsToken(t *testing.T) {
 		t.Fatalf("код %d", rec.Code)
 	}
 }
+
+// Через мёртвый хоп цепочку не пробуем вовсе: она не ответит заведомо, а
+// на большом пуле такие пробы съедали бюджет и до выхода через ISP-прокси
+// дело не доходило (VM, 17.11.2026).
+func TestPathTestSkipsChainsThroughDeadHops(t *testing.T) {
+	s, f := pathTestServer(t)
+	kill(f, ptHop)
+	got, _ := postPathTest(t, s)
+	if got.Hops[0].State != "fail" {
+		t.Fatalf("hops = %+v", got.Hops)
+	}
+	if c := got.Nodes[0].Chains[0]; c.State != "skipped" {
+		t.Errorf("chain = %+v", c)
+	}
+	if e := got.Nodes[0].Exits[0]; e.State != "ok" || e.Via != "direct" {
+		t.Errorf("exits = %+v", e)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, d := range f.delayed {
+		if d == ptNode+"-dc"+exits.ChainSep+ptHop {
+			t.Errorf("цепочку через мёртвый хоп пробовали: %v", f.delayed)
+		}
+	}
+}

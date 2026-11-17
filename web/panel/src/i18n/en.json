@@ -748,7 +748,7 @@
 	"fails.off.title": "Nothing to check: bypass is off",
 	"fails.off.text": "The map is built from the Nikki engine's groups and nodes. While it is stopped, all traffic goes direct, past the exits.",
 	"fails.test": "Check now",
-	"fails.testing": "probing every link, up to 12 s…",
+	"fails.testing": "probing every link, up to 20 s…",
 	"fails.tested": "checked at {when}, took {sec} s",
 	"fails.untested": "links not checked yet: grey means unknown, not broken",
 	"fails.graph.aria": "Path map: client, router, subscription servers, own nodes, exits, internet",
