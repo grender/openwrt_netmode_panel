@@ -44,6 +44,8 @@ const (
 	// Именно "Happ": это UA, на котором формат снят разведкой, а не тот,
 	// про который мы догадались (docs/recon/happ.md).
 	userAgent = "Happ"
+	// userAgentVersioned — для подписок с ID устройства, см. fetchWith.
+	userAgentVersioned = "Happ/3.8.1"
 )
 
 // ErrNotHTTPS — адрес подписки не по https.
@@ -192,6 +194,14 @@ func fetchWith(ctx context.Context, client *http.Client, rawurl string, opts Fet
 	req.Header.Set("User-Agent", userAgent)
 	if opts.HWID != "" {
 		// Набор — как у клиента Happ. Описание устройства честное: роутер.
+		//
+		// И User-Agent с ВЕРСИЕЙ: провайдеру с лимитом устройств голого
+		// "Happ" мало. Замерено на роутере 17.11.2026 с одним и тем же ID:
+		// на "Happ" приходит base64-список ссылок (text/plain, ~6 КБ),
+		// на "Happ/3.8.1" — массив Xray-конфигов (application/json,
+		// ~180 КБ), который мы и разбираем. Первому провайдеру UA не
+		// меняем: его формат снят на голом "Happ".
+		req.Header.Set("User-Agent", userAgentVersioned)
 		req.Header.Set("x-hwid", opts.HWID)
 		req.Header.Set("x-device-os", "Linux")
 		req.Header.Set("x-ver-os", "OpenWrt")

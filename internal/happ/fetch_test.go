@@ -197,6 +197,9 @@ func TestFetchSendsDeviceHeadersOnlyWithHWID(t *testing.T) {
 	if _, err := fetchWith(context.Background(), srv.Client(), srv.URL+"/s", FetchOpts{}); err != nil {
 		t.Fatal(err)
 	}
+	if got.Get("User-Agent") != userAgent {
+		t.Errorf("без ID User-Agent обязан остаться %q, ушёл %q", userAgent, got.Get("User-Agent"))
+	}
 	for _, h := range []string{"x-hwid", "x-device-os", "x-ver-os", "x-device-model"} {
 		if got.Get(h) != "" {
 			t.Errorf("без ID ушёл заголовок %s", h)
@@ -207,7 +210,9 @@ func TestFetchSendsDeviceHeadersOnlyWithHWID(t *testing.T) {
 	if _, err := fetchWith(context.Background(), srv.Client(), srv.URL+"/s", FetchOpts{HWID: hwid}); err != nil {
 		t.Fatal(err)
 	}
-	if got.Get("x-hwid") != hwid || got.Get("x-device-os") == "" || got.Get("User-Agent") != userAgent {
+	// С ID устройства — User-Agent с версией: на голый "Happ" провайдер с
+	// лимитом устройств отдаёт другой формат (роутер, 17.11.2026).
+	if got.Get("x-hwid") != hwid || got.Get("x-device-os") == "" || got.Get("User-Agent") != userAgentVersioned {
 		t.Errorf("заголовки: %v", got)
 	}
 }
