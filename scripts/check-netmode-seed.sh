@@ -55,3 +55,14 @@ if ! grep -qE "^[[:space:]]*option[[:space:]]+subscription_url[[:space:]]+(''|\"
 fi
 
 echo "-- check-netmode-seed: subscription_url на месте и пуст"
+
+# Дополнительные подписки и ID устройства (ADR-0052) — данные владельца и
+# секреты того же рода: в сиде им не место по той же причине.
+if grep -qE "^[[:space:]]*config[[:space:]]+subscription([[:space:]]|$)" "$SEED" ||
+	grep -qE "^[[:space:]]*option[[:space:]]+hwid[[:space:]]" "$SEED"; then
+	echo "check-netmode-seed: в $SEED есть секция subscription или опция hwid"
+	echo "  Подписки добавляются в панели, ID устройства заводит демон."
+	exit 1
+fi
+
+echo "-- check-netmode-seed: дополнительных подписок и ID устройства в сиде нет"

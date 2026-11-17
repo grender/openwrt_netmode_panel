@@ -102,6 +102,8 @@ func newServer(t *testing.T) (*Server, *executor.Fake) {
 		ExitsProviderPath: filepath.Join(t.TempDir(), "exits.yaml"),
 		SubTokenPath:      filepath.Join(t.TempDir(), "sub-token"),
 		OutboundsPath:     filepath.Join(t.TempDir(), "outbounds.json"),
+		// Кэши подписок — туда же: боевой путь лежит в /etc/netmoded.
+		SubsCacheDir: filepath.Join(t.TempDir(), "subs"),
 		// Каталог наборов ходит в GitHub. Стенд поднимается на КАЖДЫЙ
 		// тест, а не один на пакет: `make verify` обязан быть зелёным
 		// офлайн, а тест, который лезет в сеть, зелёный только дома.

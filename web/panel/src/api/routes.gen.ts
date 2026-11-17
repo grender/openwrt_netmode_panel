@@ -33,6 +33,8 @@ export const ROUTES = {
 	subRotate: '/api/sub/rotate',
 	subscription: '/api/subscription',
 	subscriptionUpdate: '/api/subscription/update',
+	subscriptions: '/api/subscriptions',
+	subscriptionsById: '/api/subscriptions/{id}',
 	upstream: '/api/upstream',
 	watch: '/api/watch',
 	watchHosts: '/api/watch/hosts',

@@ -881,12 +881,12 @@ func TestConvertWSHostFallback(t *testing.T) {
 
 // TestUnknownProtocolBlamesConverter: незнакомый протокол — вина конвертера.
 func TestUnknownProtocolBlamesConverter(t *testing.T) {
-	entries, err := Parse([]byte(`[{"remarks":"🇧🇧Тест","outbounds":[{"tag":"proxy","protocol":"trojan","settings":{},"streamSettings":{}}]}]`))
+	entries, err := Parse([]byte(`[{"remarks":"🇧🇧Тест","outbounds":[{"tag":"proxy","protocol":"wireguard","settings":{},"streamSettings":{}}]}]`))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 	r := entries[0].Reason
-	if !strings.Contains(r, "trojan") || !strings.Contains(r, "нашим конвертером") {
+	if !strings.Contains(r, "wireguard") || !strings.Contains(r, "нашим конвертером") {
 		t.Errorf("причина %q", r)
 	}
 }
@@ -912,5 +912,68 @@ func TestShadowsocksIdentity(t *testing.T) {
 	}
 	if a == c {
 		t.Errorf("разные пароли дали один отпечаток %q", a)
+	}
+}
+
+// TestConvertTrojanGRPC: trojan поверх gRPC с TLS — так его отдаёт второй
+// провайдер (17.11.2026). Значения выдуманы, форма снята с ответа.
+func TestConvertTrojanGRPC(t *testing.T) {
+	raw := []byte(`[{"remarks":"🇧🇧Тест","outbounds":[{"tag":"proxy","protocol":"trojan",
+	  "settings":{"servers":[{"address":"203.0.113.7","port":443,"password":"pw"}]},
+	  "streamSettings":{"network":"grpc","grpcSettings":{"serviceName":"svc","authority":"","mode":false},
+	    "security":"tls","tlsSettings":{"serverName":"sni7.example.net","fingerprint":"chrome"}}}]}]`)
+	entries, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := entries[0]
+	if e.Kind != KindNode || e.Type != "trojan" {
+		t.Fatalf("kind=%s type=%s reason=%q", e.Kind, e.Type, e.Reason)
+	}
+	want := map[string]any{
+		"name": "🇧🇧Тест", "type": "trojan", "server": "203.0.113.7", "port": 443, "password": "pw",
+		"network": "grpc", "sni": "sni7.example.net", "client-fingerprint": "chrome", "udp": true,
+	}
+	for k, v := range want {
+		if e.Proxy[k] != v {
+			t.Errorf("%s = %v, ждали %v", k, e.Proxy[k], v)
+		}
+	}
+	g, _ := e.Proxy["grpc-opts"].(map[string]any)
+	if g["grpc-service-name"] != "svc" {
+		t.Errorf("grpc-opts = %v", e.Proxy["grpc-opts"])
+	}
+	// Узел обязан пережить запись в файл провайдера.
+	if !strings.Contains(string(Render(entries)), `"grpc-service-name"`) {
+		t.Error("grpc-opts не дошёл до файла провайдера")
+	}
+}
+
+// Чего у trojan не переводим — называем, а не выдаём за узел.
+func TestConvertTrojanUnsupported(t *testing.T) {
+	mk := func(settings, stream string) Entry {
+		t.Helper()
+		es, err := Parse([]byte(`[{"remarks":"🇧🇧Тест","outbounds":[{"tag":"proxy","protocol":"trojan","settings":` +
+			settings + `,"streamSettings":` + stream + `}]}]`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return es[0]
+	}
+	srv := `{"servers":[{"address":"203.0.113.7","port":443,"password":"pw"}]}`
+	tls := `"security":"tls","tlsSettings":{"serverName":"s"}`
+	cases := map[string]Entry{
+		"нет сервера":     mk(`{}`, `{"network":"tcp",`+tls+`}`),
+		"нет пароля":      mk(`{"servers":[{"address":"203.0.113.7","port":443}]}`, `{"network":"tcp",`+tls+`}`),
+		"без шифрования":  mk(srv, `{"network":"tcp","security":"none"}`),
+		"чужой транспорт": mk(srv, `{"network":"xhttp",`+tls+`}`),
+	}
+	for name, e := range cases {
+		if e.Kind != KindUnsupported || e.Reason == "" {
+			t.Errorf("%s: kind=%s reason=%q", name, e.Kind, e.Reason)
+		}
+	}
+	if e := mk(srv, `{"network":"tcp",`+tls+`}`); e.Kind != KindNode || e.Proxy["network"] != "tcp" {
+		t.Errorf("trojan tcp+tls: kind=%s reason=%q", e.Kind, e.Reason)
 	}
 }

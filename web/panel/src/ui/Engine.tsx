@@ -178,6 +178,7 @@ function Nikki({ nikki, exits, svcNikki, status, lock, locked, t, onPickProxy, o
 							onClick={() => onPickProxy(m.name)}
 						>
 							<span class="name">{m.name}</span>
+							{m.source ? <span class="tag tag-dim">{m.source}</span> : null}
 							{isActive ? (
 								<span class={`tag ${pinned ? 'tag-pin' : 'tag-dim'}`}>
 									{pinned ? `📌 ${t('srv.tag.pinned')}` : t('srv.tag.auto')}

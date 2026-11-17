@@ -24,6 +24,7 @@ import type {
 	SetsResponse,
 	Status,
 	SubscriptionURL,
+	SubscriptionsResponse,
 	WatchHosts,
 	WatchState,
 } from '../api/types';
@@ -48,6 +49,7 @@ import { Shelf } from './Shelf';
 import { subSummary } from './Subscription';
 import { Uplink } from './Uplink';
 import { Watch, watchSummary } from './Watch';
+import type { SubDraft } from './Subscription';
 import { Fails } from './Fails';
 
 const MODES: Mode[] = ['nikki', 'b4', 'off'];
@@ -91,7 +93,7 @@ export function App() {
 	const sets = useSide<SetsResponse>('b4Sets');
 	const logs = useSide<LogsResponse>('logs');
 	const bridge = useSide<BridgeState>('bridge');
-	const sub = useSide<SubscriptionURL>('subscription');
+	const sub = useSide<SubscriptionsResponse>('subscriptions');
 	const rulesets = useSide<RulesetsResponse>('nikkiRulesets');
 	const catalog = useSide<RulesetsCatalog>('nikkiRulesetsCatalog');
 	const autopool = useSide<AutopoolResponse>('nikkiAutopool');
@@ -407,9 +409,15 @@ export function App() {
 		// сообщивший done, уже несёт её итог.
 		// Провал подписки приходит джобом failed, а не done со строкой fail
 		// (RunOnce возвращает ошибку), — его показывает слот.
-		if (j.kind === 'subscription' && status.subscription?.status === 'ok') {
-			lock.flash(t('sub.done', { n: status.subscription.nodes }), 'ok');
-			return;
+		if (j.kind === 'subscription') {
+			// Итоги по каждой подписке лежат в их списке — перечитать после
+			// любого исхода, а не только удачного.
+			void sub.load();
+			if (status.subscription?.status === 'ok') {
+				if (status.subscription.partial) lock.flash(t('sub.partial'), 'warn');
+				else lock.flash(t('sub.done', { n: status.subscription.nodes }), 'ok');
+				return;
+			}
 		}
 		if (j.kind === 'rulesets') {
 			void (async () => {
@@ -822,27 +830,42 @@ export function App() {
 	// самой (setErr) и ровно один раз: закрытая до ответа, она при 400
 	// «адрес не разбирается» уносила вставленный адрес с токеном, и его
 	// приходилось искать и вставлять заново.
-	const onSaveURL = (url: string, setErr: (s: string) => void, done: () => void) =>
+	const onSaveSub = (id: string | null, d: SubDraft, setErr: (s: string) => void, done: () => void) =>
 		void lock.act(
 			'suburl',
 			async () => {
-				let r: SubscriptionURL;
+				// Основная подписка правится прежним путём и отвечает прежней
+				// формой; остальные — списком. После любой записи список
+				// перечитывается: источник правды — демон.
+				let fetchable = true;
 				try {
-					r = await api<SubscriptionURL>('subscription', {
-						method: 'PUT',
-						body: JSON.stringify({ url }),
-					});
+					if (id === 'main') {
+						const r = await api<SubscriptionURL>('subscriptionsById', {
+							method: 'PUT',
+							params: { id },
+							body: JSON.stringify({ url: d.url }),
+						});
+						fetchable = r.configured;
+					} else if (id === null) {
+						await api<SubscriptionsResponse>('subscriptions', { method: 'POST', body: JSON.stringify(d) });
+					} else {
+						await api<SubscriptionsResponse>('subscriptionsById', {
+							method: 'PUT',
+							params: { id },
+							body: JSON.stringify(d),
+						});
+					}
 				} catch (e) {
 					setErr(describe(e, t));
 					return;
 				}
 				done();
-				sub.put(r);
-				// Кнопка обещает «Сохранить и скачать», а PUT только пишет
-				// адрес. Скачивание запускается здесь же, под тем же замком:
+				await sub.load();
+				// Кнопка обещает «Сохранить и скачать», а запись только пишет
+				// настройку. Скачивание запускается здесь же, под тем же замком:
 				// иначе владелец видел «сохранено» и ждал узлов, которых
 				// никто не качал до расписания.
-				if (!r.configured) {
+				if (!fetchable) {
 					lock.flash(t('sub.url.saved'), 'ok');
 					return;
 				}
@@ -850,12 +873,24 @@ export function App() {
 				try {
 					poll.sow(await post<JobAccepted>('subscriptionUpdate', {}));
 				} catch (e) {
-					// Адрес СОХРАНЁН — общее «не удалось» читалось бы как
+					// Настройка СОХРАНЕНА — общее «не удалось» читалось бы как
 					// «ничего не записалось».
 					lock.flash(t('sub.url.saved.nofetch', { why: describe(e, t) }), 'warn');
 				}
 			},
 			async () => {},
+		);
+
+	// Удаление — джоб: секция, кэш и пересборка пула из остальных подписок.
+	const onDeleteSub = (id: string) =>
+		void lock.act(
+			`subdel:${id}`,
+			async () => {
+				poll.sow(await api<JobAccepted>('subscriptionsById', { method: 'DELETE', params: { id } }));
+			},
+			async () => {
+				await sub.load();
+			},
 		);
 
 	// Ссылка на морду Nikki ходит за адресом с секретом (до восьми секунд),
@@ -1144,11 +1179,12 @@ export function App() {
 						setDraft={setRulesDraft}
 						onApplyRules={onApplyRules}
 						onLoadCatalog={onLoadCatalog}
-						sub={sub.value}
+						subs={sub.value}
 						logs={logs.value}
 						nikki={nikki.value}
 						onUpdateSub={onUpdateSub}
-						onSaveURL={onSaveURL}
+						onSaveSub={onSaveSub}
+						onDeleteSub={onDeleteSub}
 						bridge={bridge.value}
 						onBridgeProbe={onBridgeProbe}
 						onBridgeAccess={onBridgeAccess}

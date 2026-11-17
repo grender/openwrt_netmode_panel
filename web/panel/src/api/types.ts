@@ -47,6 +47,8 @@ export interface Subscription {
 	status: string;
 	nodes: number;
 	error: string | null;
+	/** Обновление прошло, но часть подписок осталась прошлыми узлами (ADR-0052). */
+	partial?: boolean;
 }
 
 export interface Fail {
@@ -143,6 +145,8 @@ export interface Proxy {
 	selectable: boolean;
 	kind: ProxyKind;
 	reason?: string;
+	/** Имя подписки, если узел не из основной (ADR-0052). */
+	source?: string;
 }
 
 export interface ProbeSummary {
@@ -220,6 +224,33 @@ export interface BridgeState {
 }
 
 // ─────────── подписка и журнал ───────────
+
+/** Итог последней попытки по одной подписке. */
+export interface SubscriptionLast {
+	id: string;
+	at: string;
+	/** Когда в последний раз получилось: узлы в пуле — от этого момента. */
+	ok_at: string | null;
+	status: 'ok' | 'fail';
+	nodes: number;
+	error: string;
+}
+
+/** Одна подписка (ADR-0052). Адреса и ID устройства здесь нет и не будет. */
+export interface SubscriptionSource {
+	id: string;
+	/** У основной (id main) пусто — её подписывает панель. */
+	label: string;
+	configured: boolean;
+	masked: string;
+	hwid: boolean;
+	last: SubscriptionLast | null;
+}
+
+export interface SubscriptionsResponse {
+	max: number;
+	sources: SubscriptionSource[];
+}
 
 export interface SubscriptionURL {
 	configured: boolean;

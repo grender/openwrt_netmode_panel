@@ -150,13 +150,23 @@ func loadConfig(ctx context.Context, ex executor.Executor) (httpapi.Config, erro
 	// internal, где ответ уже умеет не показывать секрет (ADR-0012).
 	subURL := get("subscription_url", "")
 
+	// Дополнительные подписки и ID устройства (ADR-0052) — те же секреты,
+	// печатать нельзя по той же причине. Пакет не читается — подписка одна.
+	var extra []httpapi.SubSourceConfig
+	hwid := ""
+	if raw, err := ex.UCIShow(ctx, "netmode"); err == nil {
+		extra, hwid = httpapi.ParseSubSources(raw)
+	}
+
 	return httpapi.Config{
-		Listen:          listen,
-		Port:            port,
-		Token:           token,
-		NikkiURL:        nikkiURL(ctx, ex),
-		NikkiSecret:     get2(ctx, ex, "nikki", "mixin", "api_secret"),
-		SubscriptionURL: subURL,
+		Listen:              listen,
+		Port:                port,
+		Token:               token,
+		NikkiURL:            nikkiURL(ctx, ex),
+		NikkiSecret:         get2(ctx, ex, "nikki", "mixin", "api_secret"),
+		SubscriptionURL:     subURL,
+		SubscriptionSources: extra,
+		SubscriptionHWID:    hwid,
 	}, nil
 }
 

@@ -18,6 +18,7 @@ package sched
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -283,6 +284,12 @@ func (s *Scheduler) RunOnce(ctx context.Context) (happ.Summary, error) {
 		err = errors.New(entry.Err)
 	default:
 		entry.Status = logs.StatusOK
+		// Часть подписок не обновилась и осталась прошлыми узлами
+		// (ADR-0052): обновление удалось, но молчать об этом нельзя.
+		// Формат записи прежний — ok с непустым err и есть «частично».
+		if len(sum.Partial) > 0 {
+			entry.Err = "не обновились, узлы оставлены прежние — " + strings.Join(sum.Partial, "; ")
+		}
 	}
 
 	// Сбой записи журнала не отменяет сделанного: подписка уже обновилась

@@ -1634,6 +1634,146 @@ paths:
         "502": { $ref: "#/components/responses/B4Error" }
         "503": { $ref: "#/components/responses/B4Unavailable" }
 
+  /api/subscriptions:
+    get:
+      tags: [subscription]
+      summary: Все подписки — маски адресов и итог последней попытки по каждой
+      description: |
+        Несколько подписок сливаются в один список узлов (ADR-0052). Первая в
+        ответе — основная (`id: main`, `netmode.main.subscription_url`), её
+        нельзя удалить; остальные — секции `config subscription` в
+        `/etc/config/netmode`.
+
+        **Адрес и ID устройства не отдаются никогда** (ADR-0012, ADR-0034):
+        только маска и признак `hwid`. У подписки без параметров запроса
+        секрет лежит в пути — у неё последний сегмент пути заменён на `…`.
+
+        `last` — итог последней попытки ЭТОЙ подписки, из её кэша: подписка,
+        не скачавшаяся в этот раз, остаётся в общем списке прошлыми узлами
+        (`status: fail`, `nodes` и `ok_at` — от прошлой удачи).
+      responses:
+        "200":
+          description: Список подписок
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [subscription]
+      summary: Добавить подписку
+      description: |
+        Пишет секцию `config subscription '<id>'` и коммитит `netmode`; `id`
+        выводится из имени. С `hwid: true` роутеру при необходимости заводится
+        ID устройства (`netmode.main.hwid`, один на все подписки) — он уходит
+        провайдеру заголовком `x-hwid` и займёт у него слот устройства.
+
+        Скачивание не запускается: за ним — `POST /api/subscription/update`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubscriptionCreate" }
+      responses:
+        "201":
+          description: Подписка записана. Тело — обновлённый список.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionsResponse" }
+        "400":
+          description: "`bad_request` — имя или адрес не годятся; текст называет, что именно. Адрес в текст не попадает."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: "`too_many_subscriptions` — подписок уже четыре."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: "`write_failed` или `commit_failed` — как у `PUT /api/subscription`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/subscriptions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, pattern: "^[a-z0-9]{1,16}$" }
+        description: "`main` или id секции из `GET /api/subscriptions`."
+    put:
+      tags: [subscription]
+      summary: Изменить подписку
+      description: |
+        Меняются только присланные поля. Пустой `url` — «оставить прежний»:
+        панель адреса не знает и вернуть его не может. У `main` меняется
+        только адрес, тем же путём и с теми же ответами, что
+        `PUT /api/subscription` (пустой `url` его стирает).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubscriptionPatch" }
+      responses:
+        "200":
+          description: Записано. Тело — обновлённый список (у `main` — как у `PUT /api/subscription`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/SubscriptionsResponse"
+                  - $ref: "#/components/schemas/SubscriptionURL"
+        "400":
+          description: "`bad_request`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`unknown_subscription` — подписки с таким id нет."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: "`write_failed` или `commit_failed`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [subscription]
+      summary: Удалить подписку и убрать её узлы из общего списка
+      description: |
+        Джоб (`kind: subscription`): секция и кэш подписки удаляются, общий
+        список пересобирается из кэшей остальных — без похода в сеть.
+        Закреплённый на удалённом узле туннель или хоп закрывается, а не
+        уходит на другой сервер.
+
+        Занято — `409 job_busy`, и не тронуто ничего.
+      responses:
+        "202":
+          description: Джоб принят
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobAccepted" }
+        "400":
+          description: "`main_subscription` — основную удалить нельзя, очистите её адрес."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`unknown_subscription`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`job_busy`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/subscription:
     get:
       tags: [subscription]
@@ -3326,13 +3466,19 @@ components:
         обновление. Последнее — из последней строки `/etc/nikki/updates.log`,
         то есть из файла, а не из памяти: после перезапуска демона картина
         обязана сходиться (SPEC §12).
-      required: [configured, last_update, status, nodes, error]
+      required: [configured, last_update, status, nodes, error, partial]
       additionalProperties: false
       properties:
+        partial:
+          type: boolean
+          description: |
+            Обновление прошло, но часть подписок не скачалась и осталась в
+            общем списке прошлыми узлами (ADR-0052); кто и почему — в `error`.
+            При `status` не `ok` всегда `false`.
         configured:
           type: boolean
           description: |
-            Задан ли `netmode.main.subscription_url`.
+            Задан ли адрес хотя бы одной подписки.
 
             Поле существует потому, что по остальным трём это **не
             выводится**: у незаданного адреса и у заданного, но ни разу не
@@ -3781,6 +3927,11 @@ components:
           description: >-
             Почему строка непригодна. **Ключ отсутствует**, если пусто
             (`omitempty`); непуст только при `kind: unsupported`.
+        source:
+          type: string
+          description: >-
+            Имя подписки, из которой узел, если она не основная (ADR-0052).
+            **Ключ отсутствует** у узлов основной подписки.
 
     AutopoolRequest:
       type: object
@@ -4459,6 +4610,55 @@ components:
                 description: Не уникален и ключом не является.
               enabled: { type: boolean }
 
+    SubscriptionSource:
+      type: object
+      required: [id, label, configured, masked, hwid, last]
+      additionalProperties: false
+      properties:
+        id: { type: string, examples: ["main", "second"] }
+        label: { type: string, description: "Имя подписки; у `main` пусто — её подписывает панель." }
+        configured: { type: boolean }
+        masked: { type: string, description: "Маска адреса. Ни одного символа секрета." }
+        hwid: { type: boolean, description: "Шлётся ли этой подписке ID устройства роутера. Сам ID не отдаётся." }
+        last:
+          description: "`null` — эту подписку ещё не пробовали скачать."
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [id, at, ok_at, status, nodes, error]
+              additionalProperties: false
+              properties:
+                id: { type: string }
+                at: { type: string, format: date-time, description: "Когда пробовали в последний раз." }
+                ok_at: { type: [string, "null"], format: date-time, description: "Когда в последний раз получилось: узлы в общем списке — от этого момента." }
+                status: { type: string, enum: [ok, fail] }
+                nodes: { type: integer, description: "Узлов этой подписки в общем списке." }
+                error: { type: string, description: "Причина отказа; пусто при `ok`." }
+    SubscriptionsResponse:
+      type: object
+      description: Тело `GET /api/subscriptions`, а также ответ на добавление и правку.
+      required: [max, sources]
+      additionalProperties: false
+      properties:
+        max: { type: integer, description: "Потолок числа подписок вместе с основной." }
+        sources:
+          type: array
+          items: { $ref: "#/components/schemas/SubscriptionSource" }
+    SubscriptionCreate:
+      type: object
+      required: [label, url]
+      additionalProperties: false
+      properties:
+        label: { type: string, maxLength: 24, description: "Без `·` и знаков `, ; | > ' \" \\`: имя уходит хвостом в имена совпавших узлов." }
+        url: { type: string, writeOnly: true }
+        hwid: { type: boolean, default: false }
+    SubscriptionPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        label: { type: string, maxLength: 24 }
+        url: { type: string, writeOnly: true, description: "Пусто — оставить прежний." }
+        hwid: { type: boolean }
     SubscriptionURL:
       type: object
       description: |

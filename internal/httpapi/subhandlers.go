@@ -41,7 +41,7 @@ func (s *Server) handleSubscriptionUpdate(w http.ResponseWriter, r *http.Request
 	// что с появлением PUT /api/subscription (ADR-0034) там лежит снимок,
 	// сделанный при старте: владелец задал бы адрес и продолжал получать
 	// «не задан» до перезапуска демона.
-	if !s.subURL.configured() {
+	if !s.anySubConfigured() {
 		writeErr(w, http.StatusConflict, "subscription_not_configured",
 			"Адрес подписки не задан. Задайте его в панели — раздел «Подписка», "+
 				"или на роутере: uci set netmode.main.subscription_url='…' && uci commit netmode")

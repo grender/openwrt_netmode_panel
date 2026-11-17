@@ -13,7 +13,7 @@ import type {
 	RulesetsCatalog,
 	RulesetsResponse,
 	Status,
-	SubscriptionURL,
+	SubscriptionsResponse,
 } from '../api/types';
 import type { Lang, T } from '../i18n';
 import type { Lock } from '../state/lock';
@@ -24,7 +24,7 @@ import { Bridge, bridgeProblem, bridgeSummary } from './Bridge';
 import { Hops, hopsSummary } from './Hops';
 import { Phones, phonesSummary } from './Phones';
 import { Rulesets, rulesSummary } from './Rulesets';
-import { Subscription, subSummary } from './Subscription';
+import { Subscription, subSummary, type SubDraft } from './Subscription';
 
 /** Разделы экрана настроек — они же хеши адреса: #routes, #hops, #phones, #sub, #bridge. */
 export type SettingsRow = 'routes' | 'pool' | 'hops' | 'phones' | 'sub' | 'bridge';
@@ -65,11 +65,12 @@ export interface SettingsProps {
 	subLink: Side<SubLinkResponse>;
 	onRotateSub(first: boolean): void;
 
-	sub: Side<SubscriptionURL>;
+	subs: Side<SubscriptionsResponse>;
 	logs: Side<LogsResponse>;
 	nikki: Side<ProxiesResponse>;
 	onUpdateSub(): void;
-	onSaveURL(url: string, setErr: (s: string) => void, done: () => void): void;
+	onSaveSub(id: string | null, d: SubDraft, setErr: (s: string) => void, done: () => void): void;
+	onDeleteSub(id: string): void;
 
 	bridge: Side<BridgeState>;
 	onBridgeProbe(): void;
@@ -153,7 +154,7 @@ export function Settings(p: SettingsProps) {
 			<Section id="sub" title={t('shelf.sub')} summary={subSummary(p.status, p.lang, t)} wide={wide} open={open('sub')} onToggle={() => p.onRow('sub')} t={t} full>
 				<Subscription
 					status={p.status}
-					sub={p.sub}
+					subs={p.subs}
 					logs={p.logs}
 					nikki={p.nikki}
 					lang={p.lang}
@@ -162,7 +163,8 @@ export function Settings(p: SettingsProps) {
 					running={p.running}
 					t={t}
 					onUpdate={p.onUpdateSub}
-					onSaveURL={p.onSaveURL}
+					onSave={p.onSaveSub}
+					onDelete={p.onDeleteSub}
 				/>
 			</Section>
 

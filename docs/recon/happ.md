@@ -250,3 +250,32 @@ SS-узлов не содержит вовсе — только vless 25 и hyst
 - **`PUT /providers/proxies/sub` живьём.** Форма ответа и поведение при битом
   провайдере не снимались. Путь берётся из документации Clash API — в отличие
   от остального в [`nikki.md`](nikki.md), замера у него нет.
+
+## Второй провайдер: лимит устройств и `x-hwid` (2026-11-17)
+
+Снято одним запросом с рабочей машины, не с роутера. Панель провайдера —
+типа Remnawave (заголовки `x-hwid-*`, `profile-update-interval`,
+`subscription-userinfo`). Фикстура —
+`internal/happ/testdata/subscription-second.json`, обезличена по правилам
+[`README.md`](README.md); длинные списки доменов и подсетей в `dns` и
+`routing` обрезаны до четырёх записей — конвертер их не читает.
+
+| Запрос | Ответ |
+|---|---|
+| `User-Agent: Happ/…`, `curl`, `v2rayN` — без `x-hwid` | `200`, base64 двух `vless://`-заглушек на `0.0.0.0:1` с именами «Приложение не поддерживается» и «Пожалуйста установите Happ либо Incy»; заголовки `x-hwid-active: true`, `x-hwid-limit: true`, `x-hwid-not-supported: true` |
+| `User-Agent: clash.meta` — без `x-hwid` | `200`, Clash-профиль ~30 КБ с теми же двумя заглушками вместо узлов |
+| `User-Agent: Happ/3.8.1` + `x-hwid`, `x-device-os`, `x-ver-os`, `x-device-model` | `200 application/json`, ~180 КБ: массив из 14 Xray-конфигов — тот же формат, что у первого провайдера |
+
+Что внутри ответа с `x-hwid`: 13 серверов и один балансировщик «самый
+быстрый» (11 outbound с тегами `PRIMARY_*`/`FREE_*`, без тега `proxy` —
+конвертер делает из него `auto` с пулом). Серверы: vless tcp+reality+vision,
+vless xhttp+tls, один vless tcp+tls+vision и один **trojan grpc+tls** —
+ради него в конвертер добавлен trojan.
+
+Ключи `xhttpSettings.extra`, которых конвертер не знает: `maxConcurrency`,
+`hMaxRequestTimes`, `hMaxReusableSecs` — узлы собираются без них.
+
+**Не проверено:** хватает ли провайдеру `User-Agent: Happ` без версии вместе
+с `x-hwid` (запрос шёл с версией); работа узлов на движке — снята только
+форма ответа; заголовок `x-hwid-max-devices-reached` — по документации
+панели, живьём не наблюдался.

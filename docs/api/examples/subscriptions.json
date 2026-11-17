@@ -1,0 +1,35 @@
+{
+  "max": 4,
+  "sources": [
+    {
+      "configured": true,
+      "hwid": false,
+      "id": "main",
+      "label": "",
+      "last": {
+        "at": "2026-11-17T02:10:04Z",
+        "error": "",
+        "id": "main",
+        "nodes": 37,
+        "ok_at": "2026-11-17T02:10:04Z",
+        "status": "ok"
+      },
+      "masked": "https://sub.example.net/api/v1/client/subscribe?token=…"
+    },
+    {
+      "configured": true,
+      "hwid": true,
+      "id": "second",
+      "label": "Вторая",
+      "last": {
+        "at": "2026-11-17T02:10:05Z",
+        "error": "happ: подписка ответила кодом 403",
+        "id": "second",
+        "nodes": 13,
+        "ok_at": "2026-11-16T17:00:02Z",
+        "status": "fail"
+      },
+      "masked": "https://second.example.net/…"
+    }
+  ]
+}

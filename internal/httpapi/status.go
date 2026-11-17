@@ -208,6 +208,9 @@ type Subscription struct {
 	Status     string  `json:"status"`
 	Nodes      int     `json:"nodes"`
 	Error      *string `json:"error"`
+	// Partial — обновление прошло, но часть подписок осталась прошлыми
+	// узлами (ADR-0052); причина — в error. При status != ok всегда false.
+	Partial bool `json:"partial"`
 }
 
 // Fail — последняя неудачная смена внешней сети (см. failStore).
@@ -603,6 +606,7 @@ func (r *StatusReader) build(ctx context.Context) *Status {
 				msg := e.Err
 				sub.Error = &msg
 			}
+			sub.Partial = e.Status == logs.StatusOK && e.Err != ""
 			s.Subscription = sub
 		} else {
 			// «Обновлений не было» — состояние и заданного адреса тоже:

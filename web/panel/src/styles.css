@@ -1175,3 +1175,28 @@ button.row { cursor: pointer; }
 .f-net { color: var(--muted-2); text-transform: uppercase; font-size: 10.5px; }
 .f-cnt { color: var(--muted); }
 .f-err { color: var(--muted-2); overflow-wrap: anywhere; flex-basis: 100%; }
+
+/* ── несколько подписок (ADR-0052) ── */
+
+.s-head { display: flex; justify-content: space-between; align-items: baseline; }
+.s-count { font: 11px var(--mono); color: var(--muted-2); letter-spacing: 0; }
+.s-list { display: flex; flex-direction: column; gap: 9px; }
+.s-src {
+	display: flex; flex-direction: column; gap: 8px; padding: 12px 14px;
+	background: var(--row); border-radius: var(--r-lg);
+}
+.s-top, .s-bottom { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.s-name { font: 600 14px var(--sans); }
+.s-name .tag { font: 11px var(--mono); color: var(--muted-2); font-weight: 400; }
+.s-res { margin-left: auto; font: 12px var(--mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }
+.s-res.ok { color: var(--ok); }
+.s-res.bad { color: var(--bad); }
+.s-url {
+	flex: 1 1 12ch; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	font: 12px var(--mono); color: var(--muted);
+}
+.s-acts { display: flex; gap: 8px; margin-left: auto; }
+.s-acts button { width: auto; padding: 0 12px; }
+.s-form { display: flex; flex-direction: column; gap: 10px; }
+.s-check { display: flex; gap: 10px; align-items: center; font: 13.5px var(--sans); cursor: pointer; }
+.s-check input { width: 18px; height: 18px; accent-color: var(--nikki); }

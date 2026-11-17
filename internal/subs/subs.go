@@ -23,4 +23,7 @@ type Member struct {
 	Kind happ.Kind `json:"kind"`
 	// Reason непуст только у happ.KindUnsupported.
 	Reason string `json:"reason,omitempty"`
+	// Source — имя подписки, из которой узел, если она не основная
+	// (ADR-0052). Ставит обработчик: Order знает только id источника.
+	Source string `json:"source,omitempty"`
 }

@@ -66,6 +66,9 @@ const SCENARIOS = {
 	// fail. Проверяет, что панель перечитывает журнал и после провала, а не
 	// только после удачи.
 	'sub-fail': 'status-single.json',
+	// Несколько подписок (ADR-0052): добавленные в панели подписки не
+	// скачиваются и остаются прошлыми узлами — итог «частично».
+	'sub-partial': 'status-single.json',
 	// Адрес роутера не выводится из Host. Статус обычный и движок отвечает —
 	// смотреть надо именно на шапку: кнопки нет, хотя движок жив.
 	'host-unknown': 'status-single.json',
@@ -968,7 +971,7 @@ async function handleAPI(req, res, u) {
 		const last = state.sub.log && state.sub.log[0];
 		s.subscription = {
 			...s.subscription,
-			...(last ? { last_update: last.ts, status: last.status, nodes: last.nodes, error: last.err || null } : {}),
+			...(last ? { last_update: last.ts, status: last.status, nodes: last.nodes, error: last.err || null, partial: last.status === 'ok' && !!last.err } : {}),
 			configured: state.sub.configured !== undefined
 				? state.sub.configured
 				: state.scenario !== 'sub-unset',
@@ -1709,6 +1712,104 @@ async function handleAPI(req, res, u) {
 		? state.sub.url
 		: (state.scenario === 'sub-unset' ? '' : 'https://sub.example.net/api/v1/client/subscribe?token=S3CRET'));
 
+	// Несколько подписок (ADR-0052). Основная — прежний адрес мока; остальные
+	// живут в state.sub.extra. Адресов наружу мок не отдаёт так же, как демон.
+	const subExtra = () => (state.sub.extra = state.sub.extra || []);
+	const maskPath = (raw) => {
+		try {
+			const u = new URL(raw);
+			if (u.search) return maskSub(raw);
+			return u.origin + u.pathname.replace(/\/+$/, '').replace(/[^/]*$/, '…');
+		} catch { return 'адрес задан, но не разбирается как URL'; }
+	};
+	const subsBody = () => {
+		const raw = subURL();
+		const log = state.sub.log && state.sub.log[0];
+		const at = log ? log.ts : '2026-11-17T02:10:04Z';
+		const main = {
+			id: 'main', label: '', configured: raw !== '', masked: maskSub(raw), hwid: false,
+			last: raw === '' ? null : { id: 'main', at, ok_at: at, status: 'ok', nodes: 37, error: '' },
+		};
+		return {
+			max: 4,
+			sources: [main, ...subExtra().map((e) => ({
+				id: e.id, label: e.label, configured: true, masked: maskPath(e.url), hwid: e.hwid,
+				last: e.tried
+					? (state.scenario === 'sub-partial'
+						? { id: e.id, at, ok_at: '2026-11-16T17:00:02Z', status: 'fail', nodes: 13, error: 'happ: подписка ответила кодом 403' }
+						: { id: e.id, at, ok_at: at, status: 'ok', nodes: 13, error: '' })
+					: null,
+			}))],
+		};
+	};
+	const labelProblem = (label, self) => {
+		if (!label) return 'Имя подписки не задано';
+		if ([...label].length > 24) return 'Имя подписки длиннее 24 знаков';
+		if (label.includes('·')) return 'В имени подписки нельзя «·»';
+		if (label.toLowerCase() === 'основная') return 'Имя «Основная» занято первой подпиской';
+		if (subExtra().some((e) => e.id !== self && e.label.toLowerCase() === label.toLowerCase())) return 'Подписка с таким именем уже есть';
+		return '';
+	};
+	const urlProblem = (raw) => {
+		let u;
+		try { u = new URL(raw); } catch { u = null; }
+		if (!u || !u.host) return 'Адрес не разбирается как URL';
+		if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'Адрес подписки обязан начинаться с http:// или https://';
+		return '';
+	};
+	if (p === '/api/subscriptions' && method === 'GET') return send(res, 200, subsBody());
+	if (p === '/api/subscriptions' && method === 'POST') {
+		const body = await readBody(req);
+		if (!body) return fail(res, 400, 'bad_request', 'Тело запроса не разбирается как JSON');
+		if (subExtra().length + 1 >= 4) return fail(res, 409, 'too_many_subscriptions', 'Подписок уже четыре — больше нельзя');
+		const label = String(body.label || '').trim();
+		const raw = String(body.url || '').trim();
+		const bad = labelProblem(label, '') || (raw === '' ? 'Адрес подписки не задан' : urlProblem(raw));
+		if (bad) return fail(res, 400, 'bad_request', bad);
+		const base = label.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12) || 'sub';
+		let id = base;
+		for (let n = 2; id === 'main' || subExtra().some((e) => e.id === id); n++) id = base + n;
+		subExtra().push({ id, label, url: raw, hwid: !!body.hwid, tried: false });
+		return send(res, 201, subsBody());
+	}
+	const subM = /^\/api\/subscriptions\/([a-z0-9]{1,16})$/.exec(p);
+	if (subM && method === 'PUT') {
+		const body = await readBody(req);
+		if (!body) return fail(res, 400, 'bad_request', 'Тело запроса не разбирается как JSON');
+		if (subM[1] === 'main') {
+			const raw = String(body.url || '').trim();
+			if (raw !== '' && urlProblem(raw)) return fail(res, 400, 'bad_request', urlProblem(raw));
+			state.sub.url = raw;
+			state.sub.configured = raw !== '' || subExtra().length > 0;
+			return send(res, 200, { configured: raw !== '', masked: maskSub(raw) });
+		}
+		const e = subExtra().find((x) => x.id === subM[1]);
+		if (!e) return fail(res, 404, 'unknown_subscription', 'Такой подписки нет');
+		if (typeof body.label === 'string') {
+			const bad = labelProblem(body.label.trim(), e.id);
+			if (bad) return fail(res, 400, 'bad_request', bad);
+			e.label = body.label.trim();
+		}
+		if (typeof body.url === 'string' && body.url.trim() !== '') {
+			const bad = urlProblem(body.url.trim());
+			if (bad) return fail(res, 400, 'bad_request', bad);
+			e.url = body.url.trim();
+		}
+		if (typeof body.hwid === 'boolean') e.hwid = body.hwid;
+		return send(res, 200, subsBody());
+	}
+	if (subM && method === 'DELETE') {
+		if (subM[1] === 'main') return fail(res, 400, 'main_subscription', 'Основную подписку удалить нельзя — очистите её адрес');
+		if (!subExtra().some((x) => x.id === subM[1])) return fail(res, 404, 'unknown_subscription', 'Такой подписки нет');
+		if (busyJob()) return fail(res, 409, 'job_busy', 'Уже идёт другая операция');
+		startJob('subscription', '', 'Удаление подписки и пересборка пула', 2, () => {
+			state.sub.extra = subExtra().filter((x) => x.id !== subM[1]);
+			state.sub.log = [{ ts: nowISO(), nodes: 37 + 13 * state.sub.extra.length, status: 'ok', err: '' }, ...(state.sub.log || [])];
+			state.job.state = 'done';
+		});
+		return send(res, 202, { job: state.job });
+	}
+
 	if (p === '/api/subscription' && method === 'GET') {
 		const raw = subURL();
 		return send(res, 200, { configured: raw !== '', masked: maskSub(raw) });
@@ -1739,10 +1840,16 @@ async function handleAPI(req, res, u) {
 		// до этого момента журнал и сводка обязаны показывать старое.
 		startJob('subscription', '', 'Обновление подписки', 4, () => {
 			const failing = state.scenario === 'sub-fail';
+			// Вторая и следующие подписки: каждая добавляет 13 узлов; в сценарии
+			// sub-partial они не скачиваются и остаются прошлыми узлами.
+			const extra = state.sub.extra || [];
+			extra.forEach((e) => { e.tried = true; });
+			const partial = state.scenario === 'sub-partial' && extra.length > 0;
+			const nodes = (extra.length ? 37 : 42) + 13 * extra.length;
 			state.sub.log = [
 				failing
 					? { ts: nowISO(), nodes: 0, status: 'fail', err: 'конвертер вернул 0 узлов, файл провайдера не перезаписан' }
-					: { ts: nowISO(), nodes: 42, status: 'ok', err: '' },
+					: { ts: nowISO(), nodes, status: 'ok', err: partial ? 'не обновились, узлы оставлены прежние — ' + extra.map((e) => e.label + ': happ: подписка ответила кодом 403').join('; ') : '' },
 				...(state.sub.log || []),
 			];
 			if (failing) {

@@ -22,6 +22,7 @@ import (
 	"netmoded/internal/led"
 	"netmoded/internal/logs"
 	"netmoded/internal/luci"
+	"netmoded/internal/mixin"
 	"netmoded/internal/nikki"
 	"netmoded/internal/safe"
 	"netmoded/internal/sched"
@@ -61,6 +62,13 @@ type Config struct {
 	// наружу он не уходит ни одним путём — ни в /api/status, ни в текст
 	// ошибки, ни в журнал демона (ADR-0012).
 	SubscriptionURL string
+	// SubscriptionSources — дополнительные подписки из секций
+	// `config subscription` (ADR-0052); SubscriptionHWID — ID устройства
+	// роутера для тех из них, кому он нужен. Оба — секреты, как адрес.
+	SubscriptionSources []SubSourceConfig
+	SubscriptionHWID    string
+	// SubsCacheDir — каталог кэшей подписок; пусто — путь по умолчанию.
+	SubsCacheDir string
 	// ProviderPath и ManifestPath — куда обновление кладёт файл провайдера
 	// и манифест. Пусто → константы ниже. Это НЕ настройка владельца:
 	// loadConfig их не читает, в /etc/config/netmode их нет и не будет
@@ -137,6 +145,11 @@ type Server struct {
 	// сделанным при старте, а читателей у него три — гейт обновления,
 	// расписание и признак Configured в статусе.
 	subURL *subURLStore
+	// subExtra — дополнительные подписки и ID устройства (ADR-0052).
+	subExtra *subSources
+	// subUpdater — ради итогов по источникам и пересборки из кэшей.
+	subUpdater   *subs.Updater
+	subRefresher *manifestRefresher
 	// Кэш проб моста: ping держит запрос секунды, а вкладку панель
 	// перезапрашивает часто.
 	bridgeProbeMu  sync.Mutex
@@ -242,6 +255,9 @@ const (
 	// для подписки телефонов (happ.RenderOutbounds). Права — как у
 	// провайдера: внутри учётные данные.
 	outboundsPath = "/etc/netmoded/outbounds.json"
+	// subsCacheDir — кэши подписок: последний удачный разбор каждой
+	// (ADR-0052). Узлы там целиком, поэтому каталог 0700, файлы 0600.
+	subsCacheDir = "/etc/netmoded/subs"
 )
 
 // apiError — единая форма ошибки (docs/contracts/errors.md).
@@ -312,6 +328,9 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 	if cfg.OutboundsPath == "" {
 		cfg.OutboundsPath = outboundsPath
 	}
+	if cfg.SubsCacheDir == "" {
+		cfg.SubsCacheDir = subsCacheDir
+	}
 	s.subSeen = &subClients{}
 	s.cfg = cfg
 	// Каталог наборов. Нулевой Client рабочий: боевой адрес, HTTP-клиент и
@@ -319,8 +338,10 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 	s.catalog = &geosite.Client{BaseURL: cfg.CatalogBaseURL, Logf: logf}
 	s.rulesetsWait, s.rulesetsPoll = rulesetsWait, rulesetsPoll
 	s.subURL = &subURLStore{v: cfg.SubscriptionURL}
+	s.subExtra = &subSources{extra: append([]SubSourceConfig(nil), cfg.SubscriptionSources...), hwid: cfg.SubscriptionHWID}
 	up := &subs.Updater{
-		URL:           s.subURL.get,
+		Sources:       s.updaterSources,
+		CacheDir:      cfg.SubsCacheDir,
 		ProviderPath:  cfg.ProviderPath,
 		ManifestPath:  cfg.ManifestPath,
 		OutboundsPath: cfg.OutboundsPath,
@@ -335,7 +356,17 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 			if s.nikki == nil {
 				return errors.New("subs: клиент Clash API не настроен, провайдера перечитать некому")
 			}
-			return s.nikki.ReloadProvider(ctx, providerName)
+			if err := s.nikki.ReloadProvider(ctx, providerName); err != nil {
+				return err
+			}
+			// Авто-пул читает ТОТ ЖЕ файл своим провайдером, и без второй
+			// перечитки новые узлы не попадали в AUTO до перезапуска nikki.
+			// Отказ здесь — не отказ обновления: в профиле без авто-пула
+			// этого провайдера просто нет.
+			if err := s.nikki.ReloadProvider(ctx, mixin.AutoProviderName); err != nil {
+				s.logf("подписка: провайдер %s не перечитан: %v", mixin.AutoProviderName, err)
+			}
+			return nil
 		},
 		// Сверка после перечитывания: 204 от движка не значит «прочитал наш
 		// файл» (см. subs.ErrProviderIgnored). Замыкание по той же причине,
@@ -348,7 +379,9 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 		},
 		Logf: s.logf,
 	}
-	s.sched = sched.New(&manifestRefresher{up: up, srv: s}, s.logs, cfg.SubInterval, s.logf)
+	s.subUpdater = up
+	s.subRefresher = &manifestRefresher{up: up, srv: s}
+	s.sched = sched.New(s.subRefresher, s.logs, cfg.SubInterval, s.logf)
 	s.sched.SetGate(s.schedGate)
 	// Кэш заполняется на старте, а не при первом запросе: пустой манифест —
 	// валидное состояние свежей установки, и отличить его от «ещё не
@@ -360,7 +393,7 @@ func NewServer(cfg Config, ex executor.Executor) (*Server, error) {
 	// POST /api/subscription/update. Один источник на оба ответа: иначе
 	// панель показывала бы кнопку рабочей ровно там, где нажатие отбивается
 	// кодом subscription_not_configured. САМ АДРЕС сюда не едет — секрет.
-	s.status.subConfigured = s.subURL.configured
+	s.status.subConfigured = s.anySubConfigured
 	// Слот неудачи — ОДИН на демона, и читатель статуса обязан смотреть в
 	// тот же, в который пишет джоб переключения. Второй экземпляр здесь
 	// означал бы, что доклад пишется в один объект, а показывается из
@@ -494,6 +527,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/subscription", s.handleSubscriptionGet)
 	s.mux.HandleFunc("PUT /api/subscription", s.handleSubscriptionPut)
 	s.mux.HandleFunc("POST /api/subscription/update", s.handleSubscriptionUpdate)
+	s.mux.HandleFunc("GET /api/subscriptions", s.handleSubscriptionsGet)
+	s.mux.HandleFunc("POST /api/subscriptions", s.handleSubscriptionsPost)
+	s.mux.HandleFunc("PUT /api/subscriptions/{id}", s.handleSubscriptionsPut)
+	s.mux.HandleFunc("DELETE /api/subscriptions/{id}", s.handleSubscriptionsDelete)
 	s.mux.HandleFunc("GET /api/logs", s.handleLogs)
 	s.mux.HandleFunc("GET /api/b4/sets", s.handleB4Sets)
 	s.mux.HandleFunc("POST /api/b4/set", s.handleB4Set)
@@ -673,6 +710,16 @@ func (m *manifestRefresher) Update(ctx context.Context) (happ.Summary, error) {
 	return sum, err
 }
 
+// Rebuild — пересборка списка из кэшей (подписку удалили) с теми же
+// последствиями, что у обновления: кэш манифеста, авто-пул, пул хопов.
+func (m *manifestRefresher) Rebuild(ctx context.Context) (happ.Summary, error) {
+	sum, err := m.up.Rebuild(ctx)
+	m.srv.reloadManifest()
+	m.srv.resyncProviderPool(ctx)
+	m.srv.resyncHops(ctx)
+	return sum, err
+}
+
 // Сколько ждать и сколько раз повторять плановое обновление, наткнувшееся
 // на чужую операцию. Пять минут с запасом покрывают любой джоб (переключение
 // аплинка — до минуты), а пропуск тика стоил бы двенадцати часов.
@@ -695,7 +742,7 @@ var (
 // и раз в двенадцать часов панель показывала бы провал того, чего владелец
 // не просил.
 func (s *Server) schedGate(ctx context.Context, run func(context.Context) error) error {
-	if !s.subURL.configured() {
+	if !s.anySubConfigured() {
 		return nil
 	}
 	for attempt := 0; ; attempt++ {

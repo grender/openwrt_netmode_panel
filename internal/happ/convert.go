@@ -48,6 +48,9 @@ func convert(name string, o xrayOutbound, xhttp bool) (proxy map[string]any, typ
 	case "shadowsocks":
 		p, t, r := convertShadowsocks(name, o)
 		return p, t, r, nil
+	case "trojan":
+		p, t, r := convertTrojan(name, o)
+		return p, t, r, nil
 	case "":
 		return nil, "", "в outbound не указан протокол", nil
 	default:
@@ -178,6 +181,59 @@ func convertVLESS(name string, o xrayOutbound, xhttp bool) (map[string]any, stri
 		p["xhttp-opts"] = opts
 	}
 	return p, "vless", "", unknown
+}
+
+// convertTrojan переводит trojan-outbound в узел mihomo.
+//
+// Появился со вторым провайдером (17.11.2026): он отдаёт trojan
+// поверх gRPC с TLS. Переводятся tcp и grpc и только с TLS — trojan без TLS
+// это пароль открытым текстом, а остальные транспорты у нас не проверены
+// ни на одном живом узле. На движке узел проверен не был: снята только
+// форма записи.
+func convertTrojan(name string, o xrayOutbound) (map[string]any, string, string) {
+	if len(o.Settings.Servers) == 0 {
+		return nil, "", "у trojan-outbound нет сервера"
+	}
+	v := o.Settings.Servers[0]
+	if v.Address == "" || v.Port == 0 {
+		return nil, "", "у trojan-outbound не заполнен адрес или порт"
+	}
+	if v.Password == "" {
+		return nil, "", "у trojan-outbound нет пароля"
+	}
+	ss := o.StreamSettings
+	if ss.Network != "tcp" && ss.Network != "grpc" {
+		return nil, "", fmt.Sprintf(
+			"транспорт %s у trojan не переводится нашим конвертером (движок его умеет, перевода нет у нас)",
+			orNone(ss.Network))
+	}
+	if ss.Security != "tls" {
+		return nil, "", fmt.Sprintf("режим шифрования %s у trojan не поддержан", orNone(ss.Security))
+	}
+
+	t := ss.TLSSettings
+	p := map[string]any{
+		"name":     name,
+		"type":     "trojan",
+		"server":   v.Address,
+		"port":     v.Port,
+		"password": v.Password,
+		"network":  ss.Network,
+		"udp":      true,
+	}
+	if t.ServerName != "" {
+		p["sni"] = t.ServerName
+	}
+	if t.Fingerprint != "" {
+		p["client-fingerprint"] = t.Fingerprint
+	}
+	if len(t.ALPN) > 0 {
+		p["alpn"] = append([]string(nil), t.ALPN...)
+	}
+	if ss.Network == "grpc" {
+		p["grpc-opts"] = map[string]any{"grpc-service-name": ss.GRPCSettings.ServiceName}
+	}
+	return p, "trojan", ""
 }
 
 // wsOpts собирает ws-opts mihomo из wsSettings Xray.

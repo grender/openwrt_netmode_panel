@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
+	"time"
 
 	"netmoded/internal/atomicfile"
 	"netmoded/internal/happ"
@@ -88,91 +90,244 @@ type Updater struct {
 	// Подменяется только тестами: боевой путь обязан ходить через happ,
 	// который умеет не показывать адрес в ошибках.
 	Fetch func(ctx context.Context, url string) ([]byte, error)
+
+	// Sources — все подписки (ADR-0052). nil — одна, из URL: так собраны
+	// прежние тесты и так работал демон до второй подписки.
+	Sources func() []SourceConf
+	// CacheDir — каталог кэшей источников. Пусто — кэша нет: отказавший
+	// источник в список не попадает.
+	CacheDir string
+	// FetchWith — подмена скачивания, видящая ID устройства. Сильнее Fetch.
+	FetchWith func(ctx context.Context, url string, opts happ.FetchOpts) ([]byte, error)
+	// Now — часы для итогов источников; nil — time.Now.
+	Now func() time.Time
 }
 
-// Update выполняет одно обновление подписки.
-//
-// Возвращает сводку разбора всегда, когда разбор состоялся, — даже вместе с
-// ошибкой: число узлов уходит в журнал обновлений, и на неудачном пути оно
-// не менее интересно, чем на удачном.
-//
-// ОСТОРОЖНО с ошибками скачивания: happ.Fetch уже вычистил из них адрес
-// (там это главная ловушка файла — *url.Error несёт полный URL с секретом).
-// Ошибка отдаётся НЕ ОБЁРНУТОЙ ничем, что могло бы вернуть адрес обратно.
-func (u *Updater) Update(ctx context.Context) (happ.Summary, error) {
-	// Один снимок на весь вызов. Читать u.URL() второй раз ниже значило бы
-	// допустить, что проверка на пустоту и скачивание относятся к разным
-	// адресам: правка из панели между двумя чтениями дала бы «настроено»
-	// у первого и пустоту у второго — то есть падение вместо отказа.
-	url := ""
-	if u.URL != nil {
-		url = u.URL()
+// SourceConf — одна подписка: откуда качать и как представляться.
+type SourceConf struct {
+	ID    string
+	Label string
+	URL   string
+	// HWID — ID устройства, если этому провайдеру его надо слать; иначе пусто.
+	HWID string
+}
+
+// sources — настроенные источники с непустым адресом, в порядке слияния.
+func (u *Updater) sources() []SourceConf {
+	if u.Sources != nil {
+		var out []SourceConf
+		for _, s := range u.Sources() {
+			if s.URL != "" {
+				out = append(out, s)
+			}
+		}
+		return out
 	}
-	if url == "" {
+	if u.URL != nil {
+		if url := u.URL(); url != "" {
+			return []SourceConf{{ID: happ.MainSource, URL: url}}
+		}
+	}
+	return nil
+}
+
+func (u *Updater) fetchOne(ctx context.Context, s SourceConf) ([]byte, error) {
+	switch {
+	case u.FetchWith != nil:
+		return u.FetchWith(ctx, s.URL, happ.FetchOpts{HWID: s.HWID})
+	case u.Fetch != nil:
+		return u.Fetch(ctx, s.URL)
+	default:
+		return happ.FetchWith(ctx, s.URL, happ.FetchOpts{HWID: s.HWID})
+	}
+}
+
+func (u *Updater) now() time.Time {
+	if u.Now != nil {
+		return u.Now()
+	}
+	return time.Now()
+}
+
+// Update скачивает все подписки, сливает их в один список и отдаёт движку.
+//
+// Источник один — поведение прежнее, до буквы: отказ скачивания или ноль
+// узлов возвращают ошибку и не трогают ни одного файла.
+//
+// Источников несколько (ADR-0052): каждый качается и разбирается отдельно.
+// Удачный кладётся в свой кэш; неудачный берётся из кэша прошлой удачи, и
+// его отказ уезжает в Summary.Partial. Ошибкой обновление становится, только
+// когда не скачался НИ ОДИН: тогда файлы не трогаются, как и раньше.
+func (u *Updater) Update(ctx context.Context) (happ.Summary, error) {
+	srcs := u.sources()
+	if len(srcs) == 0 {
 		return happ.Summary{}, ErrNotConfigured
 	}
 	if u.Reload == nil {
-		// Не состояние конфигурации, а несобранный граф: без перезагрузки
-		// обновление закончилось бы новым файлом на диске и старым списком
-		// в движке — то есть «успехом», после которого ничего не
-		// изменилось. Отказ до записи честнее половины дела.
 		return happ.Summary{}, errors.New("subs: перезагрузка провайдера не настроена")
 	}
 
-	fetch := u.Fetch
-	if fetch == nil {
-		fetch = happ.Fetch
+	var (
+		merged   []happ.Source
+		partial  []string
+		firstErr error
+		firstSum happ.Summary
+		unknown  []string
+		fresh    int
+	)
+	for _, src := range srcs {
+		entries, sum, err := u.fetchSource(ctx, src)
+		unknown = append(unknown, sum.UnknownKeys...)
+		old, cached := loadCache(u.CacheDir, src.ID)
+		res := SourceResult{ID: src.ID, At: u.now().UTC()}
+
+		if err == nil {
+			fresh++
+			t := res.At
+			res.Status, res.Nodes, res.OKAt = "ok", sum.Nodes, &t
+			if cerr := saveCache(u.CacheDir, cacheFile{SourceResult: res, Entries: toCacheEntries(entries)}); cerr != nil && u.Logf != nil {
+				u.Logf("подписка %s: кэш не записан: %v", sourceName(src), cerr)
+			}
+			merged = append(merged, happ.Source{ID: src.ID, Label: src.Label, Entries: entries})
+			continue
+		}
+
+		if firstErr == nil {
+			firstErr, firstSum = err, sum
+		}
+		partial = append(partial, sourceName(src)+": "+err.Error())
+		res.Status, res.Error = "fail", err.Error()
+		if cached {
+			// Узлы прошлой удачи остаются; меняется только итог попытки.
+			res.Nodes, res.OKAt = old.Nodes, old.OKAt
+			old.SourceResult = res
+			if cerr := saveCache(u.CacheDir, old); cerr != nil && u.Logf != nil {
+				u.Logf("подписка %s: итог не записан: %v", sourceName(src), cerr)
+			}
+			merged = append(merged, happ.Source{ID: src.ID, Label: src.Label, Entries: old.entries()})
+		} else if cerr := saveCache(u.CacheDir, cacheFile{SourceResult: res}); cerr != nil && u.Logf != nil {
+			u.Logf("подписка %s: итог не записан: %v", sourceName(src), cerr)
+		}
 	}
 
-	raw, err := fetch(ctx, url)
+	if fresh == 0 {
+		// Не скачалось ничего: файлы остаются как были. У единственного
+		// источника ошибка уходит как есть — её текст и вид видят журнал и тесты.
+		if len(srcs) == 1 {
+			return firstSum, firstErr
+		}
+		return firstSum, fmt.Errorf("subs: не скачалась ни одна подписка: %s", strings.Join(partial, "; "))
+	}
+
+	sum, err := u.publish(ctx, merged)
+	sum.UnknownKeys = uniqueSorted(unknown)
+	sum.Partial = partial
+	return sum, err
+}
+
+// Rebuild пересобирает общий список из кэшей, без сети: источник удалён
+// или переименован, а качать остальные заново незачем.
+func (u *Updater) Rebuild(ctx context.Context) (happ.Summary, error) {
+	if u.Reload == nil {
+		return happ.Summary{}, errors.New("subs: перезагрузка провайдера не настроена")
+	}
+	var merged []happ.Source
+	for _, src := range u.sources() {
+		if c, ok := loadCache(u.CacheDir, src.ID); ok && len(c.Entries) > 0 {
+			merged = append(merged, happ.Source{ID: src.ID, Label: src.Label, Entries: c.entries()})
+		}
+	}
+	return u.publish(ctx, merged)
+}
+
+// Results — итоги последней попытки по каждому настроенному источнику, в
+// порядке слияния. Источник, который ещё ни разу не пробовали, — с пустым
+// Status.
+func (u *Updater) Results() []SourceResult {
+	var all []SourceConf
+	if u.Sources != nil {
+		all = u.Sources()
+	} else {
+		all = u.sources()
+	}
+	out := make([]SourceResult, 0, len(all))
+	for _, src := range all {
+		if c, ok := loadCache(u.CacheDir, src.ID); ok {
+			out = append(out, c.SourceResult)
+		} else {
+			out = append(out, SourceResult{ID: src.ID})
+		}
+	}
+	return out
+}
+
+func sourceName(s SourceConf) string {
+	if s.Label != "" {
+		return s.Label
+	}
+	return s.ID
+}
+
+func uniqueSorted(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, v := range in {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// fetchSource — скачать и разобрать одну подписку. Ноль узлов — отказ
+// источника: пустой ответ не должен вытеснять его прошлые узлы.
+func (u *Updater) fetchSource(ctx context.Context, src SourceConf) ([]happ.Entry, happ.Summary, error) {
+	raw, err := u.fetchOne(ctx, src)
 	if err != nil {
-		return happ.Summary{}, err
+		return nil, happ.Summary{}, err
 	}
-
 	entries, err := happ.Parse(raw)
 	if err != nil {
-		return happ.Summary{}, fmt.Errorf("subs: подписка не разбирается: %w", err)
+		return nil, happ.Summary{}, fmt.Errorf("subs: подписка не разбирается: %w", err)
 	}
 	sum := happ.Summarize(entries)
-
 	if sum.Nodes == 0 {
-		// Файлы не трогаем вовсе — ни провайдера, ни манифест. Текст
-		// ошибки обязан говорить о сохранённом старом списке: без этого
-		// он читается как «подписка потеряна», и владелец идёт чинить
-		// то, что не ломалось.
+		return nil, sum, ErrNoNodes
+	}
+	return entries, sum, nil
+}
+
+// publish сливает источники, пишет три файла и просит движок их перечитать.
+//
+// Порядок записи — провайдер, манифест, outbounds, перечитка, сверка — не
+// менять: он разобран в комментарии к Updater.
+func (u *Updater) publish(ctx context.Context, sources []happ.Source) (happ.Summary, error) {
+	entries, renamed := happ.Merge(sources)
+	sum := happ.Summarize(entries)
+	if sum.Nodes == 0 {
 		return sum, ErrNoNodes
 	}
+	if len(renamed) > 0 && u.Logf != nil {
+		u.Logf("подписки: имена совпали с более ранней подпиской и получили хвост: %s. "+
+			"Хвост держится, пока оригинал есть в ранней подписке", strings.Join(renamed, "; "))
+	}
 
-	// ПОРЯДОК ЗАПИСИ ВЫБРАН ПО ПОСЛЕДСТВИЯМ ЧАСТИЧНОГО ОТКАЗА, и менять
-	// его местами нельзя.
-	//
-	// Провайдер → манифест: если второй файл не запишется, Reload ниже не
-	// вызовется, и движок продолжит работать со СТАРЫМ списком — на диске
-	// новый файл, в памяти движка прежний, панель показывает прежнее.
-	// Расхождение наступит позже, когда mihomo сам перечитает провайдера по
-	// своему интервалу: тогда в движке будут новые узлы при старом
-	// манифесте, и subs.Order покажет их хвостом. Список останется
-	// РАБОЧИМ, каждый узел выбираем, — просто не в авторском порядке.
-	//
-	// Обратный порядок дал бы манифест, описывающий узлы, которых в движке
-	// нет: Order пометил бы их KindUnsupported с причиной «mihomo его не
-	// показывает», и половина списка стала бы непригодной на вид, будучи
-	// исправной на деле.
 	if err := atomicfile.Write(u.ProviderPath, happ.Render(entries), filePerm); err != nil {
 		return sum, fmt.Errorf("subs: файл провайдера: %w", err)
 	}
 
 	manifest, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
-		// Недостижимо: Entry состоит из строк, а Proxy помечен json:"-".
 		return sum, fmt.Errorf("subs: манифест не сериализуется: %w", err)
 	}
 	if err := atomicfile.Write(u.ManifestPath, append(manifest, '\n'), filePerm); err != nil {
 		return sum, fmt.Errorf("subs: манифест: %w", err)
 	}
-	// Outbounds — после манифеста: их читает только подписка телефонов, и
-	// отказ здесь оставляет движок и панель согласованными, а телефоны —
-	// на прежних хопах до следующего обновления.
 	if u.OutboundsPath != "" {
 		if err := atomicfile.Write(u.OutboundsPath, happ.RenderOutbounds(entries), filePerm); err != nil {
 			return sum, fmt.Errorf("subs: outbounds для подписки телефонов: %w", err)
@@ -180,9 +335,6 @@ func (u *Updater) Update(ctx context.Context) (happ.Summary, error) {
 	}
 
 	if err := u.Reload(ctx); err != nil {
-		// Файлы УЖЕ новые, и это надо сказать прямо. Без этой оговорки
-		// владелец прочитает «обновление не удалось» и пойдёт чинить
-		// запись, которая прошла, — вместо движка, который не перечитал.
 		return sum, fmt.Errorf(
 			"subs: файлы записаны (%d узлов), но движок провайдера не перечитал: %w",
 			sum.Nodes, err)

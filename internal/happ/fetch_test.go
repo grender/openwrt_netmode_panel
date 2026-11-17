@@ -183,3 +183,55 @@ func TestFetchRefusesRedirect(t *testing.T) {
 		})
 	}
 }
+
+// Заголовки устройства шлются только с ID и только тому, кому он задан:
+// каждый новый ID занимает у провайдера слот.
+func TestFetchSendsDeviceHeadersOnlyWithHWID(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer srv.Close()
+
+	if _, err := fetchWith(context.Background(), srv.Client(), srv.URL+"/s", FetchOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []string{"x-hwid", "x-device-os", "x-ver-os", "x-device-model"} {
+		if got.Get(h) != "" {
+			t.Errorf("без ID ушёл заголовок %s", h)
+		}
+	}
+
+	const hwid = "5ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2"
+	if _, err := fetchWith(context.Background(), srv.Client(), srv.URL+"/s", FetchOpts{HWID: hwid}); err != nil {
+		t.Fatal(err)
+	}
+	if got.Get("x-hwid") != hwid || got.Get("x-device-os") == "" || got.Get("User-Agent") != userAgent {
+		t.Errorf("заголовки: %v", got)
+	}
+}
+
+// Отказы по устройству приходят кодом 200: их выдаёт только заголовок.
+func TestFetchNamesDeviceRefusals(t *testing.T) {
+	const hwid = "5ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2"
+	hdr := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(hdr, "true")
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer srv.Close()
+
+	hdr = "x-hwid-not-supported"
+	if _, err := fetchWith(context.Background(), srv.Client(), srv.URL+"/s", FetchOpts{}); !errors.Is(err, ErrNeedsDeviceID) {
+		t.Errorf("без ID: %v", err)
+	}
+	hdr = "x-hwid-max-devices-reached"
+	_, err := fetchWith(context.Background(), srv.Client(), srv.URL+"/s", FetchOpts{HWID: hwid})
+	if !errors.Is(err, ErrDeviceLimit) {
+		t.Errorf("лимит: %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), hwid) {
+		t.Error("ID устройства попал в текст ошибки")
+	}
+}

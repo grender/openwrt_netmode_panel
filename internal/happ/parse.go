@@ -437,6 +437,9 @@ type xrayOutbound struct {
 		// WSSettings — транспорт ws у записей обхода белых списков:
 		// path и headers.Host. host — форма новых Xray, разбирается про
 		// запас (см. wsOpts).
+		GRPCSettings struct {
+			ServiceName string `json:"serviceName"`
+		} `json:"grpcSettings"`
 		WSSettings struct {
 			Path    string            `json:"path"`
 			Host    string            `json:"host"`

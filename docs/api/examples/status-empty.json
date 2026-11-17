@@ -29,6 +29,7 @@
     "last_update": null,
     "status": "never",
     "nodes": 0,
+    "partial": false,
     "error": null
   },
   "last_fail": null,

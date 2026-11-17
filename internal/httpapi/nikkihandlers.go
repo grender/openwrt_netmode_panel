@@ -65,6 +65,7 @@ func (s *Server) writeProxies(w http.ResponseWriter, r *http.Request, extra map[
 	// требовать одной из двух форм он не вправе.
 	selected, fixed, pinned := g.Now, g.Fixed, g.Pinned
 	members := subs.Order(all, ProxyGroup, s.manifestEntries())
+	s.labelSources(members)
 	var autoPool *int
 	if a, ok := all[mixin.AutoGroup]; ok && a.IsGroup() && autoIsMember(g) {
 		n := len(a.Members)
@@ -410,4 +411,26 @@ func dropMember(ms []subs.Member, name string) []subs.Member {
 		out = append(out, m)
 	}
 	return out
+}
+
+// labelSources подписывает узлы не из основной подписки её именем — панель
+// показывает его меткой в строке узла (ADR-0052).
+func (s *Server) labelSources(members []subs.Member) {
+	extra := s.subExtra.list()
+	if len(extra) == 0 {
+		return
+	}
+	label := make(map[string]string, len(extra))
+	for _, e := range extra {
+		label[e.ID] = e.Label
+	}
+	src := map[string]string{}
+	for _, e := range s.manifestEntries() {
+		if e.Source != "" {
+			src[e.Name] = label[e.Source]
+		}
+	}
+	for i := range members {
+		members[i].Source = src[members[i].Name]
+	}
 }

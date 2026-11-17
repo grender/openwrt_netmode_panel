@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -114,7 +115,41 @@ func Fetch(ctx context.Context, rawurl string) ([]byte, error) {
 		return nil, fmt.Errorf("%w (получено: %s)", ErrNotHTTPS, schemeOrNone(u.Scheme))
 	}
 
-	return fetch(ctx, newClient(), rawurl)
+	return fetchWith(ctx, newClient(), rawurl, FetchOpts{})
+}
+
+// FetchOpts — чем запрос к подписке отличается от умолчания.
+type FetchOpts struct {
+	// HWID — ID устройства. Пусто — заголовки устройства не шлются вовсе.
+	//
+	// Провайдеры на панелях типа Remnawave с лимитом устройств без него
+	// отдают не узлы, а заглушку «приложение не поддерживается» (второй
+	// провайдер, 17.11.2026). Клиент Happ шлёт x-hwid и описание устройства;
+	// обязателен только x-hwid. Шлём его лишь тому, кто просит: каждый новый
+	// ID занимает у провайдера слот устройства.
+	//
+	// Значение — секрет того же рода, что адрес: в ошибки и журнал не идёт.
+	HWID string
+}
+
+// ErrNeedsDeviceID — провайдер ответил заглушкой: без ID устройства узлы
+// не отдаёт (заголовок x-hwid-not-supported).
+var ErrNeedsDeviceID = errors.New("happ: провайдер требует ID устройства — включите «Слать ID устройства»")
+
+// ErrDeviceLimit — у провайдера исчерпаны слоты устройств
+// (заголовок x-hwid-max-devices-reached).
+var ErrDeviceLimit = errors.New("happ: у провайдера кончились слоты устройств")
+
+// FetchWith — Fetch с параметрами запроса.
+func FetchWith(ctx context.Context, rawurl string, opts FetchOpts) ([]byte, error) {
+	u, err := url.Parse(rawurl)
+	if err != nil {
+		return nil, errors.New("happ: адрес подписки не разбирается")
+	}
+	if u.Scheme != "https" {
+		return nil, fmt.Errorf("%w (получено: %s)", ErrNotHTTPS, schemeOrNone(u.Scheme))
+	}
+	return fetchWith(ctx, newClient(), rawurl, opts)
 }
 
 // newClient собирает боевой HTTP-клиент подписки.
@@ -143,6 +178,10 @@ func newClient() *http.Client {
 // бы нечем — а именно эти два пути и надо доказывать на живом сервере, а не
 // на подменённом транспорте.
 func fetch(ctx context.Context, client *http.Client, rawurl string) ([]byte, error) {
+	return fetchWith(ctx, client, rawurl, FetchOpts{})
+}
+
+func fetchWith(ctx context.Context, client *http.Client, rawurl string, opts FetchOpts) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
@@ -151,6 +190,13 @@ func fetch(ctx context.Context, client *http.Client, rawurl string) ([]byte, err
 		return nil, errors.New("happ: запрос к подписке не собирается")
 	}
 	req.Header.Set("User-Agent", userAgent)
+	if opts.HWID != "" {
+		// Набор — как у клиента Happ. Описание устройства честное: роутер.
+		req.Header.Set("x-hwid", opts.HWID)
+		req.Header.Set("x-device-os", "Linux")
+		req.Header.Set("x-ver-os", "OpenWrt")
+		req.Header.Set("x-device-model", "router")
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -160,6 +206,15 @@ func fetch(ctx context.Context, client *http.Client, rawurl string) ([]byte, err
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, &StatusError{Code: resp.StatusCode}
+	}
+	// Отказ по устройству приходит с кодом 200 и телом-заглушкой, которое
+	// разбирается как обычная подписка без узлов: без этих проверок владелец
+	// увидел бы «узлов нет» вместо причины.
+	if strings.EqualFold(resp.Header.Get("x-hwid-max-devices-reached"), "true") {
+		return nil, ErrDeviceLimit
+	}
+	if opts.HWID == "" && strings.EqualFold(resp.Header.Get("x-hwid-not-supported"), "true") {
+		return nil, ErrNeedsDeviceID
 	}
 
 	// Читаем на байт больше потолка: если этот байт пришёл, значит тело в
