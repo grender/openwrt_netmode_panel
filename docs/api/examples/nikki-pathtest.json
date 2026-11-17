@@ -1,0 +1,55 @@
+{
+  "elapsed_ms": 6120,
+  "hops": [
+    {
+      "delay_ms": 84,
+      "name": "🇷🇺💳Россия",
+      "pool": true,
+      "state": "ok",
+      "tunnel": false
+    },
+    {
+      "delay_ms": null,
+      "name": "🇩🇪⚡Германия",
+      "pool": true,
+      "state": "fail",
+      "tunnel": false
+    },
+    {
+      "delay_ms": 61,
+      "name": "🇫🇮⚡Финляндия-1",
+      "pool": false,
+      "state": "ok",
+      "tunnel": true
+    }
+  ],
+  "nodes": [
+    {
+      "chains": [
+        {
+          "delay_ms": 212,
+          "hop": "🇷🇺💳Россия",
+          "state": "ok"
+        },
+        {
+          "delay_ms": null,
+          "hop": "🇩🇪⚡Германия",
+          "state": "fail"
+        }
+      ],
+      "direct": {
+        "delay_ms": 143,
+        "state": "ok"
+      },
+      "exits": [
+        {
+          "delay_ms": null,
+          "exit": "resi",
+          "state": "fail",
+          "via": "direct"
+        }
+      ],
+      "name": "kz-nqz-exit-01"
+    }
+  ]
+}

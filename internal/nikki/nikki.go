@@ -687,8 +687,26 @@ const delayTestURL = "https://www.gstatic.com/generate_204"
 // обеих версиях, а за ним тот же getProxyDelay (hub/route/provider.go):
 // те же url и timeout, та же форма {"delay":N}, те же 503 и 504.
 func (c *HTTP) Delay(ctx context.Context, provider, name string) (int, error) {
+	return c.DelayTimeout(ctx, provider, name, delayProbeTimeout)
+}
+
+// TimedProber — проба с собственным таймаутом. Отдельно от Client, а не
+// его методом: нужна одному вызывающему (проверка путей до своих нод,
+// httpapi/pathtest.go), а Client реализуют все подделки. Кто её не умеет,
+// получает обычный Delay.
+//
+// Зачем таймаут вообще: выход через ISP-прокси открывает новое соединение
+// 2–5 с, и за delayProbeTimeout не отвечает никогда — проба врала бы
+// «мёртв» про живой выход.
+type TimedProber interface {
+	DelayTimeout(ctx context.Context, provider, name string, timeout time.Duration) (int, error)
+}
+
+// DelayTimeout — Delay с заданным таймаутом пробы (см. TimedProber). Путь,
+// цель и форма ответа те же.
+func (c *HTTP) DelayTimeout(ctx context.Context, provider, name string, timeout time.Duration) (int, error) {
 	q := url.Values{
-		"timeout": {strconv.Itoa(int(delayProbeTimeout / time.Millisecond))},
+		"timeout": {strconv.Itoa(int(timeout / time.Millisecond))},
 		"url":     {delayTestURL},
 	}
 	path := "/proxies/" + url.PathEscape(name) + "/delay?" + q.Encode()
@@ -703,7 +721,7 @@ func (c *HTTP) Delay(ctx context.Context, provider, name string) (int, error) {
 	// Свой дедлайн заведомо больше того, что просим у движка: иначе «узел не
 	// ответил» и «мы не дождались самого mihomo» слились бы в одну ошибку,
 	// и первое молча записалось бы во второе.
-	if err := c.do(ctx, http.MethodGet, path, nil, &out, delayProbeTimeout+time.Second); err != nil {
+	if err := c.do(ctx, http.MethodGet, path, nil, &out, timeout+time.Second); err != nil {
 		// Мёртвый узел mihomo отдаёт пятисоткой: 504 — проба не уложилась в
 		// timeout, 503 — проба не удалась (hub/route/proxies.go, v1.19.27;
 		// по исходникам, живьём коды не снимались). do превращает любую

@@ -249,3 +249,28 @@ func TestProbeAllOnEmptyListDoesNothing(t *testing.T) {
 		t.Fatalf("итог %+v, ожидался пустой", sum)
 	}
 }
+
+// Свой таймаут доезжает до движка: выход через ISP-прокси за полторы
+// секунды не отвечает никогда, и проба с общим таймаутом врала бы «мёртв».
+func TestDelayTimeoutSendsOwnTimeout(t *testing.T) {
+	d := &delayServer{}
+	srv := httptest.NewServer(d)
+	defer srv.Close()
+
+	if _, err := New(srv.URL, "sec").DelayTimeout(context.Background(), "exits", "kz-nqz-exit-01-resi", 8*time.Second); err != nil {
+		t.Fatalf("DelayTimeout: %v", err)
+	}
+	if !strings.Contains(d.lastQ, "timeout=8000") {
+		t.Errorf("запрос %q: таймаут не 8000", d.lastQ)
+	}
+	if d.lastP != "/providers/proxies/exits/kz-nqz-exit-01-resi/healthcheck" {
+		t.Errorf("путь %q", d.lastP)
+	}
+
+	if _, err := New(srv.URL, "sec").Delay(context.Background(), "", "x"); err != nil {
+		t.Fatalf("Delay: %v", err)
+	}
+	if !strings.Contains(d.lastQ, "timeout=1500") {
+		t.Errorf("запрос %q: обычный замер обязан остаться на 1500", d.lastQ)
+	}
+}

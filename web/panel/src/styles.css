@@ -1102,3 +1102,76 @@ button.row { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
 	.w-eng-restarting .dot { animation: none; opacity: .75; }
 }
+
+/* ── детектор отказов (ADR-0051) ── */
+
+.fails { display: flex; flex-direction: column; gap: 14px; }
+.f-bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.f-bar button { width: auto; padding: 0 16px; }
+.f-when { font: 12.5px var(--sans); color: var(--muted-2); }
+
+/* Схема шире телефона: прокручивается в своей рамке, а не ломает страницу. */
+.f-scroll {
+	overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r-lg);
+	background: var(--row-2); padding: 6px;
+}
+.f-graph { display: block; }
+.f-edge path { fill: none; stroke: var(--muted-3); stroke-width: 1.2; stroke-dasharray: 3 4; opacity: .7; }
+.f-edge.ok path { stroke: var(--ok); stroke-dasharray: none; }
+.f-edge.fail path { stroke: var(--bad); stroke-dasharray: none; opacity: 1; }
+.f-edge.used path { stroke-width: 2.8; opacity: 1; }
+.f-edge.ok:not(.used) path { opacity: .45; }
+.f-badge circle { fill: var(--bad); stroke: var(--row-2); stroke-width: 2; }
+.f-badge text { font: 700 10.5px var(--mono); fill: #2a0f0c; }
+.f-node rect { fill: var(--card); stroke: var(--line-2); stroke-width: 1; }
+.f-node.router rect, .f-node.net rect { fill: var(--row); }
+.f-node.node rect { stroke: var(--nikki); }
+.f-node.dead rect { stroke: var(--bad); fill: var(--bad-bg); }
+.f-main { font: 600 12px var(--sans); fill: var(--fg); }
+.f-sub { font: 10px var(--mono); fill: var(--muted-2); }
+
+.f-legend { margin: 0; display: flex; gap: 14px; flex-wrap: wrap; font: 11.5px var(--sans); color: var(--muted-2); }
+.f-key::before {
+	content: ''; display: inline-block; width: 18px; height: 0; margin-right: 6px; vertical-align: middle;
+	border-top: 2px solid var(--muted-3);
+}
+.f-key.ok::before { border-color: var(--ok); }
+.f-key.fail::before { border-color: var(--bad); }
+.f-key.unknown::before { border-top-style: dashed; }
+.f-key.used::before { border-top-width: 4px; border-color: var(--fg-2); }
+
+.f-routes { display: flex; flex-direction: column; gap: 9px; }
+.f-route {
+	display: flex; flex-direction: column; gap: 8px; padding: 12px 14px;
+	background: var(--row); border: 1px solid transparent; border-radius: var(--r-lg);
+}
+.f-route.bad { border-color: #4a2926; }
+.f-rhead { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.f-rname { font: 600 14px var(--mono); }
+.f-verdict { font: 12.5px var(--sans); color: var(--muted-2); }
+.f-verdict.ok { color: var(--ok); }
+.f-verdict.bad { color: var(--bad-fg); }
+.f-verdict.warn { color: var(--warn); }
+.f-path { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; font: 12.5px var(--sans); color: var(--fg-2); }
+.f-seg { display: inline-flex; align-items: center; }
+.f-link {
+	display: inline-block; width: 22px; height: 0; margin: 0 6px;
+	border-top: 2px dashed var(--muted-3);
+}
+.f-link.ok { border-top: 2px solid var(--ok); }
+.f-link.fail { border-top: 3px solid var(--bad); }
+.f-rules { display: flex; gap: 6px; flex-wrap: wrap; }
+.f-rules code {
+	font: 11px var(--mono); color: var(--muted); background: var(--row-2);
+	padding: 2px 7px; border-radius: 99px;
+}
+.f-rules code.tail { color: var(--warn); }
+.f-req { font: 12.5px var(--sans); color: var(--muted); }
+.f-why { color: var(--muted-2); }
+.f-fails { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 5px; }
+.f-fails li { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; font: 12px var(--mono); }
+.f-fails .more { color: var(--muted-2); }
+.f-host { color: var(--bad-fg); overflow-wrap: anywhere; }
+.f-net { color: var(--muted-2); text-transform: uppercase; font-size: 10.5px; }
+.f-cnt { color: var(--muted); }
+.f-err { color: var(--muted-2); overflow-wrap: anywhere; flex-basis: 100%; }

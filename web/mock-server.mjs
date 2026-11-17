@@ -1310,6 +1310,33 @@ async function handleAPI(req, res, u) {
 		state.overlay.nikkiPinned = true;
 		return send(res, 200, { selected: name }); // быстрая операция: без джоба
 	}
+	// Проверка звеньев для экрана «Детектор отказов» (ADR-0051). Форма — как в
+	// docs/api/examples/nikki-pathtest.json. В сценарии watch-session картина
+	// «с поломкой»: последний хоп пула мёртв и выход resi не отвечает при
+	// живой ноде — то есть отказ за нодой; в остальных сценариях всё живо.
+	if (p === '/api/nikki/pathtest' && method === 'POST') {
+		if (!(await engineUp('nikki'))) {
+			return fail(res, 503, 'nikki_unavailable', 'Clash API не отвечает. Проверять нечего.');
+		}
+		await new Promise((r) => setTimeout(r, 1200));
+		const h = await hopsBody();
+		const prox = await readProxies();
+		const tun = state.overlay.nikkiSelected || prox.selected || '';
+		const broken = state.scenario === 'watch-session';
+		const probe = (ok, ms) => (ok ? { state: 'ok', delay_ms: ms } : { state: 'fail', delay_ms: null });
+		const deadHop = broken && h.pool.length > 1 ? h.pool[h.pool.length - 1] : '';
+		const hops = h.pool.map((name, i) => ({ name, pool: true, tunnel: name === tun, ...probe(name !== deadHop, 60 + i * 23) }));
+		if (tun && !h.pool.includes(tun) && (prox.members || []).some((m) => m.name === tun && m.kind === 'node')) {
+			hops.push({ name: tun, pool: false, tunnel: true, ...probe(true, 48) });
+		}
+		const nodes = h.exits.map((n) => ({
+			name: n.name,
+			direct: probe(true, 143),
+			chains: h.pool.map((hop, i) => ({ hop, ...probe(hop !== deadHop, 190 + i * 31) })),
+			exits: n.exits.filter((e) => e !== 'dc').map((exit) => ({ exit, via: 'direct', ...probe(!broken, 2840) })),
+		}));
+		return send(res, 200, { hops, nodes, elapsed_ms: broken ? 8200 : 3100 });
+	}
 	if (p === '/api/nikki/test' && method === 'POST') {
 		if (!(await engineUp('nikki'))) {
 			return fail(res, 503, 'nikki_unavailable', 'Nikki не отвечает');

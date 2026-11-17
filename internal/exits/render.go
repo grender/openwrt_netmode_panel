@@ -158,13 +158,17 @@ func RenderProvider(nodes []Node, hops []string) []byte {
 // proxy — узел mihomo, как в templates/mihomo-proxies.yaml.j2 репо нод.
 func proxy(n Node, exit, name, dialer string) map[string]any {
 	p := map[string]any{
-		"name":               name,
-		"type":               "vless",
-		"server":             n.Address,
-		"port":               n.Port,
-		"uuid":               n.Users[exit],
-		"network":            "tcp",
-		"udp":                false,
+		"name":    name,
+		"type":    "vless",
+		"server":  n.Address,
+		"port":    n.Port,
+		"uuid":    n.Users[exit],
+		"network": "tcp",
+		// true — ради kill switch, а не ради UDP: правило, чей узел не умеет
+		// UDP, mihomo не отклоняет, а пропускает (tunnel.go, match), и QUIC к
+		// домену из набора уходил бы в хвост MATCH,DIRECT — с домашнего IP.
+		// С true пакет доходит до ноды, а там UDP 443 и весь UDP resi режутся.
+		"udp":                true,
 		"tls":                true,
 		"flow":               n.Flow,
 		"servername":         n.SNI,

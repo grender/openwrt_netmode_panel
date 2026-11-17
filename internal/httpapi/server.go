@@ -477,6 +477,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/nikki/panel", s.handleNikkiPanel)
 	s.mux.HandleFunc("POST /api/nikki/proxy", s.handleNikkiProxy)
 	s.mux.HandleFunc("POST /api/nikki/test", s.handleNikkiTest)
+	s.mux.HandleFunc("POST /api/nikki/pathtest", s.handlePathTest)
 	s.mux.HandleFunc("GET /api/nikki/rulesets", s.handleRulesetsGet)
 	s.mux.HandleFunc("PUT /api/nikki/rulesets", s.handleRulesetsPut)
 	s.mux.HandleFunc("GET /api/nikki/autopool", s.handleAutopool)

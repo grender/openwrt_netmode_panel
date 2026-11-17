@@ -580,3 +580,28 @@ export interface ExitGroup {
 export interface NikkiExitsResponse {
 	groups: ExitGroup[];
 }
+
+// ─── Проверка путей до своих выходов (ADR-0051) ───
+
+/** ok — ответил; fail — не ответил; absent — узла нет у движка; skipped — не успели. */
+export type PathProbeState = 'ok' | 'fail' | 'absent' | 'skipped';
+
+export interface PathProbe {
+	state: PathProbeState;
+	/** Заполнен только при ok. */
+	delay_ms: number | null;
+}
+
+export interface PathTestResponse {
+	/** Серверы подписки, активные сейчас: хопы пула и узел туннеля. */
+	hops: (PathProbe & { name: string; pool: boolean; tunnel: boolean })[];
+	nodes: {
+		name: string;
+		/** Роутер → нода напрямую. null — у ноды нет выхода dc. */
+		direct: PathProbe | null;
+		chains: (PathProbe & { hop: string })[];
+		/** Выходы за нодой (resi): via — каким путём до ноды шла проба. */
+		exits: (PathProbe & { exit: string; via: 'direct' | 'hop'; hop?: string })[];
+	}[];
+	elapsed_ms: number;
+}

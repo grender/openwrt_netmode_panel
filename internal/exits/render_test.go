@@ -53,7 +53,7 @@ func TestRenderDirectFields(t *testing.T) {
 	want := map[string]any{
 		"name": "kz-nqz-exit-01-dc", "type": "vless", "server": "kz-nqz-exit-01.example.net",
 		"port": float64(443), "uuid": "66666666-7777-4888-9999-aaaaaaaaaaaa", "network": "tcp",
-		"udp": false, "tls": true, "flow": "xtls-rprx-vision", "servername": "krisha.kz",
+		"udp": true, "tls": true, "flow": "xtls-rprx-vision", "servername": "krisha.kz",
 		"client-fingerprint": "chrome",
 	}
 	for k, v := range want {

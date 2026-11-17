@@ -7,6 +7,7 @@ import type {
 	HopsDraft,
 	HopsResponse,
 	NikkiExitsResponse,
+	PathTestResponse,
 	SubLinkResponse,
 	BridgeState,
 	Job,
@@ -47,6 +48,7 @@ import { Shelf } from './Shelf';
 import { subSummary } from './Subscription';
 import { Uplink } from './Uplink';
 import { Watch, watchSummary } from './Watch';
+import { Fails } from './Fails';
 
 const MODES: Mode[] = ['nikki', 'b4', 'off'];
 
@@ -56,7 +58,7 @@ const MODES: Mode[] = ['nikki', 'b4', 'off'];
  * закладок — тоже подписка), #settings — настройки с первым разделом; всё
  * остальное — главная, где хеш по-прежнему раскрывает аккордеон (fromHash).
  */
-type Route = { screen: 'main' } | { screen: 'settings'; row: SettingsRow | '' } | { screen: 'watch' };
+type Route = { screen: 'main' } | { screen: 'settings'; row: SettingsRow | '' } | { screen: 'watch' } | { screen: 'fails' };
 
 function routeOf(hash: string): Route {
 	const h = hash.replace(/^#/, '');
@@ -64,6 +66,8 @@ function routeOf(hash: string): Route {
 	// разбора настроек: иначе #watch уехал бы в ветку «всё остальное», то
 	// есть на главную, где раскрыл бы несуществующий раздел аккордеона.
 	if (h === 'watch') return { screen: 'watch' };
+	// Детектор отказов — четвёртый экран (ADR-0051), по той же причине раньше настроек.
+	if (h === 'fails') return { screen: 'fails' };
 	if (h === 'settings') return { screen: 'settings', row: 'routes' };
 	if (h === 'subscription') return { screen: 'settings', row: 'sub' };
 	if ((SETTINGS_ROWS as string[]).includes(h)) return { screen: 'settings', row: h as SettingsRow };
@@ -122,7 +126,12 @@ export function App() {
 	// состояние сессии велико, а нужно оно ровно здесь. И только этот опрос
 	// продлевает TTL сессии — иначе «закрыл вкладку, через минуту погасло»
 	// перестало бы работать у всякого, кто просто ушёл на главную.
-	const watch = useWatchPoll(route.screen === 'watch');
+	// Детектор отказов читает ту же сессию: запросы устройства ложатся на
+	// его схему. Открытый детектор продлевает сессию так же, как сам наблюдатель.
+	const watch = useWatchPoll(route.screen === 'watch' || route.screen === 'fails');
+	// Замер звеньев живёт в памяти вкладки: он про «сейчас», и устаревший
+	// после F5 был бы хуже пустого.
+	const [pathTest, setPathTest] = useState<{ at: string; res: PathTestResponse } | null>(null);
 	const watchHosts = useSide<WatchHosts>('watchHosts');
 	// Скрытые провалы помнятся ПО СОБЫТИЮ, а не флагом «больше не показывать»:
 	// крестик значит «я прочитал это», а не «отключить сообщения».
@@ -259,6 +268,13 @@ export function App() {
 	useEffect(() => {
 		if (route.screen === 'watch') void loadWatchHosts();
 	}, [route.screen, loadWatchHosts]);
+
+	// Группы выходов для схемы детектора: на главной их грузит карточка
+	// Nikki, а сюда можно прийти и по прямой ссылке.
+	const loadExitGroups = exitGroups.load;
+	useEffect(() => {
+		if (route.screen === 'fails') void loadExitGroups();
+	}, [route.screen, loadExitGroups]);
 
 	// Уход из режима nikki уносит черновик: раздел принадлежит режиму, и
 	// вернувшийся владелец не должен обнаружить непринятые правки для
@@ -661,6 +677,12 @@ export function App() {
 			async () => {},
 		);
 
+	const onPathTest = () =>
+		void lock.act('pathtest', async () => {
+			const res = await post<PathTestResponse>('nikkiPathtest', {}, BUDGET.TEST);
+			setPathTest({ at: new Date().toISOString(), res });
+		});
+
 	const onWatchStop = () =>
 		void lock.act(
 			'watch',
@@ -926,6 +948,7 @@ export function App() {
 	};
 	const w = watchSummary(status.watch, t);
 	const watchRow = { id: 'watch' as const, title: t('shelf.watch'), summary: w.text, warn: w.warn };
+	const failsRow = { id: 'fails' as const, title: t('shelf.fails'), summary: t('shelf.fails.sum') };
 	const upFail = status.last_fail;
 	const upFailKey = upFail ? `${upFail.reason}:${upFail.at}` : '';
 	const brFail = bridge.value?.last_fail ?? status.bridge_last_fail ?? null;
@@ -1030,6 +1053,43 @@ export function App() {
 						lock={lock}
 						locked={locked}
 						running={running}
+						t={t}
+						lang={lang}
+					/>
+					{foot}
+				</div>
+				{floatSlot}
+				{live}
+			</div>
+		);
+	}
+
+	// ─── экран детектора отказов (ADR-0051) ───
+	if (route.screen === 'fails') {
+		return (
+			<div class="page">
+				<div class="shell">
+					<header class="top settings-top" data-part="top">
+						<div class="top-id">
+							<a class="toplink" href="#">
+								‹ {t('watch.back')}
+							</a>
+							<span class="host">{t('fails.title')}</span>
+							<span class="ap-meta">{t('fails.sub')}</span>
+						</div>
+						<div class="top-links">{langSwitch}</div>
+					</header>
+					<Fails
+						mode={mode}
+						rulesets={rulesets.value}
+						exits={exitGroups.value}
+						hops={hops.value}
+						proxies={nikki.value}
+						watch={watch.value}
+						test={pathTest}
+						onTest={onPathTest}
+						lock={lock}
+						locked={locked}
 						t={t}
 						lang={lang}
 					/>
@@ -1357,6 +1417,7 @@ export function App() {
 							// могли сменить прямо при открытом наблюдателе, и
 							// накопленное ещё можно дочитать.
 							...(mode === 'nikki' || status.watch ? [watchRow] : []),
+							...(mode === 'nikki' ? [failsRow] : []),
 						]}
 					/>
 
